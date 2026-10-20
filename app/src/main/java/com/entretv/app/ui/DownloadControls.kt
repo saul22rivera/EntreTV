@@ -171,3 +171,27 @@ fun ConfirmDeleteDownloadDialog(download: DownloadEntity, onConfirm: () -> Unit,
     )
     LaunchedEffect(Unit) { runCatching { keepFocus.requestFocus() } }
 }
+
+/** Igual que la anterior pero con textos libres (borrar varias, borrar todo, detener una serie). */
+@Composable
+fun ConfirmActionDialog(
+    title: String,
+    text: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    dismissLabel: String = "Cancelar"
+) {
+    val keepFocus = remember { FocusRequester() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = EntreBrand.Panel,
+        title = { Text(title, color = Color.White) },
+        text = { Text(text, color = EntreBrand.TextDim) },
+        confirmButton = { EntreButton(confirmLabel, null, onConfirm, compact = true) },
+        dismissButton = {
+            EntreButton(dismissLabel, null, onDismiss, compact = true, modifier = Modifier.focusRequester(keepFocus))
+        }
+    )
+    LaunchedEffect(Unit) { runCatching { keepFocus.requestFocus() } }
+}

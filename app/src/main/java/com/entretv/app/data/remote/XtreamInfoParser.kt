@@ -1,12 +1,25 @@
 package com.entretv.app.data.remote
 
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** Ficha de una película o serie tal como la entrega el servidor (datos de TMDB). */
+/** Persona del reparto; [photoUrl] solo llega desde TMDB. */
+@Serializable
+data class CastMember(
+    val name: String,
+    val character: String = "",
+    val photoUrl: String = ""
+)
+
+/**
+ * Ficha de una película o serie: lo que manda el servidor (datos de TMDB) y, si hay
+ * clave de TMDB, lo que se completa desde allí. Se guarda como JSON para verla sin conexión.
+ */
+@Serializable
 data class ContentDetails(
     val plot: String = "",
     val genre: String = "",
@@ -17,7 +30,24 @@ data class ContentDetails(
     val director: String = "",
     val backdropUrl: String = "",
     val posterUrl: String = "",
-    val trailerUrl: String = ""
+    val trailerUrl: String = "",
+    val tmdbId: String = "",
+    val tagline: String = "",
+    val releaseDate: String = "",
+    val originalTitle: String = "",
+    val originalLanguage: String = "",
+    val countries: String = "",
+    val companies: String = "",
+    val certification: String = "",
+    val voteCount: Int = 0,
+    val budget: Long = 0,
+    val revenue: Long = 0,
+    val seasons: Int = 0,
+    val episodes: Int = 0,
+    val networks: String = "",
+    val status: String = "",
+    val creators: String = "",
+    val castMembers: List<CastMember> = emptyList()
 )
 
 data class ParsedEpisode(
@@ -39,9 +69,24 @@ object XtreamInfoParser {
 
     private val yearRegex = Regex("(19|20)\\d{2}")
 
-    fun movie(root: JsonObject): ContentDetails = details(root["info"] as? JsonObject)
+    fun movie(root: JsonObject): ContentDetails {
+        val info = root["info"] as? JsonObject
+        val data = root["movie_data"] as? JsonObject
+        val base = details(info)
+        return if (base.originalTitle.isEmpty() && data != null) {
+            base.copy(originalTitle = data.str("o_name").takeIf { it != data.str("name") }.orEmpty())
+        } else base
+    }
 
-    fun series(root: JsonObject): ContentDetails = details(root["info"] as? JsonObject)
+    fun series(root: JsonObject): ContentDetails {
+        val base = details(root["info"] as? JsonObject)
+        val seasons = (root["seasons"] as? JsonArray)?.size ?: 0
+        val episodes = episodes(root)
+        return base.copy(
+            seasons = seasons.takeIf { it > 0 } ?: episodes.map { it.season }.distinct().size,
+            episodes = episodes.size
+        )
+    }
 
     fun episodes(root: JsonObject): List<ParsedEpisode> {
         val groups: List<Pair<Int?, JsonArray>> = when (val eps = root["episodes"]) {
@@ -73,19 +118,26 @@ object XtreamInfoParser {
         if (info == null) return ContentDetails()
         val durationSecs = info.str("duration_secs").toIntOrNull()
             ?: parseHms(info.str("duration")).takeIf { it > 0 }
-            ?: info.str("episode_run_time").toIntOrNull()?.times(60)
+            ?: info.str("episode_run_time", "runtime").toIntOrNull()?.times(60)
             ?: 0
+        val release = info.str("releasedate", "releaseDate", "release_date", "year")
+        val name = info.str("name", "title")
         return ContentDetails(
             plot = info.str("plot", "description"),
             genre = info.str("genre"),
-            year = yearRegex.find(info.str("releasedate", "releaseDate", "release_date", "year"))?.value.orEmpty(),
+            year = yearRegex.find(release)?.value.orEmpty(),
             rating = rating(info),
             durationLabel = durationLabel(durationSecs),
             cast = info.str("cast", "actors"),
             director = info.str("director"),
             backdropUrl = info.str("backdrop_path", "backdrop"),
             posterUrl = info.str("movie_image", "cover_big", "cover"),
-            trailerUrl = trailer(info.str("youtube_trailer", "trailer"))
+            trailerUrl = trailer(info.str("youtube_trailer", "trailer")),
+            tmdbId = info.str("tmdb_id", "tmdb").takeIf { it.all(Char::isDigit) && it != "0" }.orEmpty(),
+            releaseDate = release.takeIf { it.length >= 8 }.orEmpty(),
+            originalTitle = info.str("o_name", "original_name").takeIf { it.isNotEmpty() && it != name }.orEmpty(),
+            countries = info.str("country"),
+            certification = info.str("mpaa_rating", "age", "certification").takeIf { it != "0" }.orEmpty()
         )
     }
 
@@ -102,7 +154,7 @@ object XtreamInfoParser {
         else -> "https://www.youtube.com/watch?v=$raw"
     }
 
-    private fun durationLabel(seconds: Int): String {
+    fun durationLabel(seconds: Int): String {
         if (seconds <= 0) return ""
         val h = seconds / 3600
         val m = (seconds % 3600) / 60

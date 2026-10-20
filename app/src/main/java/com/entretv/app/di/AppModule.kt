@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.entretv.app.data.local.AppDatabase
 import com.entretv.app.data.local.CatalogDao
 import com.entretv.app.data.local.ChannelDao
+import com.entretv.app.data.local.DetailsCacheDao
 import com.entretv.app.data.local.DownloadDao
 import com.entretv.app.data.local.EpgDao
 import com.entretv.app.data.local.FavoriteDao
@@ -78,7 +79,7 @@ object AppModule {
             .addMigrations(
                 AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5,
-                AppDatabase.MIGRATION_5_6
+                AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7
             )
             .build()
 
@@ -90,4 +91,5 @@ object AppModule {
     @Provides fun provideFavoriteDao(db: AppDatabase): FavoriteDao = db.favoriteDao()
     @Provides fun provideCatalogDao(db: AppDatabase): CatalogDao = db.catalogDao()
     @Provides fun provideDownloadDao(db: AppDatabase): DownloadDao = db.downloadDao()
+    @Provides fun provideDetailsCacheDao(db: AppDatabase): DetailsCacheDao = db.detailsCacheDao()
 }

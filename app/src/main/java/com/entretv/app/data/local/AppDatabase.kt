@@ -40,11 +40,21 @@ interface ChannelDao {
     @Query("SELECT * FROM channels WHERE id = :id")
     suspend fun getById(id: String): ChannelEntity?
 
+    @Query("SELECT COUNT(*) FROM channels WHERE playlistId = :playlistId")
+    suspend fun count(playlistId: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(channels: List<ChannelEntity>)
 
     @Query("DELETE FROM channels WHERE playlistId = :playlistId")
     suspend fun deleteByPlaylist(playlistId: String)
+
+    /** Cambia la raíz del servidor en las direcciones guardadas (cuando el servidor se muda). */
+    @Query(
+        "UPDATE channels SET streamUrl = :newRoot || substr(streamUrl, length(:oldRoot) + 1) " +
+            "WHERE playlistId = :playlistId AND substr(streamUrl, 1, length(:oldRoot)) = :oldRoot"
+    )
+    suspend fun rewriteRoot(playlistId: String, oldRoot: String, newRoot: String)
 }
 
 @Dao
@@ -60,6 +70,12 @@ interface VodDao {
 
     @Query("SELECT * FROM vod_movies WHERE playlistId = :playlistId")
     suspend fun getMovies(playlistId: String): List<VodMovieEntity>
+
+    @Query("SELECT COUNT(*) FROM vod_movies WHERE playlistId = :playlistId")
+    suspend fun countMovies(playlistId: String): Int
+
+    @Query("SELECT COUNT(*) FROM series WHERE playlistId = :playlistId")
+    suspend fun countSeries(playlistId: String): Int
 
     @Query("SELECT * FROM series WHERE playlistId = :playlistId")
     suspend fun getSeriesList(playlistId: String): List<SeriesEntity>
@@ -102,6 +118,18 @@ interface VodDao {
 
     @Query("DELETE FROM episodes WHERE seriesKey = :seriesKey")
     suspend fun deleteEpisodesForSeries(seriesKey: String)
+
+    @Query(
+        "UPDATE vod_movies SET streamUrl = :newRoot || substr(streamUrl, length(:oldRoot) + 1) " +
+            "WHERE playlistId = :playlistId AND substr(streamUrl, 1, length(:oldRoot)) = :oldRoot"
+    )
+    suspend fun rewriteMovieRoot(playlistId: String, oldRoot: String, newRoot: String)
+
+    @Query(
+        "UPDATE episodes SET streamUrl = :newRoot || substr(streamUrl, length(:oldRoot) + 1) " +
+            "WHERE seriesKey LIKE :playlistId || ':%' AND substr(streamUrl, 1, length(:oldRoot)) = :oldRoot"
+    )
+    suspend fun rewriteEpisodeRoot(playlistId: String, oldRoot: String, newRoot: String)
 }
 
 @Dao
@@ -109,9 +137,12 @@ interface ProgressDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(progress: PlaybackProgressEntity)
 
-    /** Fila "Seguir viendo" estilo Netflix: lo último visto primero. */
-    @Query("SELECT * FROM playback_progress ORDER BY updatedAt DESC LIMIT 30")
+    /** Fila "Seguir viendo" estilo Netflix: lo último visto primero (de una serie llegan varios episodios). */
+    @Query("SELECT * FROM playback_progress ORDER BY updatedAt DESC LIMIT 300")
     fun observeContinueWatching(): Flow<List<PlaybackProgressEntity>>
+
+    @Query("DELETE FROM playback_progress WHERE playlistId = :playlistId")
+    suspend fun deleteByPlaylist(playlistId: String)
 
     @Query("SELECT * FROM playback_progress WHERE contentKey = :contentKey")
     suspend fun get(contentKey: String): PlaybackProgressEntity?
@@ -164,6 +195,21 @@ interface FavoriteDao {
 
     @Query("DELETE FROM favorites WHERE contentKey = :contentKey")
     suspend fun delete(contentKey: String)
+
+    @Query("DELETE FROM favorites WHERE playlistId = :playlistId")
+    suspend fun deleteByPlaylist(playlistId: String)
+}
+
+@Dao
+interface DetailsCacheDao {
+    @Query("SELECT * FROM details_cache WHERE cacheKey = :key")
+    suspend fun get(key: String): DetailsCacheEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entry: DetailsCacheEntity)
+
+    @Query("DELETE FROM details_cache WHERE fetchedAt < :threshold")
+    suspend fun purgeOlderThan(threshold: Long)
 }
 
 @Dao
@@ -206,6 +252,15 @@ abstract class CatalogDao {
 
     @Query("DELETE FROM hidden_items WHERE contentKey = :contentKey")
     abstract suspend fun unhide(contentKey: String)
+
+    @Query("DELETE FROM categories WHERE playlistId = :playlistId")
+    abstract suspend fun deleteAllCategories(playlistId: String)
+
+    @Query("DELETE FROM category_prefs WHERE playlistId = :playlistId")
+    abstract suspend fun deleteAllPrefs(playlistId: String)
+
+    @Query("DELETE FROM hidden_items WHERE playlistId = :playlistId")
+    abstract suspend fun deleteHiddenByPlaylist(playlistId: String)
 }
 
 @Dao
@@ -240,6 +295,16 @@ interface DownloadDao {
 
     @Query("DELETE FROM downloads WHERE contentKey = :contentKey")
     suspend fun delete(contentKey: String)
+
+    /** Episodios de una serie en cola, bajándose o en pausa (lo que "Detener descargas" cancela). */
+    @Query("SELECT * FROM downloads WHERE seriesKey = :seriesKey AND status IN ('QUEUED', 'RUNNING', 'PAUSED')")
+    suspend fun pendingForSeries(seriesKey: String): List<DownloadEntity>
+
+    @Query(
+        "UPDATE downloads SET sourceUrl = :newRoot || substr(sourceUrl, length(:oldRoot) + 1) " +
+            "WHERE playlistId = :playlistId AND substr(sourceUrl, 1, length(:oldRoot)) = :oldRoot"
+    )
+    suspend fun rewriteRoot(playlistId: String, oldRoot: String, newRoot: String)
 }
 
 @Database(
@@ -248,9 +313,9 @@ interface DownloadDao {
         SeriesEntity::class, EpisodeEntity::class, EpgEntity::class,
         PlaybackProgressEntity::class, FavoriteEntity::class,
         CategoryEntity::class, CategoryPrefEntity::class, HiddenItemEntity::class,
-        DownloadEntity::class
+        DownloadEntity::class, DetailsCacheEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -262,8 +327,22 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun favoriteDao(): FavoriteDao
     abstract fun catalogDao(): CatalogDao
     abstract fun downloadDao(): DownloadDao
+    abstract fun detailsCacheDao(): DetailsCacheDao
 
     companion object {
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vod_movies ADD COLUMN tmdbId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE vod_movies ADD COLUMN year INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE series ADD COLUMN tmdbId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE series ADD COLUMN year INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS details_cache (
+                        cacheKey TEXT NOT NULL PRIMARY KEY, json TEXT NOT NULL, fetchedAt INTEGER NOT NULL)"""
+                )
+            }
+        }
+
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(

@@ -38,4 +38,14 @@ class DownloadsViewModel @Inject constructor(
     fun resume(key: String) { viewModelScope.launch { downloads.resume(key) } }
 
     fun delete(key: String) { viewModelScope.launch { downloads.delete(key) } }
+
+    fun deleteMany(keys: Collection<String>) {
+        val copy = keys.toList()
+        viewModelScope.launch { downloads.deleteMany(copy) }
+    }
+
+    fun deleteAll() {
+        val keys = items.value.orEmpty().map { it.contentKey }
+        viewModelScope.launch { downloads.deleteMany(keys) }
+    }
 }

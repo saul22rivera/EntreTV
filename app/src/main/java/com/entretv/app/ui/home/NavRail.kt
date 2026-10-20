@@ -83,6 +83,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.entretv.app.ui.DeviceProfile
+import com.entretv.app.ui.MY_LIST_ROW
 import com.entretv.app.ui.Section
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
@@ -97,7 +98,6 @@ fun Section.icon(): ImageVector = when (this) {
     Section.LIVE -> Icons.Default.LiveTv
     Section.MOVIES -> Icons.Default.Movie
     Section.SERIES -> Icons.Default.VideoLibrary
-    Section.FAVORITES -> Icons.Default.Favorite
 }
 
 /**
@@ -106,7 +106,8 @@ fun Section.icon(): ImageVector = when (this) {
  *
  *  - TV: la tira de íconos se expande al recibir el foco y se cierra al salir.
  *  - Tablet: tocar el ícono de menú o deslizar sobre la tira la expande.
- *  - Celular: píldora flotante abajo que se esconde al bajar; el menú abre el panel.
+ *  - Celular: las secciones van arriba; la píldora flotante de abajo (Buscar, Categorías,
+ *    Descargas) se esconde al bajar.
  */
 @Composable
 fun NavRail(
@@ -119,6 +120,7 @@ fun NavRail(
     lockedCategories: Set<String>,
     selectedCategory: String?,
     showCategories: Boolean,
+    myListCount: Int,
     expanded: Boolean,
     pillVisible: Boolean,
     onExpandedChange: (Boolean) -> Unit,
@@ -147,12 +149,11 @@ fun NavRail(
 
         if (phone) {
             FloatingPill(
-                section = section,
                 searchActive = searchActive,
                 visible = pillVisible && !expanded,
                 onSearch = onSearch,
-                onSection = onSection,
                 onMenu = { onExpandedChange(true) },
+                onDownloads = onDownloads,
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         } else {
@@ -187,6 +188,7 @@ fun NavRail(
                 lockedCategories = lockedCategories,
                 selectedCategory = selectedCategory,
                 showCategories = showCategories,
+                myListCount = myListCount,
                 onCollapse = { onExpandedChange(false) },
                 onSearch = { onExpandedChange(false); onSearch() },
                 onSection = onSection,
@@ -308,6 +310,7 @@ private fun ExpandedPanel(
     lockedCategories: Set<String>,
     selectedCategory: String?,
     showCategories: Boolean,
+    myListCount: Int,
     onCollapse: () -> Unit,
     onSearch: () -> Unit,
     onSection: (Section) -> Unit,
@@ -401,6 +404,14 @@ private fun ExpandedPanel(
                     item(key = "__all") {
                         CategoryRow("Todas", categoryCounts.values.sum(), selectedCategory == null) { onCategory(null) }
                     }
+                    item(key = "__mylist") {
+                        CategoryRow(
+                            label = MY_LIST_ROW,
+                            count = myListCount,
+                            selected = selectedCategory == MY_LIST_ROW,
+                            icon = Icons.Default.Favorite
+                        ) { onCategory(MY_LIST_ROW) }
+                    }
                     items(categories, key = { it }) { c ->
                         CategoryRow(
                             label = categoryLabels[c] ?: c,
@@ -463,6 +474,7 @@ private fun CategoryRow(
     count: Int,
     selected: Boolean,
     locked: Boolean = false,
+    icon: ImageVector? = null,
     onMenu: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
@@ -497,11 +509,11 @@ private fun CategoryRow(
             )
             .padding(horizontal = 12.dp, vertical = 9.dp)
     ) {
-        if (locked) {
+        if (locked || icon != null) {
             Icon(
-                Icons.Default.Lock,
-                contentDescription = "Bloqueada",
-                tint = EntreBrand.TextDim,
+                icon ?: Icons.Default.Lock,
+                contentDescription = if (locked) "Bloqueada" else null,
+                tint = if (icon != null) EntreBrand.Accent else EntreBrand.TextDim,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(Modifier.width(8.dp))
@@ -527,12 +539,11 @@ private fun CategoryRow(
 
 @Composable
 private fun FloatingPill(
-    section: Section,
     searchActive: Boolean,
     visible: Boolean,
     onSearch: () -> Unit,
-    onSection: (Section) -> Unit,
     onMenu: () -> Unit,
+    onDownloads: () -> Unit,
     modifier: Modifier
 ) {
     val density = LocalDensity.current
@@ -560,38 +571,60 @@ private fun FloatingPill(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
         ) {
             PillItem(Icons.Default.Search, "Buscar", searchActive, onSearch)
-            Section.entries.forEach { s ->
-                PillItem(s.icon(), s.label, !searchActive && s == section) { onSection(s) }
-            }
-            PillItem(Icons.Default.Menu, "Menú", false, onMenu)
+            PillItem(Icons.Default.Menu, "Categorías", false, onMenu)
+            PillItem(Icons.Default.Download, "Descargas", false, onDownloads)
         }
     }
 }
 
 @Composable
 private fun PillItem(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clip(RoundedCornerShape(22.dp))
             .background(if (selected) EntreBrand.Accent else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (selected) EntreBrand.OnAccent else Color.White.copy(alpha = 0.85f),
-            modifier = Modifier.size(22.dp)
-        )
-        if (selected) {
-            Text(
-                label,
-                color = EntreBrand.OnAccent,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
+        val tint = if (selected) EntreBrand.OnAccent else Color.White.copy(alpha = 0.9f)
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, color = tint, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+/** Secciones arriba en el celular (En vivo · Películas · Series); no tapan el catálogo. */
+@Composable
+fun SectionTabs(
+    section: Section,
+    searchActive: Boolean,
+    onSection: (Section) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier
+    ) {
+        Section.entries.forEach { s ->
+            val selected = !searchActive && s == section
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (selected) Color.White else Color.White.copy(alpha = 0.10f))
+                    .border(1.dp, Color.White.copy(alpha = if (selected) 0f else 0.25f), RoundedCornerShape(50))
+                    .clickable { onSection(s) }
+                    .padding(horizontal = 14.dp, vertical = 7.dp)
+            ) {
+                Text(
+                    s.label,
+                    color = if (selected) Color.Black else Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+            }
         }
     }
 }

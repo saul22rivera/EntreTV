@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,20 +71,28 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
 import com.entretv.app.data.local.EpisodeEntity
 import com.entretv.app.data.local.PlaybackProgressEntity
+import com.entretv.app.data.remote.CastMember
 import com.entretv.app.data.remote.ContentDetails
+import com.entretv.app.data.repo.SeriesResumeRule
 import com.entretv.app.ui.theme.EntreBrand
+import java.text.NumberFormat
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -108,7 +118,9 @@ fun DetailsScreen(
     val notice by viewModel.notice.collectAsState()
     val movieDownload by viewModel.movieDownload.collectAsState()
     val episodeDownloads by viewModel.episodeDownloads.collectAsState()
+    val pendingDownloads by viewModel.pendingSeriesDownloads.collectAsState()
     var confirmDelete by remember { mutableStateOf<DownloadEntity?>(null) }
+    var confirmStop by remember { mutableStateOf(false) }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -268,26 +280,80 @@ fun DetailsScreen(
                         }
 
                         Spacer(Modifier.height(16.dp))
+                        details?.tagline?.takeIf { it.isNotEmpty() }?.let {
+                            Text(
+                                "“$it”",
+                                style = if (profile.isTv) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                                fontStyle = FontStyle.Italic,
+                                color = EntreBrand.TextDim,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
                         val plot = details?.plot.orEmpty()
+                        val plotStyle = if (profile.isTv) MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal, lineHeight = 32.sp)
+                        else MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp)
                         when {
                             plot.isNotEmpty() -> Text(
                                 plot,
-                                style = if (profile.isTv) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
+                                style = plotStyle,
                                 color = EntreBrand.Text,
-                                maxLines = if (plotExpanded) Int.MAX_VALUE else 4,
+                                maxLines = if (plotExpanded) Int.MAX_VALUE else 6,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.clickable { plotExpanded = !plotExpanded }
                             )
-                            loading -> Text("Cargando sinopsis…", color = EntreBrand.TextDim, style = MaterialTheme.typography.bodyMedium)
-                            else -> Text("Sin sinopsis disponible.", color = EntreBrand.TextDim, style = MaterialTheme.typography.bodyMedium)
+                            loading -> Text("Cargando sinopsis…", color = EntreBrand.TextDim, style = plotStyle)
+                            else -> Text("Sin sinopsis disponible.", color = EntreBrand.TextDim, style = plotStyle)
                         }
-                        details?.cast?.takeIf { it.isNotEmpty() }?.let {
-                            Spacer(Modifier.height(10.dp))
-                            CreditLine("Reparto", it)
+                        val creditStyle = if (profile.isTv) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
+                        if (details?.castMembers.isNullOrEmpty()) {
+                            details?.cast?.takeIf { it.isNotEmpty() }?.let {
+                                Spacer(Modifier.height(12.dp))
+                                CreditLine("Reparto", it, creditStyle)
+                            }
                         }
                         details?.director?.takeIf { it.isNotEmpty() }?.let {
-                            Spacer(Modifier.height(4.dp))
-                            CreditLine("Dirección", it)
+                            Spacer(Modifier.height(6.dp))
+                            CreditLine("Dirección", it, creditStyle)
+                        }
+                        details?.creators?.takeIf { it.isNotEmpty() }?.let {
+                            Spacer(Modifier.height(6.dp))
+                            CreditLine("Creada por", it, creditStyle)
+                        }
+                        // Series: las descargas van entre la sinopsis y la lista de episodios.
+                        if (viewModel.isSeries && season != null && seasonEpisodes.isNotEmpty()) {
+                            Spacer(Modifier.height(16.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                EntreButton(
+                                    text = "Descargar temporada $season",
+                                    icon = Icons.Default.Download,
+                                    compact = true,
+                                    onClick = { viewModel.downloadSeason(season) }
+                                )
+                                if (pendingDownloads > 0) {
+                                    EntreButton(
+                                        text = "Detener descargas ($pendingDownloads)",
+                                        icon = Icons.Default.StopCircle,
+                                        compact = true,
+                                        onClick = { confirmStop = true }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                details?.let { d ->
+                    if (d.hasExtraInfo()) {
+                        item(key = "info") {
+                            InfoCard(d, viewModel.isSeries, profile, Modifier.padding(horizontal = profile.edge, vertical = 16.dp))
+                        }
+                    }
+                    if (d.castMembers.isNotEmpty()) {
+                        item(key = "cast") {
+                            CastRow(d.castMembers, profile)
                         }
                     }
                 }
@@ -318,15 +384,6 @@ fun DetailsScreen(
                                 }
                             } else {
                                 Spacer(Modifier.height(8.dp))
-                            }
-                            if (season != null && seasonEpisodes.isNotEmpty()) {
-                                EntreButton(
-                                    text = "Descargar temporada $season",
-                                    icon = Icons.Default.Download,
-                                    compact = true,
-                                    onClick = { viewModel.downloadSeason(season) },
-                                    modifier = Modifier.padding(start = profile.edge, bottom = 8.dp)
-                                )
                             }
                         }
                     }
@@ -393,6 +450,163 @@ fun DetailsScreen(
             },
             onDismiss = { confirmDelete = null }
         )
+    }
+
+    if (confirmStop) {
+        ConfirmActionDialog(
+            title = "¿Detener las descargas?",
+            text = "Se cancelarán $pendingDownloads episodios de “$title” que están en cola, descargándose o en pausa. " +
+                "Los episodios ya descargados se conservan.",
+            confirmLabel = "Detener descargas",
+            dismissLabel = "Seguir descargando",
+            onConfirm = {
+                confirmStop = false
+                viewModel.stopSeriesDownloads()
+            },
+            onDismiss = { confirmStop = false }
+        )
+    }
+}
+
+private fun ContentDetails.hasExtraInfo(): Boolean =
+    releaseDate.isNotEmpty() || originalTitle.isNotEmpty() || originalLanguage.isNotEmpty() ||
+        countries.isNotEmpty() || companies.isNotEmpty() || certification.isNotEmpty() || voteCount > 0 ||
+        budget > 0 || revenue > 0 || seasons > 0 || networks.isNotEmpty() || status.isNotEmpty() || genre.isNotEmpty()
+
+private fun money(value: Long): String =
+    "US$ " + NumberFormat.getIntegerInstance(Locale("es", "MX")).format(value)
+
+private fun releaseLabel(raw: String): String {
+    val parts = raw.take(10).split('-')
+    if (parts.size != 3) return raw
+    val months = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+    val month = parts[1].toIntOrNull()?.let { months.getOrNull(it - 1) } ?: return raw
+    return "${parts[2].trimStart('0')} $month ${parts[0]}"
+}
+
+/** Ficha técnica (TMDB y servidor). Enfocable para que en TV el D-pad pueda pasar por ella. */
+@Composable
+private fun InfoCard(d: ContentDetails, isSeries: Boolean, profile: DeviceProfile, modifier: Modifier) {
+    val rows = buildList {
+        if (d.releaseDate.isNotEmpty()) add((if (isSeries) "Estreno" else "Fecha de estreno") to releaseLabel(d.releaseDate))
+        else if (d.year.isNotEmpty()) add("Año" to d.year)
+        if (d.durationLabel.isNotEmpty()) add((if (isSeries) "Duración por episodio" else "Duración") to d.durationLabel)
+        if (d.genre.isNotEmpty()) add("Géneros" to d.genre)
+        if (d.rating.isNotEmpty()) {
+            add("Puntuación" to ("★ ${d.rating}" + if (d.voteCount > 0) " (${NumberFormat.getIntegerInstance(Locale("es", "MX")).format(d.voteCount)} votos)" else ""))
+        }
+        if (d.certification.isNotEmpty()) add("Clasificación" to d.certification)
+        if (isSeries) {
+            if (d.seasons > 0) add("Temporadas" to d.seasons.toString())
+            if (d.episodes > 0) add("Episodios" to d.episodes.toString())
+            if (d.networks.isNotEmpty()) add("Cadena" to d.networks)
+            if (d.status.isNotEmpty()) add("Estado" to d.status)
+        } else if (d.status.isNotEmpty() && d.status != "Estrenada") add("Estado" to d.status)
+        if (d.originalTitle.isNotEmpty()) add("Título original" to d.originalTitle)
+        if (d.originalLanguage.isNotEmpty()) add("Idioma original" to d.originalLanguage)
+        if (d.countries.isNotEmpty()) add("País" to d.countries)
+        if (d.companies.isNotEmpty()) add("Producción" to d.companies)
+        if (d.budget > 0) add("Presupuesto" to money(d.budget))
+        if (d.revenue > 0) add("Recaudación" to money(d.revenue))
+    }
+    if (rows.isEmpty()) return
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(16.dp)
+    val labelStyle = if (profile.isTv) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium
+    val valueStyle = if (profile.isTv) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
+    Column(
+        modifier
+            .widthIn(max = 820.dp)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(EntreBrand.Panel)
+            .then(if (focused) Modifier.border(2.dp, EntreBrand.Accent, shape) else Modifier)
+            .focusable(interactionSource = source)
+            .padding(16.dp)
+    ) {
+        Text("Ficha", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+        rows.forEach { (label, value) ->
+            Row(Modifier.padding(vertical = 3.dp)) {
+                Text(label, style = labelStyle, color = EntreBrand.TextDim, modifier = Modifier.width(if (profile.isTv) 220.dp else 140.dp))
+                Text(value, style = valueStyle, color = EntreBrand.Text, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CastRow(cast: List<CastMember>, profile: DeviceProfile) {
+    Column(Modifier.padding(top = 8.dp)) {
+        Text(
+            "Reparto",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = profile.edge)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = profile.edge, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(cast, key = { it.name + it.character }) { member ->
+                CastCard(member, size = if (profile.isTv) 104.dp else 84.dp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CastCard(member: CastMember, size: Dp) {
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(size + 20.dp)
+            .focusable(interactionSource = source)
+    ) {
+        Box(
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(EntreBrand.PanelHigh)
+                .then(if (focused) Modifier.border(3.dp, EntreBrand.Accent, CircleShape) else Modifier),
+            contentAlignment = Alignment.Center
+        ) {
+            if (member.photoUrl.isNotEmpty()) {
+                AsyncImage(
+                    model = member.photoUrl,
+                    contentDescription = member.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    member.name.split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1) },
+                    style = MaterialTheme.typography.titleLarge,
+                    color = EntreBrand.TextDim
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            member.name,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (focused) Color.White else EntreBrand.Text,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+        if (member.character.isNotEmpty()) {
+            Text(
+                member.character,
+                style = MaterialTheme.typography.labelSmall,
+                color = EntreBrand.TextDim,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -498,17 +712,19 @@ private fun MetaLine(details: ContentDetails?, category: String) {
 }
 
 @Composable
-private fun CreditLine(label: String, value: String) {
+private fun CreditLine(label: String, value: String, style: TextStyle) {
     Text(
         buildAnnotatedString {
             withStyle(SpanStyle(color = EntreBrand.TextDim)) { append("$label: ") }
             withStyle(SpanStyle(color = EntreBrand.Text)) { append(value) }
         },
-        style = MaterialTheme.typography.bodySmall,
-        maxLines = 2,
+        style = style,
+        maxLines = 3,
         overflow = TextOverflow.Ellipsis
     )
 }
+
+private val WatchedRed = Color(0xFFE53935)
 
 @Composable
 private fun EpisodeRow(
@@ -525,7 +741,13 @@ private fun EpisodeRow(
     val focused by source.collectIsFocusedAsState()
     val scale by animateFloatAsState(if (focused) 1.02f else 1f, label = "episodeScale")
     val shape = RoundedCornerShape(12.dp)
-    val fraction = progress?.let { if (it.durationMs > 0) it.positionMs.toFloat() / it.durationMs else 0f }
+    val fraction = progress?.let { if (it.isCompleted) 1f else if (it.durationMs > 0) it.positionMs.toFloat() / it.durationMs else 0f }
+    val watched = progress != null && (progress.isCompleted || progress.positionMs >= SeriesResumeRule.MIN_WATCH_MS)
+    val tint = when {
+        progress?.isCompleted == true -> WatchedRed.copy(alpha = 0.30f)
+        watched -> WatchedRed.copy(alpha = 0.16f)
+        else -> Color.Transparent
+    }
 
     // La fila y el botón de descarga son dos focos separados: en TV, derecha pasa de uno al otro.
     Row(
@@ -540,6 +762,7 @@ private fun EpisodeRow(
                 .weight(1f)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(shape)
+                .background(tint)
                 .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.Transparent)
                 .then(if (focused) Modifier.border(2.dp, EntreBrand.Accent, shape) else Modifier)
                 .clickable(interactionSource = source, indication = LocalIndication.current, onClick = onClick)
@@ -572,6 +795,18 @@ private fun EpisodeRow(
                     Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
                 }
                 if (fraction != null && fraction > 0f) {
+                    Text(
+                        if (progress?.isCompleted == true) "Visto" else "${(fraction * 100).toInt().coerceIn(1, 99)} %",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (progress?.isCompleted == true) WatchedRed.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.7f))
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    )
                     LinearProgressIndicator(
                         progress = { fraction.coerceIn(0f, 1f) },
                         color = EntreBrand.Accent,
@@ -579,7 +814,7 @@ private fun EpisodeRow(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .height(3.dp)
+                            .height(4.dp)
                     )
                 }
             }

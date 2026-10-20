@@ -73,6 +73,7 @@ import coil.compose.AsyncImage
 import com.entretv.app.data.local.HiddenItemEntity
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.ui.AccountFields
 import com.entretv.app.ui.CategoryInfo
 import com.entretv.app.ui.Section
 import com.entretv.app.ui.SortOrder
@@ -82,6 +83,10 @@ import com.entretv.app.ui.theme.EntreBrand
 
 @Composable
 fun SettingsPanel(
+    accountName: String,
+    accountUser: String,
+    onEditAccount: () -> Unit,
+    onLogout: () -> Unit,
     appVersion: String,
     onCheckUpdates: () -> Unit,
     downloadWifiOnly: Boolean,
@@ -108,6 +113,16 @@ fun SettingsPanel(
 ) {
     PanelDialog(title = "Configuración", onDismiss = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
+            SectionTitle("Cuenta")
+            Text(
+                if (accountName.isNotBlank() && accountName != accountUser) "$accountName · usuario $accountUser" else "Usuario $accountUser",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            ActionLine("Cambiar de usuario", "Edita tu nombre, usuario o contraseña", onEditAccount)
+            ActionLine("Cerrar sesión", "Vuelve a la pantalla de inicio de sesión", onLogout)
+
+            Divider()
             SectionTitle("Reproducción")
             SettingLabel(
                 "Búfer de arranque",
@@ -227,14 +242,14 @@ fun OrganizeCategoriesDialog(
                 }
             }
             Text(
-                "Subí o bajá con las flechas. El ojo oculta la categoría y el candado la marca como de adultos (se bloquea con el PIN).",
+                "Sube o baja con las flechas. El ojo oculta la categoría y el candado la marca como de adultos (se bloquea con el PIN).",
                 style = MaterialTheme.typography.bodySmall,
                 color = EntreBrand.TextDim,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             if (categories.isEmpty()) {
                 Text(
-                    "No hay categorías todavía. Actualizá la lista para traerlas.",
+                    "No hay categorías todavía. Actualiza el catálogo para traerlas.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(vertical = 16.dp)
                 )
@@ -282,6 +297,53 @@ fun OrganizeCategoriesDialog(
     }
 }
 
+// ============================ Cuenta ============================
+
+/** Cambiar nombre, usuario o contraseña. El servidor es fijo y no se muestra. */
+@Composable
+fun AccountDialog(
+    initialName: String,
+    initialUser: String,
+    initialPass: String,
+    saving: Boolean,
+    error: String?,
+    onSave: (String, String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(initialName) }
+    var user by remember { mutableStateOf(initialUser) }
+    var pass by remember { mutableStateOf(initialPass) }
+    PanelDialog(
+        title = "Cambiar de usuario",
+        onDismiss = { if (!saving) onDismiss() },
+        extraAction = (if (saving) "Verificando…" else "Guardar") to { if (!saving) onSave(name, user, pass) }
+    ) {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text(
+                "Tus listas, tu progreso y Mi lista se conservan si es la misma cuenta.",
+                style = MaterialTheme.typography.bodySmall,
+                color = EntreBrand.TextDim,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            AccountFields(
+                name = name, onName = { name = it },
+                user = user, onUser = { user = it },
+                pass = pass, onPass = { pass = it },
+                enabled = !saving,
+                onDone = { onSave(name, user, pass) }
+            )
+            if (error != null) {
+                Text(
+                    error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+            }
+        }
+    }
+}
+
 // ============================ Ocultos ============================
 
 @Composable
@@ -293,7 +355,7 @@ fun HiddenItemsDialog(
     PanelDialog(title = "Títulos y canales ocultos", onDismiss = onDismiss) {
         if (items.isEmpty()) {
             Text(
-                "No ocultaste nada. Desde el menú de un póster (mantener presionado o tecla Menú) podés ocultar un canal o un título.",
+                "No ocultaste nada. Desde el menú de un póster (mantener presionado o tecla Menú) puedes ocultar un canal o un título.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = EntreBrand.TextDim
             )

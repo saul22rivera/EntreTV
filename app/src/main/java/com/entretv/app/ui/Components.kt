@@ -8,7 +8,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,16 +21,60 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.entretv.app.ui.theme.EntreBrand
+import com.entretv.app.ui.theme.EntreWordmark
+
+/**
+ * Prueba las imágenes en orden y pasa a la siguiente si una falla; sin ninguna muestra el
+ * marcador de la marca. Evita las tarjetas negras cuando el panel no manda imagen.
+ */
+@Composable
+fun FallbackImage(
+    urls: List<String>,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    var index by remember(urls) { mutableIntStateOf(0) }
+    Box(modifier) {
+        if (index >= urls.size) {
+            BrandPlaceholder(Modifier.fillMaxSize())
+        } else {
+            AsyncImage(
+                model = urls[index],
+                contentDescription = contentDescription,
+                contentScale = contentScale,
+                onError = { index++ },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+fun BrandPlaceholder(modifier: Modifier = Modifier) {
+    Box(
+        modifier.background(Brush.linearGradient(listOf(Color(0xFF1A2A4A), EntreBrand.Ink))),
+        contentAlignment = Alignment.Center
+    ) {
+        EntreWordmark(fontSize = 20.sp, modifier = Modifier.graphicsLayer { alpha = 0.55f })
+    }
+}
 
 /** Botón de la marca: blanco sólido el principal, translúcido el resto; foco visible en TV. */
 @Composable

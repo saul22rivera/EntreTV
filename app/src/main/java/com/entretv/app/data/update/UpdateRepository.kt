@@ -8,6 +8,8 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.entretv.app.BuildConfig
+import com.entretv.app.data.repo.PlaylistRepository
+import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -20,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,14 +31,30 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** Contenido de `update.json` publicado junto al APK en GitHub Releases. */
+/**
+ * Contenido de `update.json` publicado junto al APK en GitHub Releases.
+ * Los campos nuevos tienen valor por defecto: las versiones viejas los ignoran y
+ * un update.json viejo sigue funcionando en esta versión.
+ */
 @Serializable
 data class UpdateInfo(
     val versionCode: Int,
     val versionName: String,
     val apkUrl: String,
-    val notes: String = ""
-)
+    val notes: String = "",
+    /** Las instalaciones con versionCode menor quedan bloqueadas hasta actualizar. */
+    val minVersionCode: Int = 0,
+    /** Esta versión es obligatoria para todos los que tengan una anterior. */
+    val mandatory: Boolean = false,
+    /** Servidor IPTV nuevo; vacío = no cambia. */
+    val serverUrl: String = "",
+    /** Clave de TMDB para fichas y Top 10; vacío = no cambia. */
+    val tmdbApiKey: String = ""
+) {
+    val isRequired: Boolean
+        get() = versionCode > BuildConfig.VERSION_CODE &&
+            (mandatory || minVersionCode > BuildConfig.VERSION_CODE)
+}
 
 sealed interface UpdateState {
     data object Idle : UpdateState
@@ -47,14 +66,24 @@ sealed interface UpdateState {
     data class Failed(val message: String, val info: UpdateInfo? = null) : UpdateState
 }
 
+val UpdateState.isRequired: Boolean
+    get() = when (this) {
+        is UpdateState.Available -> info.isRequired
+        is UpdateState.Downloading -> info.isRequired
+        is UpdateState.ReadyToInstall -> info.isRequired
+        is UpdateState.Failed -> info?.isRequired == true
+        else -> false
+    }
+
 @Singleton
 class UpdateRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     client: OkHttpClient,
-    private val json: Json
+    private val json: Json,
+    private val playlists: PlaylistRepository,
+    private val settings: SettingsRepository
 ) {
     companion object {
-        private const val CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000
         private const val PREFS = "entre_update"
         private const val KEY_LAST_CHECK = "last_check"
     }
@@ -79,28 +108,43 @@ class UpdateRepository @Inject constructor(
     val isConfigured: Boolean get() = BuildConfig.UPDATE_URL.isNotBlank()
     val currentVersionName: String get() = BuildConfig.VERSION_NAME
 
+    /** Sin [manual] se consulta en silencio en cada inicio: solo aparece algo si hay versión nueva. */
     fun check(manual: Boolean) {
-        if (_state.value is UpdateState.Checking || _state.value is UpdateState.Downloading) return
-        if (!manual) {
-            val last = prefs.getLong(KEY_LAST_CHECK, 0L)
-            if (!isConfigured || System.currentTimeMillis() - last < CHECK_INTERVAL_MS) return
-        }
+        val current = _state.value
+        if (current is UpdateState.Checking || current is UpdateState.Downloading) return
+        if (!manual && current.isRequired) return
+        if (!manual && !isConfigured) return
         _manual.value = manual
         if (!isConfigured) {
             _state.value = UpdateState.Failed("Esta versión no tiene configurado el servidor de actualizaciones.")
             return
         }
-        _state.value = UpdateState.Checking
+        _state.value = if (manual) UpdateState.Checking else UpdateState.Idle
         scope.launch {
             val result = runCatching { fetchInfo() }
             prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
             val info = result.getOrNull()
+            info?.let { applyRemoteConfig(it) }
             _state.value = when {
-                info == null -> if (manual) UpdateState.Failed("No se pudo consultar si hay una versión nueva. Revisá la conexión.") else UpdateState.Idle
+                info == null -> if (manual) UpdateState.Failed("No se pudo consultar si hay una versión nueva. Revisa tu conexión.") else UpdateState.Idle
                 info.versionCode > BuildConfig.VERSION_CODE -> UpdateState.Available(info)
                 manual -> UpdateState.UpToDate
                 else -> UpdateState.Idle
             }
+            // Obligatoria: se baja sola; el diálogo bloquea la app mientras tanto.
+            if (info != null && info.isRequired) download(info)
+        }
+    }
+
+    /** Servidor y clave de TMDB remotos: se aplican aunque no haya versión nueva. */
+    private suspend fun applyRemoteConfig(info: UpdateInfo) {
+        runCatching {
+            val server = info.serverUrl.trim()
+            if (server.startsWith("http") && server != settings.serverUrl.first()) {
+                playlists.applyServerOverride(server)
+            }
+            val key = info.tmdbApiKey.trim()
+            if (key.isNotEmpty()) settings.setRemoteTmdbKey(key)
         }
     }
 
@@ -121,8 +165,10 @@ class UpdateRepository @Inject constructor(
             _state.value = if (ok) {
                 UpdateState.ReadyToInstall(info, needsPermission = !canInstall())
             } else {
-                UpdateState.Failed("No se pudo descargar la actualización. Probá de nuevo.", info)
+                UpdateState.Failed("No se pudo descargar la actualización. Inténtalo de nuevo.", info)
             }
+            // En una actualización obligatoria el instalador se abre solo.
+            if (ok && info.isRequired) withContext(Dispatchers.Main) { install() }
         }
     }
 
@@ -177,12 +223,14 @@ class UpdateRepository @Inject constructor(
     fun install(): Boolean {
         val current = _state.value as? UpdateState.ReadyToInstall ?: return false
         if (!canInstall()) {
-            val opened = runCatching {
-                context.startActivity(
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }.isSuccess
+            // Muchas TV no tienen la pantalla por app: se intenta la de seguridad y luego Ajustes.
+            val opened = listOf(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")),
+                Intent(Settings.ACTION_SECURITY_SETTINGS),
+                Intent(Settings.ACTION_SETTINGS)
+            ).any { intent ->
+                runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
+            }
             _state.value = current.copy(needsPermission = true)
             return opened
         }
@@ -207,6 +255,7 @@ class UpdateRepository @Inject constructor(
     }
 
     fun dismiss() {
+        if (_state.value.isRequired) return
         downloadJob?.cancel()
         _manual.value = false
         _state.value = UpdateState.Idle

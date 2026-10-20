@@ -14,8 +14,10 @@ data class XtreamLogin(
     data class UserInfo(
         val username: String = "",
         val status: String = "",
-        @SerialName("exp_date") val expDate: String? = null,
-        @SerialName("is_trial") val isTrial: String = "0"
+        // 1/0, "1"/"0" o true/false según el panel.
+        val auth: JsonElement? = null,
+        @SerialName("exp_date") val expDate: JsonElement? = null,
+        @SerialName("is_trial") val isTrial: JsonElement? = null
     )
 }
 
@@ -43,7 +45,10 @@ data class XtreamVodStream(
     @SerialName("container_extension") val containerExtension: String = "mp4",
     // Los paneles mandan número, texto o vacío: se leen crudos.
     val added: JsonElement? = null,
-    val rating: JsonElement? = null
+    val rating: JsonElement? = null,
+    val tmdb: JsonElement? = null,
+    @SerialName("tmdb_id") val tmdbId: JsonElement? = null,
+    val year: JsonElement? = null
 )
 
 @Serializable
@@ -54,7 +59,12 @@ data class XtreamSeries(
     @SerialName("category_id") val categoryId: String = "",
     val plot: String? = null,
     @SerialName("last_modified") val lastModified: JsonElement? = null,
-    val rating: JsonElement? = null
+    val rating: JsonElement? = null,
+    val tmdb: JsonElement? = null,
+    @SerialName("tmdb_id") val tmdbId: JsonElement? = null,
+    // Muchos paneles mandan las dos variantes a la vez.
+    val releaseDate: JsonElement? = null,
+    @SerialName("release_date") val releaseDateAlt: JsonElement? = null
 )
 
 /** Fecha Unix (segundos) de un campo crudo; 0 si no viene o no es número. */
@@ -65,6 +75,19 @@ fun JsonElement?.asEpochSeconds(): Long =
 fun JsonElement?.asRating(): Float =
     (this as? JsonPrimitive)?.contentOrNull?.trim()?.replace(',', '.')?.toFloatOrNull()
         ?.takeIf { it.isFinite() }?.coerceIn(0f, 10f) ?: 0f
+
+/** Texto de un campo crudo ("123", 123 o null). */
+fun JsonElement?.asField(): String =
+    (this as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it != "null" && it != "0" }.orEmpty()
+
+private val yearRegex = Regex("(19|20)\\d{2}")
+
+/** Año de un campo crudo ("2021", "2021-05-03"); 0 si no hay. */
+fun JsonElement?.asYear(): Int = yearRegex.find(asField())?.value?.toIntOrNull() ?: 0
+
+/** Año que muchos paneles pegan al nombre: "Película (2021)" o "Película - 2021". */
+fun yearFromName(name: String): Int =
+    Regex("[(\\[-]\\s*((?:19|20)\\d{2})\\s*[)\\]]?\\s*$").find(name.trim())?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
 @Serializable
 data class XtreamEpgResponse(

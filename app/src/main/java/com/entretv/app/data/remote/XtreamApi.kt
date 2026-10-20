@@ -94,6 +94,14 @@ interface XtreamApi {
     @GET
     suspend fun fetchText(@Url url: String): ResponseBody
 
+    /** Inicio de sesión en crudo: los paneles responden objeto, lista vacía o HTML según el error. */
+    @GET
+    suspend fun loginRaw(
+        @Url baseUrl: String,
+        @Query("username") username: String,
+        @Query("password") password: String
+    ): ResponseBody
+
     /** Respuesta cruda de cualquier acción; el repositorio la decodifica y reintenta si llega cortada. */
     @GET
     suspend fun action(

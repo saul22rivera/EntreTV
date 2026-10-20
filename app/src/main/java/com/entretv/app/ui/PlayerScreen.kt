@@ -3,6 +3,7 @@ package com.entretv.app.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.provider.Settings
 import android.view.WindowManager
@@ -25,14 +26,20 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +48,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.NavigateBefore
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -48,10 +56,12 @@ import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -87,6 +97,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,9 +115,14 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.player.PipController
+import com.entretv.app.ui.player.ChannelBrowser
+import com.entretv.app.ui.player.ChannelBrowserState
 import com.entretv.app.ui.player.LiveChannelList
 import com.entretv.app.ui.player.PlayerSettingsPanel
+import com.entretv.app.ui.player.resizeLabel
 import com.entretv.app.ui.theme.EntreBrand
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -115,8 +133,8 @@ private const val AUTO_HIDE_MS = 4_000L
 private const val NEXT_EPISODE_WINDOW_MS = 40_000L
 private const val DOUBLE_TAP_SEEK_MS = 10_000L
 
-/** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen. */
-private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null)
+/** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen, formato de imagen. */
+private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null, val durationMs: Long = 900)
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -126,12 +144,17 @@ fun PlayerScreen(
 ) {
     val manager = viewModel.playerManager
     val profile = rememberDeviceProfile()
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val configuration = LocalConfiguration.current
     val playable by viewModel.playable.collectAsState()
     val epg by viewModel.epg.collectAsState()
     val buffering by manager.isBuffering.collectAsState()
     val isPlaying by manager.isPlayingFlow.collectAsState()
     val duration by manager.durationMs.collectAsState()
     val reconnecting by manager.reconnecting.collectAsState()
+    val reconnectAttempt by manager.reconnectAttempt.collectAsState()
+    val offline by manager.offline.collectAsState()
     val playError by manager.error.collectAsState()
     val tracks by manager.tracks.collectAsState()
     val speed by manager.speed.collectAsState()
@@ -141,18 +164,27 @@ fun PlayerScreen(
     val sleepMinutes by viewModel.sleepMinutes.collectAsState()
     val sleepEndsAt by viewModel.sleepEndsAt.collectAsState()
     val nextEpisode by viewModel.nextEpisode.collectAsState()
-    val groupChannels by viewModel.groupChannels.collectAsState()
+    val liveCategories by viewModel.liveCategories.collectAsState()
+    val browseCategory by viewModel.browseCategory.collectAsState()
+    val browseQuery by viewModel.browseQuery.collectAsState()
+    val browseChannels by viewModel.browseChannels.collectAsState()
+    val inPip by PipController.active.collectAsState()
 
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     var panelOpen by rememberSaveable { mutableStateOf(false) }
     var channelsOpen by rememberSaveable { mutableStateOf(false) }
+    var liveTab by rememberSaveable { mutableIntStateOf(0) }
     var interaction by remember { mutableIntStateOf(0) }
     var position by remember { mutableLongStateOf(0L) }
     var dragging by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<Feedback?>(null) }
 
     val isLive = playable?.kind == "LIVE"
-    val overlayOpen = panelOpen || channelsOpen
+    val portrait = !profile.isTv && configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+    // Celular vertical en vivo: video arriba y guía/canales debajo, sin taparlo.
+    val portraitLive = portrait && isLive && !inPip
+    val pipSupported = remember(context) { !profile.isTv && PipController.isSupported(context) }
+    val overlayOpen = panelOpen || (channelsOpen && !portraitLive)
     val rootFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
@@ -185,6 +217,34 @@ fun PlayerScreen(
         panelOpen = true
     }
 
+    fun openChannels() {
+        viewModel.resetBrowse()
+        panelOpen = false
+        controlsVisible = false
+        channelsOpen = true
+    }
+
+    fun cycleAspect() {
+        val next = when (prefs.resizeMode) {
+            SettingsRepository.RESIZE_FIT -> SettingsRepository.RESIZE_ZOOM
+            SettingsRepository.RESIZE_ZOOM -> SettingsRepository.RESIZE_FILL
+            else -> SettingsRepository.RESIZE_FIT
+        }
+        viewModel.setResizeMode(next)
+        val detail = when (next) {
+            SettingsRepository.RESIZE_ZOOM -> "recorta los bordes"
+            SettingsRepository.RESIZE_FILL -> "llena la pantalla"
+            else -> "imagen completa"
+        }
+        feedback = Feedback(Icons.Default.AspectRatio, "${resizeLabel(next)} · $detail", durationMs = 1_800)
+        interaction++
+    }
+
+    fun enterPip() {
+        val ok = activity?.let { PipController.enter(it) } == true
+        if (!ok) feedback = Feedback(Icons.Default.PictureInPictureAlt, "Tu equipo no permite ventana flotante", durationMs = 1_800)
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -195,7 +255,10 @@ fun PlayerScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            PipController.videoBounds = null
+        }
     }
 
     // Se ocultan solos mientras reproduce y nadie toca nada.
@@ -214,15 +277,15 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(feedback) {
-        if (feedback != null) {
-            delay(900)
+        feedback?.let {
+            delay(it.durationMs)
             feedback = null
         }
     }
 
     val remaining = duration - position
     val showNextEpisode = nextEpisode != null && duration > 0 &&
-        remaining in 1..NEXT_EPISODE_WINDOW_MS && !overlayOpen
+        remaining in 1..NEXT_EPISODE_WINDOW_MS && !overlayOpen && !inPip
 
     // En TV el foco va a Play al mostrar controles y vuelve a la raíz al ocultarlos.
     LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode) {
@@ -238,6 +301,243 @@ fun PlayerScreen(
     }
 
     BackHandler(enabled = profile.isTv && controlsVisible && !overlayOpen) { controlsVisible = false }
+
+    val browserState = ChannelBrowserState(
+        categories = liveCategories,
+        category = browseCategory,
+        query = browseQuery,
+        channels = browseChannels,
+        currentId = playable?.contentKey,
+        nowPlaying = viewModel::nowPlaying,
+        onCategory = viewModel::browse,
+        onQuery = viewModel::searchChannels,
+        onSelect = { channel ->
+            viewModel.playChannel(channel)
+            if (!portraitLive) channelsOpen = false
+        }
+    )
+
+    val videoStack: @Composable (Modifier) -> Unit = { modifier ->
+        Box(
+            modifier.onGloballyPositioned { coords ->
+                val r = coords.boundsInWindow()
+                PipController.videoBounds = android.graphics.Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt())
+            }
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        player = manager.player
+                        subtitleView?.setStyle(
+                            CaptionStyleCompat(
+                                android.graphics.Color.WHITE,
+                                0x99000000.toInt(),
+                                android.graphics.Color.TRANSPARENT,
+                                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                                android.graphics.Color.BLACK,
+                                null
+                            )
+                        )
+                        subtitleView?.setApplyEmbeddedFontSizes(false)
+                    }
+                },
+                update = { view ->
+                    view.keepScreenOn = isPlaying || buffering || reconnecting
+                    view.resizeMode = when (prefs.resizeMode) {
+                        SettingsRepository.RESIZE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        SettingsRepository.RESIZE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                    val scale = when (prefs.subtitleSize) {
+                        SettingsRepository.SUBTITLE_SMALL -> 0.8f
+                        SettingsRepository.SUBTITLE_LARGE -> 1.4f
+                        else -> 1f
+                    }
+                    view.subtitleView?.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * scale)
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            if (!inPip) {
+                GestureLayer(
+                    enabled = !profile.isTv,
+                    seekEnabled = !isLive,
+                    onTap = { if (controlsVisible) controlsVisible = false else showControls() },
+                    onDoubleTapSeek = { forward -> seekBy(if (forward) DOUBLE_TAP_SEEK_MS else -DOUBLE_TAP_SEEK_MS) },
+                    onFeedback = { feedback = it }
+                )
+
+                when {
+                    playError != null -> Surface(
+                        color = Color.Black.copy(alpha = 0.8f),
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(24.dp)
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                        ) {
+                            Text(playError.orEmpty(), color = Color.White, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = { manager.retry() }) { Text("Reintentar") }
+                        }
+                    }
+                    buffering && !controlsVisible && !reconnecting -> CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (reconnecting && playError == null) {
+                    ReconnectPill(
+                        offline = offline,
+                        attempt = reconnectAttempt,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = if (controlsVisible) 64.dp else 12.dp)
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = controlsVisible && !overlayOpen,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        // En vertical los botones de acción bajan (pastillas), más cerca del pulgar.
+                        TopBar(
+                            title = playable?.title ?: "Cargando…",
+                            subtitle = playable?.subtitle.orEmpty(),
+                            isLive = isLive,
+                            isFavorite = isFavorite,
+                            showActions = !portrait,
+                            showChannels = isLive && !portraitLive,
+                            onBack = onBack,
+                            onChannels = ::openChannels,
+                            onFavorite = { viewModel.toggleFavorite(); interaction++ },
+                            onAspect = if (!profile.isTv) ::cycleAspect else null,
+                            onPip = if (pipSupported) ::enterPip else null,
+                            onSettings = ::openPanel,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
+
+                        val small = portraitLive
+                        Row(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalArrangement = Arrangement.spacedBy(if (profile.isTv) 28.dp else if (small) 14.dp else 20.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (playable?.kind != "MOVIE") {
+                                ControlIcon(
+                                    Icons.AutoMirrored.Filled.NavigateBefore,
+                                    if (isLive) "Canal anterior" else "Episodio anterior",
+                                    if (small) 32.dp else 40.dp
+                                ) { viewModel.zap(-1); interaction++ }
+                            }
+                            if (!isLive) {
+                                ControlIcon(Icons.Default.Replay10, "Atrasar 10 segundos", 40.dp) { seekBy(-10_000); interaction++ }
+                            }
+                            if (buffering) {
+                                Box(Modifier.size(if (small) 64.dp else 84.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(if (small) 40.dp else 56.dp)
+                                    )
+                                }
+                            } else {
+                                ControlIcon(
+                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    if (isPlaying) "Pausar" else "Reproducir",
+                                    size = if (small) 44.dp else 60.dp,
+                                    emphasized = true,
+                                    modifier = Modifier.focusRequester(playFocus),
+                                    onClick = ::togglePlay
+                                )
+                            }
+                            if (!isLive) {
+                                ControlIcon(Icons.Default.Forward30, "Adelantar 30 segundos", 40.dp) { seekBy(30_000); interaction++ }
+                            }
+                            if (playable?.kind != "MOVIE") {
+                                ControlIcon(
+                                    Icons.AutoMirrored.Filled.NavigateNext,
+                                    if (isLive) "Canal siguiente" else "Episodio siguiente",
+                                    if (small) 32.dp else 40.dp
+                                ) { viewModel.zap(1); interaction++ }
+                            }
+                        }
+
+                        Column(Modifier.align(Alignment.BottomCenter)) {
+                            if (portrait && !portraitLive) {
+                                ActionPills(
+                                    isFavorite = isFavorite,
+                                    resizeMode = prefs.resizeMode,
+                                    pipSupported = pipSupported,
+                                    onFavorite = { viewModel.toggleFavorite(); interaction++ },
+                                    onAspect = ::cycleAspect,
+                                    onPip = ::enterPip,
+                                    onSettings = ::openPanel,
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                                )
+                            }
+                            if (!portraitLive) {
+                                BottomBar(
+                                    isLive = isLive,
+                                    position = position,
+                                    duration = duration,
+                                    speed = speed,
+                                    epg = epg,
+                                    onSeekChange = { dragging = true; position = it; interaction++ },
+                                    onSeekDone = { dragging = false; viewModel.seekTo(position) },
+                                    modifier = if (portrait) Modifier.navigationBarsPadding() else Modifier
+                                )
+                            }
+                        }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = showNextEpisode,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 24.dp, bottom = if (controlsVisible) (if (portrait) 170.dp else 110.dp) else 32.dp)
+                ) {
+                    nextEpisode?.let { next ->
+                        Column(horizontalAlignment = Alignment.End) {
+                            EntreButton(
+                                text = "Siguiente capítulo",
+                                icon = Icons.Default.SkipNext,
+                                primary = true,
+                                onClick = viewModel::playNextEpisode,
+                                modifier = Modifier.focusRequester(nextFocus)
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "T${next.season}:E${next.episodeNum} · en ${(remaining / 1000).coerceAtLeast(0)} s",
+                                color = Color.White.copy(alpha = 0.85f),
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+
+                val currentFeedback = feedback
+                AnimatedVisibility(
+                    visible = currentFeedback != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    currentFeedback?.let { FeedbackBubble(it) }
+                }
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -261,13 +561,13 @@ fun PlayerScreen(
                     Key.MediaFastForward -> { if (!isLive) seekBy(30_000); true }
                     Key.MediaRewind -> { if (!isLive) seekBy(-10_000); true }
                     else -> {
-                        if (overlayOpen || controlsVisible) return@onPreviewKeyEvent false
+                        if (overlayOpen || controlsVisible || portraitLive) return@onPreviewKeyEvent false
                         when (event.key) {
                             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                                 if (showNextEpisode) false else { showControls(); true }
                             }
                             Key.DirectionLeft -> {
-                                if (isLive) { if (groupChannels.size > 1) channelsOpen = true } else seekBy(-10_000)
+                                if (isLive) openChannels() else seekBy(-10_000)
                                 true
                             }
                             Key.DirectionRight -> {
@@ -288,228 +588,333 @@ fun PlayerScreen(
                 }
             }
     ) {
-        AndroidView(
-            factory = { context ->
-                PlayerView(context).apply {
-                    useController = false
-                    player = manager.player
-                    subtitleView?.setStyle(
-                        CaptionStyleCompat(
-                            android.graphics.Color.WHITE,
-                            0x99000000.toInt(),
-                            android.graphics.Color.TRANSPARENT,
-                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                            android.graphics.Color.BLACK,
-                            null
-                        )
-                    )
-                    subtitleView?.setApplyEmbeddedFontSizes(false)
-                }
-            },
-            update = { view ->
-                view.keepScreenOn = isPlaying || buffering || reconnecting
-                view.resizeMode = when (prefs.resizeMode) {
-                    SettingsRepository.RESIZE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    SettingsRepository.RESIZE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                }
-                val scale = when (prefs.subtitleSize) {
-                    SettingsRepository.SUBTITLE_SMALL -> 0.8f
-                    SettingsRepository.SUBTITLE_LARGE -> 1.4f
-                    else -> 1f
-                }
-                view.subtitleView?.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * scale)
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-
-        GestureLayer(
-            enabled = !profile.isTv,
-            seekEnabled = !isLive,
-            onTap = { if (controlsVisible) controlsVisible = false else showControls() },
-            onDoubleTapSeek = { forward -> seekBy(if (forward) DOUBLE_TAP_SEEK_MS else -DOUBLE_TAP_SEEK_MS) },
-            onFeedback = { feedback = it }
-        )
-
-        when {
-            playError != null -> Surface(
-                color = Color.Black.copy(alpha = 0.8f),
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(32.dp)
-            ) {
+        if (portraitLive) {
+            Column(Modifier.fillMaxSize()) {
+                videoStack(
+                    Modifier
+                        .statusBarsPadding()
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .background(Color.Black)
+                )
                 Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(EntreBrand.Ink)
+                        .navigationBarsPadding()
                 ) {
-                    Text(playError.orEmpty(), color = Color.White, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(12.dp))
-                    Button(onClick = { manager.retry() }) { Text("Reintentar") }
+                    Text(
+                        playable?.title.orEmpty(),
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp)
+                    )
+                    ActionPills(
+                        isFavorite = isFavorite,
+                        resizeMode = prefs.resizeMode,
+                        pipSupported = pipSupported,
+                        onFavorite = viewModel::toggleFavorite,
+                        onAspect = ::cycleAspect,
+                        onPip = ::enterPip,
+                        onSettings = ::openPanel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                    LiveTabs(selected = liveTab, onSelect = { liveTab = it })
+                    when (liveTab) {
+                        0 -> EpgGuide(epg, Modifier.weight(1f))
+                        else -> ChannelBrowser(browserState, twoColumns = false, focusCurrent = false, modifier = Modifier.weight(1f))
+                    }
                 }
             }
-            reconnecting -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.align(Alignment.Center)
-            ) {
-                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(12.dp))
-                Text("Reconectando…", color = Color.White, style = MaterialTheme.typography.titleMedium)
+        } else {
+            videoStack(Modifier.fillMaxSize())
+        }
+
+        if (!inPip) {
+            notice?.let { msg ->
+                Surface(
+                    color = Color.Black.copy(alpha = 0.75f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 72.dp)
+                ) {
+                    Text(
+                        msg,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                    )
+                }
             }
-            buffering && !controlsVisible -> CircularProgressIndicator(
-                modifier = Modifier.align(Alignment.Center),
-                color = MaterialTheme.colorScheme.primary
+
+            if (!portraitLive) {
+                LiveChannelList(
+                    visible = channelsOpen,
+                    state = browserState,
+                    onDismiss = { channelsOpen = false }
+                )
+            }
+
+            PlayerSettingsPanel(
+                visible = panelOpen,
+                tracks = tracks,
+                prefs = prefs,
+                speed = speed,
+                isLive = isLive,
+                sleepMinutes = sleepMinutes,
+                sleepEndsAt = sleepEndsAt,
+                techInfo = manager::techInfo,
+                actions = viewModel,
+                onDismiss = { panelOpen = false }
             )
         }
+    }
+}
 
-        AnimatedVisibility(
-            visible = controlsVisible && !overlayOpen,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize()
+/** Aviso chico arriba del video: no tapa la imagen mientras se recupera solo. */
+@Composable
+private fun ReconnectPill(offline: Boolean, attempt: Int, modifier: Modifier = Modifier) {
+    Surface(color = Color.Black.copy(alpha = 0.72f), shape = RoundedCornerShape(50), modifier = modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
         ) {
-            Box(Modifier.fillMaxSize()) {
-                TopBar(
-                    title = playable?.title ?: "Cargando…",
-                    subtitle = playable?.subtitle.orEmpty(),
-                    isLive = isLive,
-                    isFavorite = isFavorite,
-                    showChannels = isLive && groupChannels.size > 1,
-                    onBack = onBack,
-                    onChannels = { controlsVisible = false; channelsOpen = true },
-                    onFavorite = { viewModel.toggleFavorite(); interaction++ },
-                    onSettings = ::openPanel,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(if (profile.isTv) 28.dp else 20.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (playable?.kind != "MOVIE") {
-                        ControlIcon(Icons.AutoMirrored.Filled.NavigateBefore, if (isLive) "Canal anterior" else "Episodio anterior", 40.dp) {
-                            viewModel.zap(-1); interaction++
-                        }
-                    }
-                    if (!isLive) {
-                        ControlIcon(Icons.Default.Replay10, "Atrasar 10 segundos", 40.dp) { seekBy(-10_000); interaction++ }
-                    }
-                    if (buffering) {
-                        Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(56.dp))
-                        }
-                    } else {
-                        ControlIcon(
-                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            if (isPlaying) "Pausar" else "Reproducir",
-                            size = 60.dp,
-                            emphasized = true,
-                            modifier = Modifier.focusRequester(playFocus),
-                            onClick = ::togglePlay
-                        )
-                    }
-                    if (!isLive) {
-                        ControlIcon(Icons.Default.Forward30, "Adelantar 30 segundos", 40.dp) { seekBy(30_000); interaction++ }
-                    }
-                    if (playable?.kind != "MOVIE") {
-                        ControlIcon(Icons.AutoMirrored.Filled.NavigateNext, if (isLive) "Canal siguiente" else "Episodio siguiente", 40.dp) {
-                            viewModel.zap(1); interaction++
-                        }
-                    }
-                }
-
-                BottomBar(
-                    isLive = isLive,
-                    position = position,
-                    duration = duration,
-                    speed = speed,
-                    epg = epg,
-                    onSeekChange = { dragging = true; position = it; interaction++ },
-                    onSeekDone = { dragging = false; viewModel.seekTo(position) },
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+            if (offline) {
+                Icon(Icons.Default.WifiOff, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+            } else {
+                CircularProgressIndicator(color = EntreBrand.Accent, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
             }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    offline -> "Sin conexión · se reanuda al volver la red"
+                    attempt >= 4 -> "Reconectando… (intento $attempt)"
+                    else -> "Reconectando…"
+                },
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
+    }
+}
 
-        AnimatedVisibility(
-            visible = showNextEpisode,
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = if (controlsVisible) 110.dp else 32.dp)
-        ) {
-            nextEpisode?.let { next ->
-                Column(horizontalAlignment = Alignment.End) {
-                    EntreButton(
-                        text = "Siguiente episodio",
-                        icon = Icons.Default.SkipNext,
-                        primary = true,
-                        onClick = viewModel::playNextEpisode,
-                        modifier = Modifier.focusRequester(nextFocus)
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "T${next.season}:E${next.episodeNum} · en ${(remaining / 1000).coerceAtLeast(0)} s",
-                        color = Color.White.copy(alpha = 0.85f),
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-            }
-        }
+/** Pastillas translúcidas del celular: Mi lista, formato de imagen, ventana flotante y ajustes. */
+@Composable
+private fun ActionPills(
+    isFavorite: Boolean,
+    resizeMode: Int,
+    pipSupported: Boolean,
+    onFavorite: () -> Unit,
+    onAspect: () -> Unit,
+    onPip: () -> Unit,
+    onSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Cada pastilla toma a lo sumo una parte igual del ancho: en un celular angosto entran las cuatro.
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        val share = Modifier.weight(1f, fill = false)
+        ActionPill(
+            icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            label = if (isFavorite) "En Mi lista" else "Mi lista",
+            tint = if (isFavorite) EntreBrand.Accent else Color.White,
+            onClick = onFavorite,
+            modifier = share
+        )
+        ActionPill(Icons.Default.AspectRatio, resizeLabel(resizeMode), onClick = onAspect, modifier = share)
+        if (pipSupported) ActionPill(Icons.Default.PictureInPictureAlt, "Flotante", onClick = onPip, modifier = share)
+        ActionPill(Icons.Default.Settings, "Ajustes", onClick = onSettings, modifier = share)
+    }
+}
 
-        val currentFeedback = feedback
-        AnimatedVisibility(
-            visible = currentFeedback != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            currentFeedback?.let { FeedbackBubble(it) }
-        }
+@Composable
+private fun ActionPill(
+    icon: ImageVector,
+    label: String,
+    tint: Color = Color.White,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(50)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        modifier = modifier
+            .clip(shape)
+            .background(Color.Black.copy(alpha = if (focused) 0.8f else 0.55f))
+            .border(1.dp, Color.White.copy(alpha = if (focused) 0.9f else 0.2f), shape)
+            .clickable(interactionSource = source, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(
+            label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
 
-        notice?.let { msg ->
-            Surface(
-                color = Color.Black.copy(alpha = 0.75f),
-                shape = RoundedCornerShape(14.dp),
+@Composable
+private fun LiveTabs(selected: Int, onSelect: (Int) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        listOf("Guía", "Canales").forEachIndexed { index, label ->
+            val active = index == selected
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 72.dp)
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onSelect(index) }
+                    .padding(vertical = 8.dp)
             ) {
                 Text(
-                    msg,
-                    color = Color.White,
+                    label,
+                    color = if (active) Color.White else EntreBrand.TextDim,
                     style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+                )
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    Modifier
+                        .height(3.dp)
+                        .width(48.dp)
+                        .clip(CircleShape)
+                        .background(if (active) EntreBrand.Accent else Color.Transparent)
                 )
             }
         }
+    }
+}
 
-        LiveChannelList(
-            visible = channelsOpen,
-            channels = groupChannels,
-            currentId = playable?.contentKey,
-            nowPlaying = viewModel::nowPlaying,
-            onSelect = { channel ->
-                viewModel.playChannel(channel)
-                channelsOpen = false
-            },
-            onDismiss = { channelsOpen = false }
-        )
+/** Guía del canal: lo que pasa ahora (con avance), lo que sigue y más tarde. */
+@Composable
+private fun EpgGuide(epg: List<EpgEntity>, modifier: Modifier = Modifier) {
+    val now = System.currentTimeMillis() / 1000
+    val current = epg.firstOrNull { it.start <= now && it.end > now }
+    val upcoming = epg.filter { it.start > now }
+    if (current == null && upcoming.isEmpty()) {
+        Box(modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.TopCenter) {
+            Text(
+                "Este canal no tiene guía de programación.",
+                color = EntreBrand.TextDim,
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+        return
+    }
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp)) {
+        current?.let { program ->
+            item(key = "now") {
+                Surface(color = EntreBrand.Panel, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(color = Color(0xFFE53935), shape = RoundedCornerShape(6.dp)) {
+                                Text(
+                                    "AHORA",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "${timeFormat(program.start)} – ${timeFormat(program.end)}",
+                                color = EntreBrand.TextDim,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "Quedan ${((program.end - now) / 60).coerceAtLeast(1)} min",
+                                color = EntreBrand.TextDim,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(program.title, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { ((now - program.start).toFloat() / (program.end - program.start).coerceAtLeast(1)).coerceIn(0f, 1f) },
+                            color = EntreBrand.Accent,
+                            trackColor = Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape)
+                        )
+                        if (program.description.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                program.description,
+                                color = EntreBrand.Text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        upcoming.firstOrNull()?.let { next ->
+            item(key = "next-title") { GuideHeader("A continuación") }
+            item(key = "next") { GuideRow(next, showDescription = true) }
+        }
+        if (upcoming.size > 1) {
+            item(key = "later-title") { GuideHeader("Más tarde") }
+            items(upcoming.drop(1), key = { "${it.start}-${it.title}" }) { GuideRow(it, showDescription = false) }
+        }
+    }
+}
 
-        PlayerSettingsPanel(
-            visible = panelOpen,
-            tracks = tracks,
-            prefs = prefs,
-            speed = speed,
-            isLive = isLive,
-            sleepMinutes = sleepMinutes,
-            sleepEndsAt = sleepEndsAt,
-            techInfo = manager::techInfo,
-            actions = viewModel,
-            onDismiss = { panelOpen = false }
+@Composable
+private fun GuideHeader(text: String) {
+    Text(
+        text,
+        color = Color.White,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 16.dp, bottom = 6.dp)
+    )
+}
+
+@Composable
+private fun GuideRow(program: EpgEntity, showDescription: Boolean) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Text(
+            timeFormat(program.start),
+            color = EntreBrand.Accent,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.width(56.dp)
         )
+        Column(Modifier.weight(1f)) {
+            Text(program.title, color = Color.White, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (showDescription && program.description.isNotBlank()) {
+                Text(
+                    program.description,
+                    color = EntreBrand.TextDim,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
@@ -519,10 +924,13 @@ private fun TopBar(
     subtitle: String,
     isLive: Boolean,
     isFavorite: Boolean,
+    showActions: Boolean,
     showChannels: Boolean,
     onBack: () -> Unit,
     onChannels: () -> Unit,
     onFavorite: () -> Unit,
+    onAspect: (() -> Unit)?,
+    onPip: (() -> Unit)?,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -530,6 +938,7 @@ private fun TopBar(
         modifier = modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.8f), Color.Transparent)))
+            .statusBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -568,14 +977,18 @@ private fun TopBar(
             }
         }
         if (showChannels) ControlIcon(Icons.AutoMirrored.Filled.List, "Canales", 26.dp, onClick = onChannels)
-        ControlIcon(
-            if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-            if (isFavorite) "Quitar de Mi lista" else "Agregar a Mi lista",
-            26.dp,
-            tint = if (isFavorite) EntreBrand.Accent else Color.White,
-            onClick = onFavorite
-        )
-        ControlIcon(Icons.Default.Settings, "Ajustes de reproducción", 26.dp, onClick = onSettings)
+        if (showActions) {
+            onAspect?.let { ControlIcon(Icons.Default.AspectRatio, "Formato de imagen", 26.dp, onClick = it) }
+            onPip?.let { ControlIcon(Icons.Default.PictureInPictureAlt, "Ventana flotante", 26.dp, onClick = it) }
+            ControlIcon(
+                if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (isFavorite) "Quitar de Mi lista" else "Agregar a Mi lista",
+                26.dp,
+                tint = if (isFavorite) EntreBrand.Accent else Color.White,
+                onClick = onFavorite
+            )
+            ControlIcon(Icons.Default.Settings, "Ajustes de reproducción", 26.dp, onClick = onSettings)
+        }
     }
 }
 
@@ -585,7 +998,7 @@ private fun BottomBar(
     position: Long,
     duration: Long,
     speed: Float,
-    epg: List<com.entretv.app.data.local.EpgEntity>,
+    epg: List<EpgEntity>,
     onSeekChange: (Long) -> Unit,
     onSeekDone: () -> Unit,
     modifier: Modifier = Modifier

@@ -125,6 +125,20 @@ class DownloadRepository @Inject constructor(
         File(directory, download.fileName + PART_SUFFIX).delete()
     }
 
+    suspend fun deleteMany(contentKeys: Collection<String>) {
+        contentKeys.forEach { delete(it) }
+    }
+
+    /**
+     * "Detener descargas" de una serie: cancela lo que está en cola, bajándose o en pausa.
+     * Los episodios ya descargados se quedan. Devuelve cuántos se cancelaron.
+     */
+    suspend fun cancelSeries(seriesKey: String): Int {
+        val pending = dao.pendingForSeries(seriesKey)
+        pending.forEach { delete(it.contentKey) }
+        return pending.size
+    }
+
     /** Al abrir la app: retoma lo que quedó en cola o a medias. */
     fun resumePending() {
         scope.launch {

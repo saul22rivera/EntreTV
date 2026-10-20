@@ -1,13 +1,18 @@
 package com.entretv.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,9 +31,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Deselect
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +79,7 @@ import com.entretv.app.ui.theme.EntreBrand
 import kotlinx.coroutines.launch
 
 /** Lo descargado para ver sin conexión, con lo que está en curso arriba de todo. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DownloadsScreen(
     onBack: () -> Unit,
@@ -78,6 +92,10 @@ fun DownloadsScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf<DownloadEntity?>(null) }
+    var confirmMany by remember { mutableStateOf(false) }
+    var confirmAll by remember { mutableStateOf(false) }
+    var selecting by rememberSaveable { mutableStateOf(false) }
+    var selected by rememberSaveable { mutableStateOf(setOf<String>()) }
     val firstFocus = remember { FocusRequester() }
     val backFocus = remember { FocusRequester() }
 
@@ -85,11 +103,29 @@ fun DownloadsScreen(
         items.orEmpty().sortedWith(compareBy<DownloadEntity> { it.isDone }.thenByDescending { it.addedAt })
     }
     val loaded = items != null
+    val keys = remember(sorted) { sorted.map { it.contentKey }.toSet() }
+    val chosen = selected intersect keys
+
+    LaunchedEffect(sorted.isEmpty()) {
+        if (sorted.isEmpty()) {
+            selecting = false
+            selected = emptySet()
+        }
+    }
 
     LaunchedEffect(loaded, sorted.isEmpty()) {
         if (profile.isTv && loaded) {
             runCatching { if (sorted.isNotEmpty()) firstFocus.requestFocus() else backFocus.requestFocus() }
         }
+    }
+
+    BackHandler(enabled = selecting) {
+        selecting = false
+        selected = emptySet()
+    }
+
+    fun toggle(key: String) {
+        selected = if (key in selected) selected - key else selected + key
     }
 
     Scaffold(
@@ -112,7 +148,7 @@ fun DownloadsScreen(
                 Spacer(Modifier.width(4.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Descargas",
+                        if (selecting) "${chosen.size} seleccionada${if (chosen.size == 1) "" else "s"}" else "Descargas",
                         style = if (profile.isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -120,6 +156,63 @@ fun DownloadsScreen(
                     if (storage.isNotEmpty() && sorted.isNotEmpty()) {
                         Text(storage, style = MaterialTheme.typography.labelMedium, color = EntreBrand.TextDim)
                     }
+                }
+            }
+
+            if (loaded && sorted.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = profile.edge, vertical = 6.dp)
+                ) {
+                    if (selecting) {
+                        val all = chosen.size == keys.size
+                        EntreButton(
+                            text = if (all) "Quitar selección" else "Seleccionar todo",
+                            icon = if (all) Icons.Default.Deselect else Icons.Default.SelectAll,
+                            compact = true,
+                            onClick = { selected = if (all) emptySet() else keys }
+                        )
+                        if (chosen.isNotEmpty()) {
+                            EntreButton(
+                                text = "Borrar (${chosen.size})",
+                                icon = Icons.Default.Delete,
+                                primary = true,
+                                compact = true,
+                                onClick = { confirmMany = true }
+                            )
+                        }
+                        EntreButton(
+                            text = "Listo",
+                            icon = Icons.Default.Close,
+                            compact = true,
+                            onClick = {
+                                selecting = false
+                                selected = emptySet()
+                            }
+                        )
+                    } else {
+                        EntreButton(
+                            text = "Seleccionar",
+                            icon = Icons.Default.Checklist,
+                            compact = true,
+                            onClick = { selecting = true }
+                        )
+                        EntreButton(
+                            text = "Borrar todo",
+                            icon = Icons.Default.DeleteSweep,
+                            compact = true,
+                            onClick = { confirmAll = true }
+                        )
+                    }
+                }
+                if (!profile.isTv && !selecting) {
+                    Text(
+                        "Mantén presionada una descarga para seleccionar varias.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = EntreBrand.TextDim,
+                        modifier = Modifier.padding(horizontal = profile.edge)
+                    )
                 }
             }
 
@@ -147,12 +240,22 @@ fun DownloadsScreen(
                         DownloadRow(
                             download = download,
                             wide = !profile.compactRail,
+                            selection = if (selecting) download.contentKey in chosen else null,
                             modifier = if (download == sorted.first()) Modifier.focusRequester(firstFocus) else Modifier,
                             onClick = {
                                 when {
+                                    selecting -> toggle(download.contentKey)
                                     download.isDone -> onPlay(download)
                                     download.status == DownloadStatus.FAILED -> viewModel.resume(download.contentKey)
                                     else -> scope.launch { snackbar.showSnackbar("Disponible cuando termine de descargarse") }
+                                }
+                            },
+                            onLongClick = {
+                                if (!selecting) {
+                                    selecting = true
+                                    selected = setOf(download.contentKey)
+                                } else {
+                                    toggle(download.contentKey)
                                 }
                             },
                             onPause = viewModel::pause,
@@ -163,6 +266,37 @@ fun DownloadsScreen(
                 }
             }
         }
+    }
+
+    if (confirmMany) {
+        val count = chosen.size
+        ConfirmActionDialog(
+            title = "¿Borrar $count descarga${if (count == 1) "" else "s"}?",
+            text = "Dejarán de estar disponibles sin conexión. Lo que se esté descargando se cancela.",
+            confirmLabel = "Borrar",
+            onConfirm = {
+                viewModel.deleteMany(chosen)
+                confirmMany = false
+                selecting = false
+                selected = emptySet()
+                scope.launch { snackbar.showSnackbar(if (count == 1) "Se borró 1 descarga" else "Se borraron $count descargas") }
+            },
+            onDismiss = { confirmMany = false }
+        )
+    }
+
+    if (confirmAll) {
+        ConfirmActionDialog(
+            title = "¿Borrar todas las descargas?",
+            text = "Se borrarán las ${sorted.size} descargas, incluidas las que están en curso. Esto libera el espacio que ocupan.",
+            confirmLabel = "Borrar todo",
+            onConfirm = {
+                viewModel.deleteAll()
+                confirmAll = false
+                scope.launch { snackbar.showSnackbar("Se borraron todas las descargas") }
+            },
+            onDismiss = { confirmAll = false }
+        )
     }
 
     confirmDelete?.let { download ->
@@ -177,12 +311,16 @@ fun DownloadsScreen(
     }
 }
 
+/** [selection] es null fuera del modo selección; si no, si la fila está marcada. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadRow(
     download: DownloadEntity,
     wide: Boolean,
+    selection: Boolean?,
     modifier: Modifier,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onPause: (String) -> Unit,
     onResume: (String) -> Unit,
     onDelete: (DownloadEntity) -> Unit
@@ -191,6 +329,11 @@ private fun DownloadRow(
     val focused by source.collectIsFocusedAsState()
     val scale by animateFloatAsState(if (focused) 1.02f else 1f, label = "downloadScale")
     val shape = RoundedCornerShape(12.dp)
+    val background = when {
+        focused -> Color.White.copy(alpha = 0.10f)
+        selection == true -> EntreBrand.Accent.copy(alpha = 0.18f)
+        else -> Color.Transparent
+    }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(
@@ -199,11 +342,24 @@ private fun DownloadRow(
                 .weight(1f)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(shape)
-                .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.Transparent)
+                .background(background)
                 .then(if (focused) Modifier.border(2.dp, EntreBrand.Accent, shape) else Modifier)
-                .clickable(interactionSource = source, indication = LocalIndication.current, onClick = onClick)
+                .combinedClickable(
+                    interactionSource = source,
+                    indication = LocalIndication.current,
+                    onLongClick = onLongClick,
+                    onClick = onClick
+                )
                 .padding(6.dp)
         ) {
+            if (selection != null) {
+                Icon(
+                    if (selection) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                    contentDescription = if (selection) "Seleccionada" else "Sin seleccionar",
+                    tint = if (selection) EntreBrand.Accent else EntreBrand.TextDim,
+                    modifier = Modifier.padding(start = 4.dp, end = 10.dp).size(26.dp)
+                )
+            }
             Box(
                 Modifier
                     .width(if (wide) 200.dp else 128.dp)
@@ -276,17 +432,19 @@ private fun DownloadRow(
                 }
             }
         }
-        Spacer(Modifier.width(6.dp))
-        EpisodeDownloadIcon(
-            download = download,
-            onDownload = {},
-            onPause = onPause,
-            onResume = onResume,
-            onDelete = onDelete
-        )
-        if (!download.isDone) {
-            IconButton(onClick = { onDelete(download) }) {
-                Icon(Icons.Default.Close, contentDescription = "Cancelar descarga", tint = EntreBrand.TextDim)
+        if (selection == null) {
+            Spacer(Modifier.width(6.dp))
+            EpisodeDownloadIcon(
+                download = download,
+                onDownload = {},
+                onPause = onPause,
+                onResume = onResume,
+                onDelete = onDelete
+            )
+            if (!download.isDone) {
+                IconButton(onClick = { onDelete(download) }) {
+                    Icon(Icons.Default.Close, contentDescription = "Cancelar descarga", tint = EntreBrand.TextDim)
+                }
             }
         }
     }

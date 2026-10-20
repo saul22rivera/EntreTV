@@ -1,29 +1,35 @@
 package com.entretv.app
 
 import android.Manifest
-import android.app.PictureInPictureParams
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.entretv.app.player.PipController
 import com.entretv.app.ui.AppStartup
 import com.entretv.app.ui.BrowseItem
 import com.entretv.app.ui.DetailsScreen
 import com.entretv.app.ui.DownloadsScreen
 import com.entretv.app.ui.HomeScreen
+import com.entretv.app.ui.LoginScreen
 import com.entretv.app.ui.PlayerScreen
+import com.entretv.app.ui.Session
+import com.entretv.app.ui.SessionViewModel
 import com.entretv.app.ui.UpdateHost
 import com.entretv.app.ui.navigation.DetailsRoute
 import com.entretv.app.ui.navigation.DownloadsRoute
@@ -58,73 +64,79 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             EntreTVTheme {
-                val navController = rememberNavController()
-                NavHost(navController = navController, startDestination = HomeRoute) {
-                    composable<HomeRoute> {
+                val sessionViewModel: SessionViewModel = hiltViewModel()
+                val session by sessionViewModel.session.collectAsStateWithLifecycle()
+                when (session) {
+                    Session.LOADING -> Unit
+                    Session.LOGGED_OUT -> {
                         inPlayer = false
-                        HomeScreen(
-                            onOpen = { item ->
-                                when (item) {
-                                    is BrowseItem.Live ->
-                                        navController.navigate(PlayerRoute(item.channel.id, "LIVE"))
-                                    is BrowseItem.Movie ->
-                                        navController.navigate(DetailsRoute(item.movie.id, "MOVIE"))
-                                    is BrowseItem.Show ->
-                                        navController.navigate(DetailsRoute(item.series.id, "SERIES"))
-                                }
-                            },
-                            onPlayMovie = { movieId ->
-                                navController.navigate(PlayerRoute(movieId, "MOVIE"))
-                            },
-                            onPlayProgress = { progress ->
-                                navController.navigate(PlayerRoute(progress.contentKey, progress.kind))
-                            },
-                            onPlayEpisode = { episodeId ->
-                                navController.navigate(PlayerRoute(episodeId, "EPISODE"))
-                            },
-                            onOpenDownloads = { navController.navigate(DownloadsRoute) }
-                        )
+                        LaunchedEffect(Unit) { AppStartup.markReady() }
+                        LoginScreen()
                     }
-                    composable<DownloadsRoute> {
-                        inPlayer = false
-                        DownloadsScreen(
-                            onBack = { navController.popBackStack() },
-                            onPlay = { download ->
-                                navController.navigate(PlayerRoute(download.contentKey, download.kind))
-                            }
-                        )
-                    }
-                    composable<DetailsRoute> {
-                        inPlayer = false
-                        DetailsScreen(
-                            onBack = { navController.popBackStack() },
-                            onPlayMovie = { movieId ->
-                                navController.navigate(PlayerRoute(movieId, "MOVIE"))
-                            },
-                            onPlayEpisode = { episodeId ->
-                                navController.navigate(PlayerRoute(episodeId, "EPISODE"))
-                            }
-                        )
-                    }
-                    composable<PlayerRoute> {
-                        inPlayer = true
-                        PlayerScreen(onBack = { navController.popBackStack() })
-                    }
+                    Session.LOGGED_IN -> AppNavHost()
                 }
                 UpdateHost(suppressed = inPlayer)
             }
         }
     }
 
+    @Composable
+    private fun AppNavHost() {
+        val navController = rememberNavController()
+        NavHost(navController = navController, startDestination = HomeRoute) {
+            composable<HomeRoute> {
+                inPlayer = false
+                HomeScreen(
+                    onOpen = { item ->
+                        when (item) {
+                            is BrowseItem.Live ->
+                                navController.navigate(PlayerRoute(item.channel.id, "LIVE"))
+                            is BrowseItem.Movie ->
+                                navController.navigate(DetailsRoute(item.movie.id, "MOVIE"))
+                            is BrowseItem.Show ->
+                                navController.navigate(DetailsRoute(item.series.id, "SERIES"))
+                        }
+                    },
+                    onPlayMovie = { movieId ->
+                        navController.navigate(PlayerRoute(movieId, "MOVIE"))
+                    },
+                    onPlayEpisode = { episodeId ->
+                        navController.navigate(PlayerRoute(episodeId, "EPISODE"))
+                    },
+                    onOpenDownloads = { navController.navigate(DownloadsRoute) }
+                )
+            }
+            composable<DownloadsRoute> {
+                inPlayer = false
+                DownloadsScreen(
+                    onBack = { navController.popBackStack() },
+                    onPlay = { download ->
+                        navController.navigate(PlayerRoute(download.contentKey, download.kind))
+                    }
+                )
+            }
+            composable<DetailsRoute> {
+                inPlayer = false
+                DetailsScreen(
+                    onBack = { navController.popBackStack() },
+                    onPlayMovie = { movieId ->
+                        navController.navigate(PlayerRoute(movieId, "MOVIE"))
+                    },
+                    onPlayEpisode = { episodeId ->
+                        navController.navigate(PlayerRoute(episodeId, "EPISODE"))
+                    }
+                )
+            }
+            composable<PlayerRoute> {
+                inPlayer = true
+                PlayerScreen(onBack = { navController.popBackStack() })
+            }
+        }
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (inPlayer && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            enterPictureInPictureMode(
-                PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build()
-            )
-        }
+        if (inPlayer) PipController.enter(this)
     }
 
     override fun onPictureInPictureModeChanged(
@@ -132,5 +144,6 @@ class MainActivity : ComponentActivity() {
         newConfig: Configuration
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        PipController.onModeChanged(isInPictureInPictureMode)
     }
 }

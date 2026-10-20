@@ -50,7 +50,11 @@ data class VodMovieEntity(
     /** Puntuación 0–10; 0 si no informa. */
     val rating: Float = 0f,
     /** Lugar en la lista del servidor ("como viene de fábrica"). */
-    val position: Int = 0
+    val position: Int = 0,
+    /** Id de TMDB si el panel lo informa; vacío si no. */
+    val tmdbId: String = "",
+    /** Año de estreno si el panel lo informa; 0 si no. */
+    val year: Int = 0
 )
 
 @Entity(
@@ -67,7 +71,17 @@ data class SeriesEntity(
     val plot: String = "",
     val added: Long = 0,
     val rating: Float = 0f,
-    val position: Int = 0
+    val position: Int = 0,
+    val tmdbId: String = "",
+    val year: Int = 0
+)
+
+/** Ficha ampliada (Xtream + TMDB) o listas de TMDB guardadas como JSON para verlas sin conexión. */
+@Entity(tableName = "details_cache")
+data class DetailsCacheEntity(
+    @PrimaryKey val cacheKey: String,
+    val json: String,
+    val fetchedAt: Long = System.currentTimeMillis()
 )
 
 /** Orden de las categorías tal como las manda el servidor. Se reescribe en cada actualización. */
@@ -195,4 +209,6 @@ data class PlaybackProgressEntity(
 ) {
     /** Visto al 95% o más → se considera terminado. */
     val isCompleted: Boolean get() = durationMs > 0 && positionMs >= durationMs * 95 / 100
+
+    val fraction: Float get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 }

@@ -7,6 +7,13 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 val updateUrl: String = (findProperty("entretv.updateUrl") as String?).orEmpty()
+// Servidor Xtream de las cuentas nuevas. update.json puede cambiarlo sin reinstalar.
+val serverUrl: String = (findProperty("entretv.serverUrl") as String?).orEmpty()
+// Clave de TMDB (opcional): Top 10 por tendencias, fotos del reparto y fichas ampliadas.
+// Se guarda en keystore.properties (fuera del repositorio) como tmdbApiKey=...
+val tmdbApiKey: String = (findProperty("entretv.tmdbApiKey") as String?).orEmpty()
+    .ifBlank { keystoreProps.getProperty("tmdbApiKey").orEmpty() }
+val minVersionCode: Int = (findProperty("entretv.minVersionCode") as String?)?.toIntOrNull() ?: 0
 
 plugins {
     alias(libs.plugins.android.application)
@@ -25,11 +32,13 @@ android {
         applicationId = "com.entretv.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         resourceConfigurations += listOf("es", "en")
         // Solo el release busca actualizaciones: el APK publicado es otro paquete que el de depuración.
         buildConfigField("String", "UPDATE_URL", "\"\"")
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
+        buildConfigField("String", "TMDB_API_KEY", "\"$tmdbApiKey\"")
     }
 
     signingConfigs {
@@ -114,6 +123,9 @@ val writeUpdateManifest by tasks.registering {
     val name = android.defaultConfig.versionName
     val notes = (findProperty("entretv.releaseNotes") as String?).orEmpty()
     val manifestUrl = updateUrl
+    val minCode = minVersionCode
+    val server = serverUrl
+    val tmdbKey = tmdbApiKey
     val output = layout.buildDirectory.file("outputs/apk/release/update.json")
     outputs.file(output)
     doLast {
@@ -123,15 +135,19 @@ val writeUpdateManifest by tasks.registering {
         }
         fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
         val apkUrl = manifestUrl.substringBeforeLast('/') + "/EntreTV-$name.apk"
+        val optional = buildString {
+            if (server.isNotBlank()) append(",\n  \"serverUrl\": \"${esc(server)}\"")
+            if (tmdbKey.isNotBlank()) append(",\n  \"tmdbApiKey\": \"${esc(tmdbKey)}\"")
+        }
         output.get().asFile.writeText(
-            """
-            {
-              "versionCode": $code,
-              "versionName": "${esc(name.orEmpty())}",
-              "apkUrl": "${esc(apkUrl)}",
-              "notes": "${esc(notes)}"
-            }
-            """.trimIndent() + "\n"
+            "{\n" +
+                "  \"versionCode\": $code,\n" +
+                "  \"versionName\": \"${esc(name.orEmpty())}\",\n" +
+                "  \"apkUrl\": \"${esc(apkUrl)}\",\n" +
+                "  \"notes\": \"${esc(notes)}\",\n" +
+                "  \"minVersionCode\": $minCode,\n" +
+                "  \"mandatory\": ${minCode >= (code ?: 0)}" +
+                optional + "\n}\n"
         )
     }
 }

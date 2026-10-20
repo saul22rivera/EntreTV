@@ -45,8 +45,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -108,6 +110,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -133,8 +136,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -142,13 +148,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.ui.home.ContentAction
 import com.entretv.app.ui.home.ContentMenu
+import com.entretv.app.ui.home.AccountDialog
 import com.entretv.app.ui.home.HiddenItemsDialog
 import com.entretv.app.ui.home.NavRail
+import com.entretv.app.ui.home.SectionTabs
 import com.entretv.app.ui.home.OrganizeCategoriesDialog
 import com.entretv.app.ui.home.PinDialog
 import com.entretv.app.ui.home.SettingsPanel
@@ -157,6 +167,7 @@ import com.entretv.app.ui.home.RAIL_COLLAPSED_WIDTH
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /** Si la tira de íconos recibe el foco dentro de este tiempo tras una flecha izquierda, la llevó el usuario. */
@@ -167,7 +178,6 @@ private const val STRIP_KEY_WINDOW_MS = 700L
 fun HomeScreen(
     onOpen: (BrowseItem) -> Unit,
     onPlayMovie: (String) -> Unit,
-    onPlayProgress: (PlaybackProgressEntity) -> Unit,
     onPlayEpisode: (String) -> Unit,
     onOpenDownloads: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
@@ -178,7 +188,9 @@ fun HomeScreen(
     val content by viewModel.content.collectAsState()
     val continueWatching by viewModel.continueWatching.collectAsState()
     val favorites by viewModel.favoriteKeySet.collectAsState()
-    val backdrops by viewModel.backdrops.collectAsState()
+    val account by viewModel.account.collectAsState()
+    val accountSaving by viewModel.accountSaving.collectAsState()
+    val accountError by viewModel.accountError.collectAsState()
     val bufferSeconds by viewModel.bufferSeconds.collectAsState()
     val downloadWifiOnly by viewModel.downloadWifiOnly.collectAsState()
     val maxBufferSeconds by viewModel.maxBufferSeconds.collectAsState()
@@ -190,7 +202,9 @@ fun HomeScreen(
     val organizingSection by viewModel.organizingSection.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    var showAccount by rememberSaveable { mutableStateOf(false) }
+    var confirmLogout by rememberSaveable { mutableStateOf(false) }
+    var confirmAdult by remember { mutableStateOf<GuardedChange?>(null) }
     var showResetAll by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showOrganize by rememberSaveable { mutableStateOf(false) }
@@ -211,6 +225,14 @@ fun HomeScreen(
     var lastLeftKeyAt by remember { mutableStateOf(0L) }
     var menuItem by remember { mutableStateOf<BrowseItem?>(null) }
     var focusedItem by remember { mutableStateOf<BrowseItem?>(null) }
+    // Póster enfocado al salir a la ficha: al volver (Inicio se recrea) se le devuelve el foco en TV.
+    // No es un estado observable: cambiar de póster no debe recomponer el catálogo entero.
+    val focusHolder = rememberSaveable(saver = FocusHolder.Saver) { FocusHolder() }
+    val restoreFocus = remember { FocusRequester() }
+    var focusRestored by remember { mutableStateOf(false) }
+    val focusMemory = remember {
+        FocusMemory(requester = restoreFocus, target = focusHolder.key, onFocused = { focusHolder.key = it })
+    }
 
     // En celular, bajar esconde la píldora y subir la devuelve.
     val hidePillOnScroll = remember {
@@ -233,10 +255,23 @@ fun HomeScreen(
     // En TV el foco vuelve a los pósters al abrir la app, al cerrar el panel y al cambiar de
     // sección. Pedirlo dentro del cambio de foco que cierra el panel deja el árbol de foco a
     // medias (el póster queda marcado pero las flechas no responden): se espera un frame.
+    // Al volver de otra pantalla además se espera a que termine la transición (RESUMED): al
+    // quitarse la pantalla anterior Android le devuelve el foco a la vista y el catálogo queda
+    // "con foco" sin ningún póster enfocado, así que esa primera vez no se confía en catalogHasFocus.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(railExpanded, contentStale) {
         if (!railExpanded && !contentStale && profile.isTv) {
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
             withFrameNanos { }
-            if (!catalogHasFocus) runCatching { catalogFocus.requestFocus() }
+            if (focusRestored && catalogHasFocus) return@LaunchedEffect
+            if (!focusRestored && focusMemory.target != null) {
+                focusRestored = true
+                val restored = runCatching { restoreFocus.requestFocus() }.isSuccess
+                withFrameNanos { }
+                if (restored && catalogHasFocus) return@LaunchedEffect
+            }
+            focusRestored = true
+            runCatching { catalogFocus.requestFocus() }
         }
     }
 
@@ -259,14 +294,15 @@ fun HomeScreen(
         }
     }
 
-    // Atrás primero cierra la búsqueda o la cuadrícula, después sale de la app.
+    // Atrás primero cierra el "Ver todo" (también el de la búsqueda), después la búsqueda y
+    // por último sale de la app.
     BackHandler(enabled = searchOpen || ui.category != null) {
         when {
-            searchOpen -> {
+            ui.category != null -> viewModel.selectCategory(null)
+            else -> {
                 viewModel.onQueryChange("")
                 searchOpen = false
             }
-            else -> viewModel.selectCategory(null)
         }
     }
 
@@ -284,6 +320,36 @@ fun HomeScreen(
     fun openOrganize() {
         viewModel.organize(ui.section)
         showOrganize = true
+    }
+
+    /**
+     * Marcar como adultos pide confirmación; quitar la marca (o mostrar una categoría de
+     * adultos oculta) pide el PIN, o crearlo si todavía no hay.
+     */
+    fun requestAdultChange(change: GuardedChange) {
+        pinError = null
+        when {
+            change.kind == GuardedChange.Kind.MARK_ADULT -> confirmAdult = change
+            pinSet -> pinStep = PinStep.Guard(change)
+            else -> pinStep = PinStep.GuardCreate(change)
+        }
+    }
+
+    fun applyChange(change: GuardedChange) {
+        when (change.kind) {
+            GuardedChange.Kind.MARK_ADULT -> viewModel.setCategoryAdult(change.section, change.name, true)
+            GuardedChange.Kind.UNMARK_ADULT -> viewModel.setCategoryAdult(change.section, change.name, false)
+            GuardedChange.Kind.UNHIDE -> viewModel.setCategoryHidden(change.section, change.name, false)
+        }
+    }
+
+    fun playContinue(item: ContinueItem) {
+        val key = item.playKey
+        when {
+            !item.isSeries -> onPlayMovie(item.key)
+            key != null -> onPlayEpisode(key)
+            else -> viewModel.playSeries(item.key, onPlayEpisode)
+        }
     }
 
     Scaffold(
@@ -313,7 +379,6 @@ fun HomeScreen(
                         searchOpen = !searchOpen
                     },
                     onRefresh = { viewModel.refreshAll() },
-                    onAddPlaylist = { showAddDialog = true },
                     onClearImages = {
                         coil.Coil.imageLoader(context).memoryCache?.clear()
                         coil.Coil.imageLoader(context).diskCache?.clear()
@@ -323,6 +388,21 @@ fun HomeScreen(
                     onSettings = { showSettings = true },
                     onDownloads = onOpenDownloads
                 )
+
+                if (profile.compactRail) {
+                    SectionTabs(
+                        section = ui.section,
+                        searchActive = searching,
+                        onSection = {
+                            if (searchOpen) {
+                                viewModel.onQueryChange("")
+                                searchOpen = false
+                            }
+                            viewModel.selectSection(it)
+                        },
+                        modifier = Modifier.padding(horizontal = profile.edge, vertical = 4.dp)
+                    )
+                }
 
                 AnimatedVisibility(
                     visible = searchOpen,
@@ -401,37 +481,37 @@ fun HomeScreen(
                             } else false
                         }
                     val bottomSpace = if (profile.compactRail) PILL_SPACE else 32.dp
+                    val nothingYet = content.rows.isEmpty() && content.categories.isEmpty()
                     when {
-                        ui.loading && ui.playlists.isEmpty() ->
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator()
-                            }
-                        ui.playlists.isEmpty() -> EmptyState(onAdd = { showAddDialog = true })
                         // Mientras se calcula la nueva sección no se muestran las filas de la anterior:
                         // el foco caería en un póster que desaparece y las flechas dejarían de responder.
-                        contentStale ->
+                        contentStale || ui.playlists.isEmpty() ->
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator()
                             }
+                        ui.firstSync && nothingYet && !searching -> PreparingCatalog()
                         content.grid -> CatalogGrid(
                             profile = profile,
                             content = content,
-                            title = when {
-                                searching -> "Resultados para “${ui.query.trim()}”"
-                                ui.section == Section.FAVORITES -> "Mi lista"
+                            title = when (ui.category) {
+                                SEARCH_MOVIES -> "Películas para “${ui.query.trim()}”"
+                                SEARCH_SERIES -> "Series para “${ui.query.trim()}”"
+                                SEARCH_LIVE -> "Canales para “${ui.query.trim()}”"
+                                MY_LIST_ROW -> "Mi lista · ${ui.section.label}"
                                 else -> ui.category?.let { content.categoryLabels[it] ?: it }.orEmpty()
                             },
                             emptyText = when {
                                 searching -> "No encontramos nada con “${ui.query.trim()}”"
-                                ui.section == Section.FAVORITES -> "Tu lista está vacía. Mantén presionado un póster o usa “Mi lista” en la ficha para guardarlo aquí."
+                                ui.category == MY_LIST_ROW -> "Tu lista está vacía. Mantén presionado un póster o usa “Mi lista” en la ficha para guardarlo aquí."
                                 else -> "Esta categoría está vacía"
                             },
-                            showBack = ui.category != null && !searching,
+                            showBack = ui.category != null,
                             onBack = { viewModel.selectCategory(null) },
-                            stateKey = "${ui.section}|${ui.category}|${ui.query}",
+                            stateKey = "${ui.section}|${ui.category}|${ui.query.trim()}",
                             sort = ui.sort,
                             onSort = viewModel::selectSort,
                             bottomSpace = bottomSpace,
+                            focusMemory = focusMemory,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
                             onFocusItem = { focusedItem = it },
@@ -441,21 +521,18 @@ fun HomeScreen(
                             profile = profile,
                             section = ui.section,
                             content = content,
-                            continueWatching = continueWatching,
-                            favorites = favorites,
-                            backdrops = backdrops,
+                            continueWatching = if (searching) emptyList() else continueWatching,
+                            emptyText = if (searching) "No encontramos nada con “${ui.query.trim()}”"
+                            else "Todavía no hay contenido en ${ui.section.label}",
+                            stateKey = if (searching) "search" else ui.section.name,
                             bottomSpace = bottomSpace,
+                            focusMemory = focusMemory,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
                             onFocusItem = { focusedItem = it },
-                            onToggleFavorite = viewModel::toggleFavorite,
-                            onPlayMovie = onPlayMovie,
-                            onPlayProgress = onPlayProgress,
-                            onRemoveProgress = viewModel::removeFromContinue,
-                            onSeeAll = { row ->
-                                if (row.title == MY_LIST_ROW) viewModel.selectSection(Section.FAVORITES)
-                                else openCategory(row.title)
-                            },
+                            onPlayContinue = ::playContinue,
+                            onRemoveContinue = viewModel::removeFromContinue,
+                            onSeeAll = { row -> openCategory(row.title) },
                             modifier = catalogModifier
                         )
                     }
@@ -467,12 +544,13 @@ fun HomeScreen(
                     profile = profile,
                     section = ui.section,
                     searchActive = searchOpen,
-                    categories = if (searching || ui.section == Section.FAVORITES) emptyList() else content.categories,
+                    categories = if (searching) emptyList() else content.categories,
                     categoryCounts = content.categoryCounts,
                     categoryLabels = content.categoryLabels,
                     lockedCategories = content.lockedCategories,
                     selectedCategory = ui.category,
-                    showCategories = !searching && ui.section != Section.FAVORITES,
+                    showCategories = !searching,
+                    myListCount = content.myListCount,
                     expanded = railExpanded,
                     pillVisible = pillVisible.value,
                     onExpandedChange = ::setRailExpanded,
@@ -510,7 +588,7 @@ fun HomeScreen(
 
     menuItem?.let { item ->
         val inList = item.key in favorites
-        val inProgress = continueWatching.any { it.contentKey == item.key || it.contentKey.startsWith("${item.key}#") }
+        val inProgress = continueWatching.any { it.key == item.key }
         val actions = buildList {
             add(ContentAction(Icons.Default.PlayArrow, if (inProgress) "Seguir viendo" else "Reproducir") {
                 when (item) {
@@ -564,14 +642,63 @@ fun HomeScreen(
         )
     }
 
-    if (showAddDialog) {
-        AddPlaylistDialog(
-            loading = ui.loading,
-            onDismiss = { showAddDialog = false },
-            onAddM3u = { name, url -> viewModel.addM3u(name, url); showAddDialog = false },
-            onAddXtream = { name, base, user, pass ->
-                viewModel.addXtream(name, base, user, pass); showAddDialog = false
-            }
+    if (showAccount) {
+        val current = account
+        if (current != null) {
+            AccountDialog(
+                initialName = current.name,
+                initialUser = current.username,
+                initialPass = current.password,
+                saving = accountSaving,
+                error = accountError,
+                onSave = { name, user, pass -> viewModel.updateAccount(name, user, pass) { showAccount = false } },
+                onDismiss = {
+                    viewModel.clearAccountError()
+                    showAccount = false
+                }
+            )
+        }
+    }
+
+    if (confirmLogout) {
+        AlertDialog(
+            onDismissRequest = { confirmLogout = false },
+            title = { Text("Cerrar sesión") },
+            text = {
+                Text(
+                    "Se borrarán de este equipo el catálogo guardado, tu progreso y Mi lista de esta cuenta. " +
+                        "Las descargas terminadas se conservan y puedes verlas desde Descargas."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmLogout = false
+                    showSettings = false
+                    viewModel.logout()
+                }) { Text("Cerrar sesión", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("Cancelar") } }
+        )
+    }
+
+    confirmAdult?.let { change ->
+        AlertDialog(
+            onDismissRequest = { confirmAdult = null },
+            title = { Text("Marcar como adultos") },
+            text = {
+                Text(
+                    "“${change.label}” se tratará como contenido para adultos: " +
+                        (if (pinSet) "quedará oculta hasta que ingreses el PIN." else "crea un PIN en Configuración para bloquearla.") +
+                        " Para quitar la marca después se pedirá el PIN."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmAdult = null
+                    applyChange(change)
+                }) { Text("Marcar") }
+            },
+            dismissButton = { TextButton(onClick = { confirmAdult = null }) { Text("Cancelar") } }
         )
     }
 
@@ -602,7 +729,14 @@ fun HomeScreen(
                 ContentAction(
                     if (adult) Icons.Default.LockOpen else Icons.Default.Lock,
                     if (adult) "Quitar marca de adultos" else "Marcar como adultos"
-                ) { viewModel.setCategoryAdult(ui.section, name, !adult) }
+                ) {
+                    requestAdultChange(
+                        GuardedChange(
+                            ui.section, name, label,
+                            if (adult) GuardedChange.Kind.UNMARK_ADULT else GuardedChange.Kind.MARK_ADULT
+                        )
+                    )
+                }
             )
             add(ContentAction(Icons.AutoMirrored.Filled.Sort, "Organizar categorías…") { openOrganize() })
         }
@@ -621,6 +755,13 @@ fun HomeScreen(
     if (showSettings) {
         val updateViewModel: UpdateViewModel = hiltViewModel()
         SettingsPanel(
+            accountName = account?.name.orEmpty(),
+            accountUser = account?.username.orEmpty(),
+            onEditAccount = {
+                viewModel.clearAccountError()
+                showAccount = true
+            },
+            onLogout = { confirmLogout = true },
             appVersion = updateViewModel.versionName,
             onCheckUpdates = updateViewModel::checkNow,
             downloadWifiOnly = downloadWifiOnly,
@@ -652,9 +793,20 @@ fun HomeScreen(
             section = organizingSection,
             categories = organizeList,
             onSection = viewModel::organize,
-            onToggleHidden = { viewModel.setCategoryHidden(organizingSection, it.name, !it.hidden) },
+            onToggleHidden = {
+                if (it.hidden && it.adult && pinSet) {
+                    requestAdultChange(GuardedChange(organizingSection, it.name, it.label, GuardedChange.Kind.UNHIDE))
+                } else viewModel.setCategoryHidden(organizingSection, it.name, !it.hidden)
+            },
             onMove = { c, delta -> viewModel.moveCategory(organizingSection, c.name, delta) },
-            onToggleAdult = { viewModel.setCategoryAdult(organizingSection, it.name, !it.adult) },
+            onToggleAdult = {
+                requestAdultChange(
+                    GuardedChange(
+                        organizingSection, it.name, it.label,
+                        if (it.adult) GuardedChange.Kind.UNMARK_ADULT else GuardedChange.Kind.MARK_ADULT
+                    )
+                )
+            },
             onResetOrder = { viewModel.resetCategoryOrder(organizingSection) },
             onDismiss = { showOrganize = false }
         )
@@ -671,17 +823,22 @@ fun HomeScreen(
     pinStep?.let { step ->
         PinDialog(
             title = when (step) {
-                is PinStep.Unlock -> "Ingresá el PIN"
-                PinStep.Create -> "Nuevo PIN"
-                is PinStep.Confirm -> "Repetí el PIN"
+                is PinStep.Unlock, is PinStep.Guard -> "Ingresa el PIN"
+                PinStep.Create, is PinStep.GuardCreate -> "Nuevo PIN"
+                is PinStep.Confirm, is PinStep.GuardConfirm -> "Repite el PIN"
                 PinStep.VerifyForChange, PinStep.VerifyForRemove -> "PIN actual"
             },
             message = when (step) {
                 is PinStep.Unlock -> "Contenido para adultos. Queda desbloqueado hasta cerrar la app."
-                PinStep.Create -> "Elegí 4 dígitos para bloquear las categorías de adultos."
-                is PinStep.Confirm -> "Ingresalo otra vez para confirmar."
-                PinStep.VerifyForChange -> "Ingresá el PIN actual para cambiarlo."
-                PinStep.VerifyForRemove -> "Ingresá el PIN actual para quitarlo."
+                is PinStep.Guard -> when (step.change.kind) {
+                    GuardedChange.Kind.UNHIDE -> "Para mostrar “${step.change.label}” (adultos) ingresa el PIN."
+                    else -> "Para quitar la marca de adultos de “${step.change.label}” ingresa el PIN."
+                }
+                is PinStep.GuardCreate -> "Para quitar la marca de adultos primero crea un PIN de 4 dígitos. Lo usarás para el contenido para adultos."
+                PinStep.Create -> "Elige 4 dígitos para bloquear las categorías de adultos."
+                is PinStep.Confirm, is PinStep.GuardConfirm -> "Ingrésalo otra vez para confirmar."
+                PinStep.VerifyForChange -> "Ingresa el PIN actual para cambiarlo."
+                PinStep.VerifyForRemove -> "Ingresa el PIN actual para quitarlo."
             },
             error = pinError,
             onSubmit = { pin ->
@@ -702,8 +859,28 @@ fun HomeScreen(
                         pinStep = null
                         pinError = null
                     } else {
-                        pinError = "Los PIN no coinciden, probá de nuevo"
+                        pinError = "Los PIN no coinciden, inténtalo de nuevo"
                         pinStep = PinStep.Create
+                    }
+                    is PinStep.Guard -> viewModel.verifyPin(pin) { ok ->
+                        if (ok) {
+                            pinStep = null
+                            pinError = null
+                            applyChange(step.change)
+                        } else pinError = "PIN incorrecto"
+                    }
+                    is PinStep.GuardCreate -> {
+                        pinError = null
+                        pinStep = PinStep.GuardConfirm(step.change, pin)
+                    }
+                    is PinStep.GuardConfirm -> if (pin == step.first) {
+                        viewModel.setPin(pin)
+                        pinStep = null
+                        pinError = null
+                        applyChange(step.change)
+                    } else {
+                        pinError = "Los PIN no coinciden, inténtalo de nuevo"
+                        pinStep = PinStep.GuardCreate(step.change)
                     }
                     PinStep.VerifyForChange -> viewModel.unlockParental(pin) { ok ->
                         if (ok) {
@@ -734,6 +911,55 @@ private sealed interface PinStep {
     data class Confirm(val first: String) : PinStep
     data object VerifyForChange : PinStep
     data object VerifyForRemove : PinStep
+    /** Cambio protegido por el PIN (ver [GuardedChange]). */
+    data class Guard(val change: GuardedChange) : PinStep
+    /** Sin PIN todavía: se crea antes de aplicar el cambio. */
+    data class GuardCreate(val change: GuardedChange) : PinStep
+    data class GuardConfirm(val change: GuardedChange, val first: String) : PinStep
+}
+
+/** Cambio sobre una categoría que toca el control parental. */
+private data class GuardedChange(val section: Section, val name: String, val label: String, val kind: Kind) {
+    enum class Kind { MARK_ADULT, UNMARK_ADULT, UNHIDE }
+}
+
+/**
+ * Recuerda qué póster tenía el foco ("fila|clave") para devolvérselo al volver a Inicio.
+ * Solo el póster recordado lleva el [requester].
+ */
+private class FocusMemory(
+    val requester: FocusRequester,
+    val target: String?,
+    val onFocused: (String) -> Unit
+) {
+    fun modifierFor(key: String): Modifier = if (key == target) Modifier.focusRequester(requester) else Modifier
+}
+
+private class FocusHolder(var key: String? = null) {
+    companion object {
+        val Saver: Saver<FocusHolder, String> = Saver(save = { it.key.orEmpty() }, restore = { FocusHolder(it.ifEmpty { null }) })
+    }
+}
+
+@Composable
+private fun PreparingCatalog() {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CircularProgressIndicator()
+        Spacer(Modifier.height(16.dp))
+        Text("Preparando tu catálogo…", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "La primera vez tarda un poco. Después se abre al instante.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = EntreBrand.TextDim,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 24.dp)
+        )
+    }
 }
 
 // ============================ Catálogo en filas ============================
@@ -743,43 +969,32 @@ private fun CatalogRows(
     profile: DeviceProfile,
     section: Section,
     content: SectionContent,
-    continueWatching: List<PlaybackProgressEntity>,
-    favorites: Set<String>,
-    backdrops: Map<String, String>,
+    continueWatching: List<ContinueItem>,
+    emptyText: String,
+    stateKey: String,
     bottomSpace: Dp,
+    focusMemory: FocusMemory,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
-    onToggleFavorite: (BrowseItem) -> Unit,
-    onPlayMovie: (String) -> Unit,
-    onPlayProgress: (PlaybackProgressEntity) -> Unit,
-    onRemoveProgress: (String) -> Unit,
+    onPlayContinue: (ContinueItem) -> Unit,
+    onRemoveContinue: (ContinueItem) -> Unit,
     onSeeAll: (ContentRow) -> Unit,
     modifier: Modifier
 ) {
-    val listState = remember(section) { androidx.compose.foundation.lazy.LazyListState() }
+    // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
+    val listState = rememberSaveable(stateKey, saver = LazyListState.Saver) { LazyListState() }
+    val myList = content.rows.firstOrNull { it.title == MY_LIST_ROW && !content.isSearch }
+    val others = content.rows.filter { it !== myList }
     LazyColumn(
         state = listState,
         modifier = modifier,
         contentPadding = PaddingValues(top = 4.dp, bottom = bottomSpace),
         verticalArrangement = Arrangement.spacedBy(profile.rowGap)
     ) {
-        if (content.featured.isNotEmpty()) {
-            item(key = "hero", contentType = "hero") {
-                FeaturedHero(
-                    profile = profile,
-                    items = content.featured,
-                    backdrops = backdrops,
-                    favorites = favorites,
-                    onPlay = { item ->
-                        when (item) {
-                            is BrowseItem.Movie -> onPlayMovie(item.movie.id)
-                            else -> onClick(item)
-                        }
-                    },
-                    onInfo = onClick,
-                    onToggleFavorite = onToggleFavorite
-                )
+        if (myList != null) {
+            item(key = "row:${myList.title}", contentType = "row") {
+                CatalogRow(profile, myList, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(myList) })
             }
         }
         if (continueWatching.isNotEmpty()) {
@@ -787,29 +1002,36 @@ private fun CatalogRows(
                 ContinueWatchingRow(
                     profile = profile,
                     items = continueWatching,
-                    onPlay = onPlayProgress,
-                    onRemove = onRemoveProgress
+                    focusMemory = focusMemory,
+                    onPlay = onPlayContinue,
+                    onRemove = onRemoveContinue
                 )
             }
         }
-        content.rows.forEach { row ->
+        if (content.top10.isNotEmpty()) {
+            item(key = "top10", contentType = "top10") {
+                Top10Row(
+                    profile = profile,
+                    title = content.top10Label,
+                    items = content.top10,
+                    focusMemory = focusMemory,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    onFocusItem = onFocusItem
+                )
+            }
+        }
+        others.forEach { row ->
             if (row.items.isNotEmpty()) {
                 item(key = "row:${row.title}", contentType = "row") {
-                    CatalogRow(
-                        profile = profile,
-                        row = row,
-                        onClick = onClick,
-                        onLongClick = onLongClick,
-                        onFocusItem = onFocusItem,
-                        onSeeAll = { onSeeAll(row) }
-                    )
+                    CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(row) })
                 }
             }
         }
         if (content.rows.all { it.items.isEmpty() } && continueWatching.isEmpty()) {
             item(key = "empty") {
                 Text(
-                    "Todavía no hay contenido en ${section.label}",
+                    emptyText,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = profile.edge, vertical = 24.dp)
@@ -833,12 +1055,13 @@ private fun CatalogGrid(
     sort: SortOrder?,
     onSort: (SortOrder) -> Unit,
     bottomSpace: Dp,
+    focusMemory: FocusMemory,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
     modifier: Modifier
 ) {
-    val gridState = remember(stateKey, sort) { androidx.compose.foundation.lazy.grid.LazyGridState() }
+    val gridState = rememberSaveable(stateKey, sort, saver = LazyGridState.Saver) { LazyGridState() }
     val total = content.rows.sumOf { it.items.size }
     val multiSection = content.rows.count { it.items.isNotEmpty() } > 1
     LazyVerticalGrid(
@@ -918,171 +1141,99 @@ private fun CatalogGrid(
                 contentType = { index -> if (row.items[index] is BrowseItem.Live) "live" else "poster" }
             ) { index ->
                 val item = row.items[index]
+                val memoryKey = "grid|${row.title}|${item.key}"
                 PosterCard(
                     profile = profile,
                     item = item,
                     fillWidth = true,
+                    modifier = focusMemory.modifierFor(memoryKey),
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
-                    onFocused = { onFocusItem(item) }
+                    onFocused = {
+                        focusMemory.onFocused(memoryKey)
+                        onFocusItem(item)
+                    }
                 )
             }
         }
     }
 }
 
-// ============================ Banner destacado ============================
+// ============================ Top 10 ============================
+
+/** Fila "Top 10" estilo Netflix: número grande con contorno y el póster encima. */
+@Composable
+private fun Top10Row(
+    profile: DeviceProfile,
+    title: String,
+    items: List<BrowseItem>,
+    focusMemory: FocusMemory,
+    onClick: (BrowseItem) -> Unit,
+    onLongClick: (BrowseItem) -> Unit,
+    onFocusItem: (BrowseItem) -> Unit
+) {
+    Column {
+        RowHeader(title, profile, onSeeAll = null)
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(profile.itemGap / 2)
+        ) {
+            itemsIndexed(items, key = { _, it -> it.key }) { index, item ->
+                val memoryKey = "top10|${item.key}"
+                Top10Card(
+                    profile = profile,
+                    rank = index + 1,
+                    item = item,
+                    modifier = focusMemory.modifierFor(memoryKey),
+                    onClick = { onClick(item) },
+                    onLongClick = { onLongClick(item) },
+                    onFocused = {
+                        focusMemory.onFocused(memoryKey)
+                        onFocusItem(item)
+                    }
+                )
+            }
+        }
+    }
+}
 
 @Composable
-private fun FeaturedHero(
+private fun Top10Card(
     profile: DeviceProfile,
-    items: List<BrowseItem>,
-    backdrops: Map<String, String>,
-    favorites: Set<String>,
-    onPlay: (BrowseItem) -> Unit,
-    onInfo: (BrowseItem) -> Unit,
-    onToggleFavorite: (BrowseItem) -> Unit
+    rank: Int,
+    item: BrowseItem,
+    modifier: Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onFocused: () -> Unit
 ) {
-    var index by rememberSaveable(items.size) { mutableIntStateOf(0) }
-    var focused by remember { mutableStateOf(false) }
-    val current = items[index.coerceIn(0, items.lastIndex)]
-    val wide = !profile.compactRail
-    val height: Dp = when {
-        profile.isTv -> 380.dp
-        wide -> 340.dp
-        else -> 400.dp
-    }
-
-    // Rota cada 8 s; se queda quieto mientras el usuario tiene el foco encima.
-    LaunchedEffect(items, focused) {
-        if (focused || items.size < 2) return@LaunchedEffect
-        while (true) {
-            delay(8_000)
-            index = (index + 1) % items.size
-        }
-    }
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(height)
-            .padding(horizontal = profile.edge)
-            .clip(RoundedCornerShape(18.dp))
-            .background(EntreBrand.Panel)
-            .onFocusChanged { focused = it.hasFocus }
-    ) {
-        Crossfade(targetState = current, animationSpec = tween(700), label = "hero") { item ->
-            val backdrop = backdrops[item.key]
-            Box(Modifier.fillMaxSize()) {
-                AsyncImage(
-                    model = backdrop ?: item.imageUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    alignment = if (backdrop == null) Alignment.TopCenter else Alignment.Center,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { alpha = if (backdrop == null && wide) 0.45f else 1f }
-                )
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                0.35f to Color.Transparent,
-                                1f to EntreBrand.Ink.copy(alpha = 0.96f)
-                            )
-                        )
-                )
-                if (wide) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.horizontalGradient(
-                                    0f to EntreBrand.Ink.copy(alpha = 0.92f),
-                                    0.6f to Color.Transparent
-                                )
-                            )
-                    )
-                    // Sin fondo panorámico, el póster nítido a la derecha.
-                    if (backdrop == null && item.imageUrl.isNotEmpty()) {
-                        AsyncImage(
-                            model = item.imageUrl,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(20.dp)
-                                .fillMaxHeight()
-                                .aspectRatio(2f / 3f)
-                                .clip(RoundedCornerShape(12.dp))
-                        )
-                    }
-                }
-            }
-        }
-
-        Column(
-            horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally,
-            modifier = Modifier
-                .align(if (wide) Alignment.BottomStart else Alignment.BottomCenter)
-                .padding(horizontal = 20.dp, vertical = 18.dp)
-                .widthIn(max = 560.dp)
-        ) {
-            Text(
-                "DESTACADO",
-                color = EntreBrand.Accent,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp
-            )
-            Text(
-                current.title,
-                color = Color.White,
-                style = if (profile.isTv) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Black,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = if (wide) TextAlign.Start else TextAlign.Center
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                EntreButton(
-                    text = "Reproducir",
-                    icon = Icons.Default.PlayArrow,
-                    primary = true,
-                    compact = !wide,
-                    onClick = { onPlay(current) }
-                )
-                EntreButton(
-                    text = "Más info",
-                    icon = Icons.Default.Info,
-                    compact = !wide,
-                    onClick = { onInfo(current) }
-                )
-                val inList = current.key in favorites
-                EntreButton(
-                    text = if (wide) (if (inList) "En Mi lista" else "Mi lista") else "",
-                    icon = if (inList) Icons.Default.Check else Icons.Default.Add,
-                    compact = !wide,
-                    onClick = { onToggleFavorite(current) }
-                )
-            }
-            if (items.size > 1) {
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items.indices.forEach { i ->
-                        Box(
-                            Modifier
-                                .height(4.dp)
-                                .width(if (i == index) 20.dp else 8.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(if (i == index) EntreBrand.Accent else Color.White.copy(alpha = 0.35f))
-                        )
-                    }
-                }
-            }
-        }
+    val density = LocalDensity.current
+    val numberWidth = profile.posterWidth * (if (rank >= 10) 0.95f else 0.6f)
+    val fontSize = with(density) { (profile.posterHeight * 0.78f).toSp() }
+    Box(Modifier.width(numberWidth + profile.posterWidth * 0.82f)) {
+        Text(
+            rank.toString(),
+            fontSize = fontSize,
+            fontWeight = FontWeight.Black,
+            letterSpacing = (-6).sp,
+            softWrap = false,
+            maxLines = 1,
+            style = TextStyle(
+                color = Color.White.copy(alpha = 0.85f),
+                drawStyle = Stroke(width = with(density) { 3.dp.toPx() }),
+                lineHeight = fontSize
+            ),
+            modifier = Modifier.align(Alignment.BottomStart)
+        )
+        PosterCard(
+            profile = profile,
+            item = item,
+            fillWidth = false,
+            modifier = modifier.align(Alignment.TopEnd),
+            onClick = onClick,
+            onLongClick = onLongClick,
+            onFocused = onFocused
+        )
     }
 }
 
@@ -1095,7 +1246,6 @@ private fun HomeHeader(
     searchOpen: Boolean,
     onToggleSearch: () -> Unit,
     onRefresh: () -> Unit,
-    onAddPlaylist: () -> Unit,
     onClearImages: () -> Unit,
     onResetAll: () -> Unit,
     onSettings: () -> Unit,
@@ -1126,11 +1276,6 @@ private fun HomeHeader(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
-                    text = { Text("Agregar lista") },
-                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    onClick = { menuOpen = false; onAddPlaylist() }
-                )
-                DropdownMenuItem(
                     text = { Text("Descargas") },
                     leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
                     onClick = { menuOpen = false; onDownloads() }
@@ -1158,9 +1303,10 @@ private fun HomeHeader(
 @Composable
 private fun ContinueWatchingRow(
     profile: DeviceProfile,
-    items: List<PlaybackProgressEntity>,
-    onPlay: (PlaybackProgressEntity) -> Unit,
-    onRemove: (String) -> Unit
+    items: List<ContinueItem>,
+    focusMemory: FocusMemory,
+    onPlay: (ContinueItem) -> Unit,
+    onRemove: (ContinueItem) -> Unit
 ) {
     Column {
         RowHeader("Seguir viendo", profile, onSeeAll = null)
@@ -1168,30 +1314,43 @@ private fun ContinueWatchingRow(
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(profile.itemGap)
         ) {
-            items(items, key = { it.contentKey }) { progress ->
+            items(items, key = { it.key }) { item ->
+                val memoryKey = "continue|${item.key}"
                 ContinueCard(
                     profile = profile,
-                    progress = progress,
-                    onPlay = { onPlay(progress) },
-                    onRemove = { onRemove(progress.contentKey) }
+                    item = item,
+                    modifier = focusMemory.modifierFor(memoryKey),
+                    onFocused = { focusMemory.onFocused(memoryKey) },
+                    onPlay = { onPlay(item) },
+                    onRemove = { onRemove(item) }
                 )
             }
         }
     }
 }
 
+private fun remainingLabel(ms: Long): String {
+    val minutes = ((ms + 59_999) / 60_000).toInt()
+    return when {
+        minutes <= 1 -> "queda 1 min"
+        minutes < 60 -> "quedan $minutes min"
+        else -> "quedan ${minutes / 60} h ${minutes % 60} min"
+    }
+}
+
 @Composable
 private fun ContinueCard(
     profile: DeviceProfile,
-    progress: PlaybackProgressEntity,
+    item: ContinueItem,
+    modifier: Modifier,
+    onFocused: () -> Unit,
     onPlay: () -> Unit,
     onRemove: () -> Unit
 ) {
-    val percent = if (progress.durationMs > 0)
-        (progress.positionMs.toFloat() / progress.durationMs).coerceIn(0f, 1f) else 0f
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "continueScale")
+    LaunchedEffect(focused) { if (focused) onFocused() }
 
     Card(
         onClick = onPlay,
@@ -1199,7 +1358,7 @@ private fun ContinueCard(
         colors = CardDefaults.cardColors(containerColor = EntreBrand.Panel),
         border = if (focused) BorderStroke(3.dp, EntreBrand.Accent) else null,
         interactionSource = source,
-        modifier = Modifier
+        modifier = modifier
             .width(profile.continueWidth)
             .graphicsLayer { scaleX = scale; scaleY = scale }
     ) {
@@ -1210,14 +1369,12 @@ private fun ContinueCard(
                 .background(EntreBrand.PanelHigh),
             contentAlignment = Alignment.Center
         ) {
-            if (progress.imageUrl.isNotEmpty()) {
-                AsyncImage(
-                    model = progress.imageUrl,
-                    contentDescription = progress.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            }
+            FallbackImage(item.images, contentDescription = item.title, modifier = Modifier.fillMaxSize())
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.75f)))
+            )
             Surface(color = Color.Black.copy(alpha = 0.45f), shape = RoundedCornerShape(50)) {
                 Icon(
                     Icons.Default.PlayArrow,
@@ -1237,21 +1394,35 @@ private fun ContinueCard(
                     modifier = Modifier.size(16.dp)
                 )
             }
-            LinearProgressIndicator(
-                progress = { percent },
-                color = EntreBrand.Accent,
-                trackColor = Color.White.copy(alpha = 0.25f),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(3.dp)
-            )
+            if (item.fraction > 0f) {
+                Text(
+                    listOfNotNull(
+                        "${(item.fraction * 100).toInt()} %".takeIf { item.fraction >= 0.01f },
+                        item.remainingMs.takeIf { it > 0 }?.let(::remainingLabel)
+                    ).joinToString(" · "),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 8.dp, bottom = 8.dp)
+                )
+                LinearProgressIndicator(
+                    progress = { item.fraction },
+                    color = EntreBrand.Accent,
+                    trackColor = Color.White.copy(alpha = 0.25f),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                )
+            }
         }
         Column(Modifier.padding(8.dp)) {
-            Text(progress.title, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (progress.subtitle.isNotEmpty()) {
+            Text(item.title, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (item.subtitle.isNotEmpty()) {
                 Text(
-                    progress.subtitle,
+                    item.subtitle,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1268,6 +1439,7 @@ private fun ContinueCard(
 private fun CatalogRow(
     profile: DeviceProfile,
     row: ContentRow,
+    focusMemory: FocusMemory,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
@@ -1280,13 +1452,18 @@ private fun CatalogRow(
             horizontalArrangement = Arrangement.spacedBy(profile.itemGap)
         ) {
             items(row.items, key = { it.key }, contentType = { if (it is BrowseItem.Live) "live" else "poster" }) { item ->
+                val memoryKey = "${row.title}|${item.key}"
                 PosterCard(
                     profile = profile,
                     item = item,
                     fillWidth = false,
+                    modifier = focusMemory.modifierFor(memoryKey),
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
-                    onFocused = { onFocusItem(item) }
+                    onFocused = {
+                        focusMemory.onFocused(memoryKey)
+                        onFocusItem(item)
+                    }
                 )
             }
         }
@@ -1325,12 +1502,13 @@ private fun SeeAllButton(onClick: () -> Unit) {
         modifier = Modifier
             .clip(shape)
             .background(if (focused) EntreBrand.Accent else Color.Transparent)
+            .border(1.dp, EntreBrand.Accent.copy(alpha = if (focused) 0f else 0.5f), shape)
             .clickable(interactionSource = source, indication = LocalIndication.current, onClick = onClick)
-            .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+            .padding(start = 14.dp, end = 8.dp, top = 7.dp, bottom = 7.dp)
     ) {
         Text(
             "Ver todo",
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = if (focused) EntreBrand.OnAccent else EntreBrand.Accent
         )
@@ -1338,7 +1516,7 @@ private fun SeeAllButton(onClick: () -> Unit) {
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = if (focused) EntreBrand.OnAccent else EntreBrand.Accent,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(24.dp)
         )
     }
 }
@@ -1349,6 +1527,7 @@ private fun PosterCard(
     profile: DeviceProfile,
     item: BrowseItem,
     fillWidth: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onFocused: () -> Unit
@@ -1369,7 +1548,8 @@ private fun PosterCard(
     }
 
     Column(
-        modifier = outer
+        modifier = modifier
+            .then(outer)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .combinedClickable(
                 interactionSource = source,
@@ -1434,75 +1614,3 @@ private fun iconFor(item: BrowseItem): ImageVector = when (item) {
     is BrowseItem.Show -> Icons.Default.Tv
 }
 
-// ============================ Diálogos ============================
-
-@Composable
-private fun EmptyState(onAdd: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        EntreWordmark(fontSize = 40.sp)
-        Spacer(Modifier.height(16.dp))
-        Text("Bienvenido a EntreTV", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Agrega una lista M3U o una cuenta Xtream para empezar",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 24.dp)
-        )
-        Spacer(Modifier.height(16.dp))
-        TextButton(onClick = onAdd) { Text("Agregar mi primera lista") }
-    }
-}
-
-@Composable
-private fun AddPlaylistDialog(
-    loading: Boolean,
-    onDismiss: () -> Unit,
-    onAddM3u: (String, String) -> Unit,
-    onAddXtream: (String, String, String, String) -> Unit
-) {
-    var isXtream by rememberSaveable { mutableStateOf(false) }
-    var name by rememberSaveable { mutableStateOf("") }
-    var url by rememberSaveable { mutableStateOf("") }
-    var user by rememberSaveable { mutableStateOf("") }
-    var pass by rememberSaveable { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = { if (!loading) onDismiss() },
-        title = { Text(if (isXtream) "Cuenta Xtream" else "Lista M3U") },
-        text = {
-            Column {
-                FilterChip(
-                    selected = isXtream,
-                    onClick = { isXtream = !isXtream },
-                    label = { Text(if (isXtream) "Usar lista M3U" else "Usar cuenta Xtream") },
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Nombre") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text(if (isXtream) "URL del servidor" else "URL de la lista M3U") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                if (isXtream) {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("Usuario") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("Contraseña") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !loading && name.isNotBlank() && url.isNotBlank() && (!isXtream || (user.isNotBlank() && pass.isNotBlank())),
-                onClick = {
-                    if (isXtream) onAddXtream(name.trim(), url.trim(), user.trim(), pass.trim())
-                    else onAddM3u(name.trim(), url.trim())
-                }
-            ) { Text(if (loading) "Agregando…" else "Agregar") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !loading) { Text("Cancelar") } }
-    )
-}

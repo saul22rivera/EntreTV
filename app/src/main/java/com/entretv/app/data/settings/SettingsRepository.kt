@@ -4,12 +4,16 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.entretv.app.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsStore by preferencesDataStore(name = "entre_settings")
@@ -64,6 +68,55 @@ class SettingsRepository @Inject constructor(
         private val KEY_CLEAN_NAMES = booleanPreferencesKey("clean_names")
         private val KEY_PIN_HASH = stringPreferencesKey("parental_pin_hash")
         private val KEY_DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
+        private val KEY_SERVER_OVERRIDE = stringPreferencesKey("remote_server_url")
+        private val KEY_REMOTE_TMDB_KEY = stringPreferencesKey("remote_tmdb_key")
+        private val KEY_CONTINUE_DISMISSED = stringSetPreferencesKey("continue_dismissed")
+
+        private fun lastRefreshKey(playlistId: String) = longPreferencesKey("last_refresh_$playlistId")
+    }
+
+    /** Servidor de las cuentas: el de update.json si llegó, si no el que trae esta versión. */
+    val serverUrl: Flow<String> = context.settingsStore.data.map {
+        it[KEY_SERVER_OVERRIDE]?.takeIf { url -> url.isNotBlank() } ?: BuildConfig.DEFAULT_SERVER_URL
+    }
+
+    suspend fun setServerOverride(url: String) {
+        context.settingsStore.edit { it[KEY_SERVER_OVERRIDE] = url }
+    }
+
+    val tmdbApiKey: Flow<String> = context.settingsStore.data.map {
+        it[KEY_REMOTE_TMDB_KEY]?.takeIf { key -> key.isNotBlank() } ?: BuildConfig.TMDB_API_KEY
+    }
+
+    suspend fun setRemoteTmdbKey(key: String) {
+        context.settingsStore.edit { it[KEY_REMOTE_TMDB_KEY] = key }
+    }
+
+    suspend fun lastRefreshAt(playlistId: String): Long =
+        context.settingsStore.data.first()[lastRefreshKey(playlistId)] ?: 0L
+
+    suspend fun setLastRefreshAt(playlistId: String, at: Long) {
+        context.settingsStore.edit {
+            if (at <= 0L) it.remove(lastRefreshKey(playlistId)) else it[lastRefreshKey(playlistId)] = at
+        }
+    }
+
+    /**
+     * Series que el usuario quitó de "Seguir viendo" y cuándo. Vuelven a aparecer si mira
+     * algo de esa serie después; el progreso no se borra.
+     */
+    val continueDismissed: Flow<Map<String, Long>> = context.settingsStore.data.map { prefs ->
+        prefs[KEY_CONTINUE_DISMISSED].orEmpty().mapNotNull { entry ->
+            val at = entry.substringAfterLast('|').toLongOrNull() ?: return@mapNotNull null
+            entry.substringBeforeLast('|') to at
+        }.toMap()
+    }
+
+    suspend fun dismissContinue(key: String, at: Long) {
+        context.settingsStore.edit { prefs ->
+            val kept = prefs[KEY_CONTINUE_DISMISSED].orEmpty().filterNot { it.substringBeforeLast('|') == key }
+            prefs[KEY_CONTINUE_DISMISSED] = (kept + "$key|$at").takeLast(200).toSet()
+        }
     }
 
     /** Las descargas esperan a una red sin límite de datos (Wi‑Fi o cable). */

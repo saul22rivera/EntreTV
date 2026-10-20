@@ -25,18 +25,26 @@ import com.entretv.app.ui.player.TrackOption
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import com.entretv.app.data.local.FavoriteEntity
+import java.text.Normalizer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** Categoría en vivo del navegador de canales: [raw] es la clave, [label] lo que se muestra. */
+data class LiveCategory(val raw: String, val label: String, val count: Int)
 
 /** Contenido reproducible genérico. */
 sealed interface Playable {
@@ -68,12 +76,12 @@ sealed interface Playable {
         override val kind get() = "MOVIE"
     }
 
-    data class Episode(val episode: EpisodeEntity, val seriesTitle: String) : Playable {
+    data class Episode(val episode: EpisodeEntity, val seriesTitle: String, val seriesCover: String = "") : Playable {
         override val contentKey get() = episode.id   // playlistId:seriesId#epId
         override val streamUrl get() = episode.streamUrl
         override val title get() = seriesTitle
         override val subtitle get() = "T${episode.season}:E${episode.episodeNum} · ${episode.title}"
-        override val imageUrl get() = ""
+        override val imageUrl get() = episode.imageUrl.ifBlank { seriesCover }
         override val kind get() = "EPISODE"
     }
 }
@@ -225,6 +233,55 @@ class PlayerViewModel @Inject constructor(
         showNotice("Temporizador: reproducción en pausa", 5_000)
     }
 
+    // ============================ Navegador de canales ============================
+
+    /** Canales que se pueden zapear de la lista actual, con el grupo sin limpiar. */
+    private val _allChannels = MutableStateFlow<List<ChannelEntity>>(emptyList())
+    private var loadedPlaylist: String? = null
+    private val _currentGroup = MutableStateFlow("")
+
+    val liveCategories: StateFlow<List<LiveCategory>> = _allChannels
+        .map { all ->
+            all.groupingBy { it.groupTitle }.eachCount().map { (raw, count) ->
+                LiveCategory(raw, clean(raw).ifBlank { "Sin categoría" }, count)
+            }
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Categoría abierta en el navegador; null = la del canal que se está viendo. */
+    private val _browseCategory = MutableStateFlow<String?>(null)
+    val browseCategory: StateFlow<String> = combine(_browseCategory, _currentGroup) { chosen, current -> chosen ?: current }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+
+    private val _browseQuery = MutableStateFlow("")
+    val browseQuery: StateFlow<String> = _browseQuery
+
+    val browseChannels: StateFlow<List<ChannelEntity>> =
+        combine(_allChannels, browseCategory, _browseQuery) { all, category, query ->
+            val q = searchKey(query)
+            if (q.isNotEmpty()) all.filter { searchKey(it.name).contains(q) }.take(300).map(::display)
+            else all.filter { it.groupTitle == category }.map(::display)
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun browse(category: String) {
+        _browseQuery.value = ""
+        _browseCategory.value = category
+    }
+
+    fun searchChannels(query: String) { _browseQuery.value = query }
+
+    /** Al abrir el panel: vuelve a la categoría del canal actual, sin búsqueda. */
+    fun resetBrowse() {
+        _browseCategory.value = null
+        _browseQuery.value = ""
+    }
+
+    private fun searchKey(raw: String): String =
+        Normalizer.normalize(raw.trim().lowercase(), Normalizer.Form.NFD).replace(DIACRITICS, "")
+
     /** Programa actual de un canal según la guía guardada (sin ir a la red). */
     suspend fun nowPlaying(channel: ChannelEntity): String? =
         repository.upcomingEpg(channel, limit = 1).firstOrNull()?.title
@@ -235,13 +292,30 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch { startPlayable(Playable.LiveChannel(channel)) }
     }
 
+    /** "Siguiente capítulo": el actual cuenta como visto aunque no haya llegado al final. */
     fun playNextEpisode() {
         val p = _playable.value as? Playable.Episode ?: return
         val next = _nextEpisode.value ?: return
         viewModelScope.launch {
-            savePosition(p)
-            startPlayable(Playable.Episode(next, p.title))
+            markCompleted(p)
+            startPlayable(p.copy(episode = next))
         }
+    }
+
+    private suspend fun markCompleted(p: Playable) {
+        val duration = playerManager.durationMs.value.takeIf { it > 0 }
+            ?: playerManager.player.duration.takeIf { it > 0 }
+            ?: (p as? Playable.Episode)?.episode?.durationSecs?.takeIf { it > 0 }?.let { it * 1_000L }
+            ?: 1L
+        repository.saveProgress(
+            PlaybackProgressEntity(
+                contentKey = p.contentKey, kind = p.kind,
+                playlistId = p.contentKey.substringBefore(":"), refId = p.contentKey,
+                title = p.title, imageUrl = p.imageUrl, subtitle = p.subtitle,
+                positionMs = duration,
+                durationMs = duration
+            )
+        )
     }
 
     /** Canal, película o serie (en episodios) del contenido actual, para "Mi lista". */
@@ -296,9 +370,9 @@ class PlayerViewModel @Inject constructor(
                 if (ep != null) {
                     val series = repository.seriesById(ep.seriesKey)
                     _episodes.value = repository.episodeSnapshot(ep.seriesKey)
-                    startPlayable(Playable.Episode(ep, series?.name?.let(::clean) ?: "Serie"))
+                    startPlayable(Playable.Episode(ep, series?.name?.let(::clean) ?: "Serie", series?.cover.orEmpty()))
                 } else {
-                    downloads.get(contentKey)?.let { startPlayable(Playable.Episode(it.asEpisode(), it.title)) }
+                    downloads.get(contentKey)?.let { startPlayable(Playable.Episode(it.asEpisode(), it.title, it.imageUrl)) }
                 }
             }
         }
@@ -334,11 +408,15 @@ class PlayerViewModel @Inject constructor(
         }
         startProgressLoop(p)
         if (p is Playable.LiveChannel) {
+            if (loadedPlaylist != p.channel.playlistId) {
+                _allChannels.value = zappableChannels(p.channel.playlistId)
+                loadedPlaylist = p.channel.playlistId
+            }
+            val rawGroup = repository.channelById(p.channel.id)?.groupTitle ?: p.channel.groupTitle
+            _currentGroup.value = rawGroup
             val group = _groupChannels.value
             if (group.none { it.id == p.channel.id }) {
-                val zappable = zappableChannels(p.channel.playlistId)
-                val rawGroup = repository.channelById(p.channel.id)?.groupTitle ?: p.channel.groupTitle
-                _groupChannels.value = zappable.filter { it.groupTitle == rawGroup }.map(::display)
+                _groupChannels.value = _allChannels.value.filter { it.groupTitle == rawGroup }.map(::display)
             }
             _epg.value = repository.upcomingEpg(p.channel)
             repository.refreshEpg(p.channel)
@@ -385,18 +463,7 @@ class PlayerViewModel @Inject constructor(
     private fun onContentEnded() {
         val p = _playable.value ?: return
         viewModelScope.launch {
-            if (p.kind != "LIVE") {
-                savePosition(p)
-                repository.saveProgress(
-                    PlaybackProgressEntity(
-                        contentKey = p.contentKey, kind = p.kind,
-                        playlistId = p.contentKey.substringBefore(":"), refId = p.contentKey,
-                        title = p.title, imageUrl = p.imageUrl, subtitle = p.subtitle,
-                        positionMs = playerManager.durationMs.value,
-                        durationMs = playerManager.durationMs.value
-                    )
-                )
-            }
+            if (p.kind != "LIVE") markCompleted(p)
             if (_sleepMinutes.value == SLEEP_AT_END) {
                 sleepNow()
                 return@launch
@@ -406,7 +473,7 @@ class PlayerViewModel @Inject constructor(
                 if (next != null) {
                     showNotice("A continuación: T${next.season}:E${next.episodeNum}")
                     delay(2_500)
-                    if (_playable.value == p) startPlayable(Playable.Episode(next, p.title))
+                    if (_playable.value == p) startPlayable(p.copy(episode = next))
                 }
             }
         }
@@ -431,7 +498,7 @@ class PlayerViewModel @Inject constructor(
                     if (list.size < 2) return@launch
                     val idx = list.indexOfFirst { it.id == p.episode.id }
                     val next = list[(idx + delta + list.size) % list.size]
-                    startPlayable(Playable.Episode(next, p.title))
+                    startPlayable(p.copy(episode = next))
                 }
                 is Playable.Movie -> Unit
             }
@@ -455,6 +522,8 @@ class PlayerViewModel @Inject constructor(
     }
 
     companion object {
+        private val DIACRITICS = Regex("\\p{Mn}+")
+
         fun formatMs(ms: Long): String {
             val totalSec = ms / 1000
             val h = totalSec / 3600
