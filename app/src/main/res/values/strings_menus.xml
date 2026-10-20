@@ -64,6 +64,12 @@
     <string name="settings_max_buffer_60">60 s · conexiones inestables; en vivo va un poco más atrasado</string>
 
     <string name="settings_section_catalog">Catálogo</string>
+    <string name="settings_refresh">Actualizar el catálogo al entrar</string>
+    <string name="settings_refresh_desc">Bajar la lista completa tarda y puede trabar el video mientras tanto.</string>
+    <string name="settings_refresh_always">Cada vez que entras</string>
+    <string name="settings_refresh_daily">Una vez al día (la primera vez que entras)</string>
+    <string name="settings_refresh_twice">Dos veces al día (mañana y tarde)</string>
+    <string name="settings_refresh_now">Actualizar ahora</string>
     <string name="settings_default_sort">Orden por defecto</string>
     <string name="settings_default_sort_desc">“Original” respeta el orden en que lo manda tu proveedor.</string>
     <string name="settings_sort_original">Original · como viene de la lista</string>

@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -115,6 +116,8 @@ fun TvLiveScreen(
     onUnlock: () -> Unit,
     onFullscreen: (ChannelEntity) -> Unit,
     modifier: Modifier = Modifier,
+    /** False con el menú abierto: entonces no se recupera el foco solo. */
+    canTakeFocus: Boolean = true,
     viewModel: TvLiveViewModel = hiltViewModel()
 ) {
     LaunchedEffect(playlistId) { viewModel.setPlaylist(playlistId) }
@@ -166,12 +169,17 @@ fun TvLiveScreen(
         withFrameNanos { }
     }
 
+    /** La fila recién desplazada puede tardar un frame más en componerse: se reintenta. */
+    suspend fun focusRow(state: LazyListState, index: Int, requester: FocusRequester) {
+        repeat(3) {
+            reveal(state, index)
+            if (runCatching { requester.requestFocus() }.isSuccess) return
+        }
+    }
+
     fun focusCategory() {
         val name = selected ?: return
-        scope.launch {
-            reveal(catState, cats.indexOf(name).coerceAtLeast(0))
-            runCatching { catRequester(name).requestFocus() }
-        }
+        scope.launch { focusRow(catState, cats.indexOf(name).coerceAtLeast(0), catRequester(name)) }
     }
 
     fun focusChannel() {
@@ -179,10 +187,7 @@ fun TvLiveScreen(
         val target = list.firstOrNull { it.id == focusedId }
             ?: list.firstOrNull { it.id == playing?.id }
             ?: list.first()
-        scope.launch {
-            reveal(chState, list.indexOf(target))
-            runCatching { chRequester(target.id).requestFocus() }
-        }
+        scope.launch { focusRow(chState, list.indexOf(target), chRequester(target.id)) }
     }
 
     fun focusPlayer() {
@@ -192,13 +197,34 @@ fun TvLiveScreen(
         }
     }
 
+    // El foco puede llegar antes que los canales (al abrir la app o mientras se actualiza la
+    // lista): sin nada enfocable se perdía y las flechas dejaban de responder. Se guarda el
+    // pedido y se cumple cuando aparecen las categorías.
+    var pendingFocus by remember { mutableStateOf(false) }
+
     fun focusZone() {
         when {
+            cats.isEmpty() -> pendingFocus = true
             zone == LiveZone.PLAYER && playing != null -> focusPlayer()
             zone == LiveZone.CATEGORIES || list.isEmpty() -> focusCategory()
             else -> focusChannel()
         }
     }
+
+    val allowFocus by rememberUpdatedState(canTakeFocus)
+    LaunchedEffect(pendingFocus, cats.isNotEmpty(), canTakeFocus) {
+        if (!canTakeFocus) pendingFocus = false
+        if (pendingFocus && cats.isNotEmpty()) {
+            pendingFocus = false
+            withFrameNanos { }
+            focusZone()
+        }
+    }
+
+    // Si la lista cambia (actualización) y desaparece la fila enfocada, el foco queda en
+    // ningún lado: se devuelve a la zona donde estaba, salvo que se haya ido al menú.
+    var rootFocused by remember { mutableStateOf(false) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
 
     // Otra categoría: la lista arranca arriba (o en el canal que suena si está ahí).
     LaunchedEffect(selected) {
@@ -237,6 +263,16 @@ fun TvLiveScreen(
 
     Row(
         modifier = modifier
+            .onFocusChanged {
+                val had = rootFocused
+                rootFocused = it.hasFocus
+                if (had && !it.hasFocus) scope.launch {
+                    withFrameNanos { }
+                    withFrameNanos { }
+                    val resumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                    if (!rootFocused && allowFocus && resumed && !viewModel.openingFullscreen) focusZone()
+                }
+            }
             .focusProperties {
                 enter = {
                     focusZone()

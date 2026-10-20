@@ -20,18 +20,30 @@ import kotlin.math.abs
  * y anchos, y saltaba a otro índice o al "Ver todo" del encabezado.
  *
  * Cada fila es un ítem del LazyColumn con la clave de [rowOrder]; sus elementos se registran
- * con [tvNavItem].
+ * con [tvNavItem]. Una fila puede tener debajo su botón "Ver todo" (clave de la fila +
+ * [ALL_SUFFIX]): es una parada más al bajar, dentro del mismo ítem del LazyColumn.
  */
 @Stable
 class TvCatalogNav {
     data class Slot(val row: String, val index: Int)
 
-    /** Claves de las filas, en el orden en que están en el LazyColumn. */
+    companion object {
+        const val ALL_SUFFIX = "#all"
+    }
+
+    /** Paradas de arriba abajo: filas y botones "Ver todo", en el orden del LazyColumn. */
     var rowOrder: List<String> = emptyList()
     var columnState: LazyListState? = null
 
     private val rows = HashMap<String, LazyListState>()
     private val requesters = HashMap<Slot, FocusRequester>()
+    /** Último póster enfocado de cada fila: al subir desde su "Ver todo" se vuelve a él. */
+    private val lastIndex = HashMap<String, Int>()
+
+    private fun columnKey(entry: String) = entry.removeSuffix(ALL_SUFFIX)
+
+    /** Posición en el LazyColumn: el botón "Ver todo" está en el ítem de su fila. */
+    private fun columnIndex(entry: String) = rowOrder.filterNot { it.endsWith(ALL_SUFFIX) }.indexOf(columnKey(entry))
 
     /** Elemento de fila con el foco ahora; null si el foco está en otra cosa. */
     var focused: Slot? = null
@@ -63,6 +75,7 @@ class TvCatalogNav {
         if (isFocused) {
             focused = slot
             last = slot
+            if (!slot.row.endsWith(ALL_SUFFIX)) lastIndex[slot.row] = slot.index
         } else if (focused == slot) {
             focused = null
         }
@@ -75,6 +88,7 @@ class TvCatalogNav {
     fun reset() {
         last = null
         focused = null
+        lastIndex.clear()
     }
 
     /** true si [key] lo resuelve [move] o hay que tragarla (derecha en el último de la fila). */
@@ -84,6 +98,8 @@ class TvCatalogNav {
         return when (key) {
             Key.DirectionUp, Key.DirectionDown -> true
             Key.DirectionRight -> {
+                // "Ver todo" está solo en su renglón: derecha no tiene adónde ir.
+                if (current.row.endsWith(ALL_SUFFIX)) return true
                 val total = rows[current.row]?.layoutInfo?.totalItemsCount ?: return false
                 current.index >= total - 1
             }
@@ -109,6 +125,7 @@ class TvCatalogNav {
         busy = true
         try {
             val targetRow = order[to]
+            val targetColumn = columnIndex(targetRow)
             val column = columnState
             val currentState = rows[current.row]
             val currentInfo = currentState?.layoutInfo?.visibleItemsInfo?.firstOrNull { it.index == current.index }
@@ -116,15 +133,24 @@ class TvCatalogNav {
             val visibleColumn = current.index - (currentState?.firstVisibleItemIndex ?: 0)
 
             // La fila de destino tiene que estar compuesta para conocer sus elementos.
-            if (column != null && column.layoutInfo.visibleItemsInfo.none { it.key == targetRow }) {
-                column.scrollToItem(to)
+            if (column != null && targetColumn >= 0 && column.layoutInfo.visibleItemsInfo.none { it.key == columnKey(targetRow) }) {
+                column.scrollToItem(targetColumn)
                 withFrameNanos { }
+            }
+            if (targetRow.endsWith(ALL_SUFFIX)) {
+                val requester = requesters[Slot(targetRow, 0)] ?: return
+                if (runCatching { requester.requestFocus() }.isSuccess && targetColumn >= 0) {
+                    column?.animateScrollToItem(targetColumn)
+                }
+                return
             }
             val targetState = rows[targetRow] ?: return
             val total = targetState.layoutInfo.totalItemsCount
             if (total == 0) return
             val visible = targetState.layoutInfo.visibleItemsInfo
+            val comingBack = current.row == targetRow + ALL_SUFFIX
             val index = when {
+                comingBack && lastIndex[targetRow] != null -> lastIndex.getValue(targetRow)
                 centerX != null && visible.isNotEmpty() ->
                     visible.minBy { abs(it.offset + it.size / 2 - centerX) }.index
                 else -> targetState.firstVisibleItemIndex + visibleColumn
@@ -136,9 +162,9 @@ class TvCatalogNav {
                 withFrameNanos { }
                 requester = requesters[Slot(targetRow, index)]
             }
-            if (requester != null && runCatching { requester.requestFocus() }.isSuccess) {
+            if (requester != null && runCatching { requester.requestFocus() }.isSuccess && targetColumn >= 0) {
                 // La fila enfocada queda arriba, con su título a la vista.
-                column?.animateScrollToItem(to)
+                column?.animateScrollToItem(targetColumn)
             }
         } finally {
             busy = false

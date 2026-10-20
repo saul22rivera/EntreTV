@@ -556,11 +556,16 @@ private fun TvExpandedPanel(
                         if (down && level == TvLevel.CATEGORIES) go(TvLevel.MENU)
                         true
                     }
+                    // Sin categorías (En vivo, búsqueda) derecha cierra el menú y el foco vuelve a
+                    // lo que se estaba viendo. Dejarlo a la búsqueda por geometría lo mandaba al
+                    // campo de búsqueda o a ningún lado.
                     Key.DirectionRight -> {
-                        if (level == TvLevel.MENU && hasCategories) {
-                            if (down) go(TvLevel.CATEGORIES)
-                            true
-                        } else false
+                        when {
+                            level == TvLevel.MENU && hasCategories -> if (down) go(TvLevel.CATEGORIES)
+                            level == TvLevel.MENU -> if (down) onCollapse()
+                            else -> return@onPreviewKeyEvent false
+                        }
+                        true
                     }
                     Key.Back, Key.Escape -> {
                         if (down) {

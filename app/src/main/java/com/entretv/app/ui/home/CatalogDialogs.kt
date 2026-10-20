@@ -111,6 +111,10 @@ fun SettingsPanel(
     onSubtitlesByDefaultChange: (Boolean) -> Unit,
     onLiveFormatChange: (String) -> Unit,
     onDecoderChange: (Int) -> Unit,
+    refreshMode: Int,
+    onRefreshModeChange: (Int) -> Unit,
+    lastRefreshLabel: String,
+    onRefreshNow: () -> Unit,
     downloadWifiOnly: Boolean,
     onDownloadWifiOnlyChange: (Boolean) -> Unit,
     bufferSeconds: Int,
@@ -212,6 +216,16 @@ fun SettingsPanel(
 
             Divider()
             SectionTitle(stringResource(R.string.settings_section_catalog))
+            SettingLabel(stringResource(R.string.settings_refresh), stringResource(R.string.settings_refresh_desc))
+            listOf(
+                SettingsRepository.REFRESH_ALWAYS to R.string.settings_refresh_always,
+                SettingsRepository.REFRESH_DAILY to R.string.settings_refresh_daily,
+                SettingsRepository.REFRESH_TWICE_DAILY to R.string.settings_refresh_twice
+            ).forEach { (mode, label) ->
+                RadioLine(stringResource(label), refreshMode == mode) { onRefreshModeChange(mode) }
+            }
+            ActionLine(stringResource(R.string.settings_refresh_now), lastRefreshLabel, onRefreshNow)
+            Spacer(Modifier.height(10.dp))
             SettingLabel(stringResource(R.string.settings_default_sort), stringResource(R.string.settings_default_sort_desc))
             SortOrder.entries.forEach { order ->
                 RadioLine(stringResource(sortLabel(order)), order == defaultSort) { onDefaultSortChange(order) }

@@ -9,6 +9,7 @@ import com.entretv.app.BuildConfig
 import com.entretv.app.R
 import com.entretv.app.ui.UiText
 import com.entretv.app.ui.uiText
+import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.local.AppDatabase
 import com.entretv.app.data.local.CatalogDao
 import com.entretv.app.data.local.CategoryEntity
@@ -48,11 +49,13 @@ import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.util.Calendar
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -104,6 +107,9 @@ class PlaylistRepository @Inject constructor(
 
     /** Una sola actualización a la vez; las que llegan mientras tanto esperan y casi siempre se saltan. */
     private val refreshLock = Mutex()
+
+    /** Bajar y leer el catálogo (canales, películas y series a la vez) sin quitarle CPU al video. */
+    private val syncDispatcher = backgroundExecutor("catalog-sync", 3).asCoroutineDispatcher()
 
     val playlists: Flow<List<PlaylistEntity>> = playlistDao.observeAll()
 
@@ -287,12 +293,12 @@ class PlaylistRepository @Inject constructor(
 
     /**
      * Actualización al entrar: lo guardado se ve al instante y esto corre en segundo plano.
-     * Sin [force], una lista actualizada hace menos de [REFRESH_INTERVAL_MS] se salta.
+     * Sin [force] se respeta la frecuencia de Configuración (por defecto, una vez al día).
      * Cada sección (canales, películas, series) es independiente: si una falla se conserva lo guardado.
      *
      * @return secciones que no se pudieron actualizar, con el motivo.
      */
-    suspend fun refreshAll(force: Boolean = false): Result<List<UiText>> = withContext(Dispatchers.IO) {
+    suspend fun refreshAll(force: Boolean = false): Result<List<UiText>> = withContext(syncDispatcher) {
         runCatching {
             refreshLock.withLock {
                 playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force) }
@@ -300,7 +306,7 @@ class PlaylistRepository @Inject constructor(
         }
     }
 
-    suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<UiText>> = withContext(Dispatchers.IO) {
+    suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<UiText>> = withContext(syncDispatcher) {
         runCatching {
             refreshLock.withLock {
                 val p = playlistDao.get(playlistId) ?: error("Playlist no encontrada")
@@ -314,7 +320,7 @@ class PlaylistRepository @Inject constructor(
 
     private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean): List<UiText> {
         val last = settings.lastRefreshAt(p.id)
-        if (!force && System.currentTimeMillis() - last < REFRESH_INTERVAL_MS) return emptyList()
+        if (!force && !refreshDue(last, settings.refreshMode.first())) return emptyList()
         val failed = coroutineScope {
             val account = async { refreshAccountInfo(p) }
             refreshPlaylistInternal(p, force).also { account.await() }
@@ -744,8 +750,23 @@ class PlaylistRepository @Inject constructor(
         const val SECTION_MOVIES = "MOVIES"
         const val SECTION_SERIES = "SERIES"
         private const val MAX_ATTEMPTS = 4
-        /** Al entrar no se vuelve a bajar todo si se actualizó hace menos de esto. */
-        const val REFRESH_INTERVAL_MS = 4L * 60 * 60 * 1000
         private val CATEGORY_LIST = ListSerializer(XtreamCategory.serializer())
+
+        /**
+         * Toca actualizar al entrar según [mode]: siempre, si la última fue otro día, o si fue
+         * en la otra mitad del día (antes y después de las 12).
+         */
+        fun refreshDue(last: Long, mode: Int, now: Long = System.currentTimeMillis()): Boolean {
+            if (last <= 0L || mode == SettingsRepository.REFRESH_ALWAYS) return true
+            val then = Calendar.getInstance().apply { timeInMillis = last }
+            val today = Calendar.getInstance().apply { timeInMillis = now }
+            val sameDay = then.get(Calendar.YEAR) == today.get(Calendar.YEAR) &&
+                then.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)
+            return when (mode) {
+                SettingsRepository.REFRESH_TWICE_DAILY ->
+                    !sameDay || then.get(Calendar.AM_PM) != today.get(Calendar.AM_PM)
+                else -> !sameDay
+            }
+        }
     }
 }

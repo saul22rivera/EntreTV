@@ -48,6 +48,10 @@
     <!-- Cabecera -->
     <string name="home_home">Inicio</string>
     <string name="home_refresh">Actualizar</string>
+    <string name="home_last_update">Actualizado %1$s</string>
+    <string name="home_never_updated">Sin actualizar todavía</string>
+    <string name="home_today_at">hoy %1$s</string>
+    <string name="home_yesterday_at">ayer %1$s</string>
     <string name="home_more_options">Más opciones</string>
     <string name="home_downloads">Descargas</string>
     <string name="home_settings">Configuración</string>

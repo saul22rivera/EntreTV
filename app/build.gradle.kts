@@ -32,8 +32,8 @@ android {
         applicationId = "com.entretv.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
         resourceConfigurations += listOf("es", "en")
         // Solo el release busca actualizaciones: el APK publicado es otro paquete que el de depuración.
         buildConfigField("String", "UPDATE_URL", "\"\"")

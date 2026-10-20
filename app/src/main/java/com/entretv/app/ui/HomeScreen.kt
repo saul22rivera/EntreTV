@@ -208,6 +208,8 @@ fun HomeScreen(
     val playerPrefs by viewModel.playerPrefs.collectAsState()
     val showClock by viewModel.showClock.collectAsState()
     val accountInfo by viewModel.accountInfo.collectAsState()
+    val lastRefreshAt by viewModel.lastRefreshAt.collectAsState()
+    val refreshMode by viewModel.refreshMode.collectAsState()
     val pinSet by viewModel.pinSet.collectAsState()
     val parentalUnlocked by viewModel.parentalUnlocked.collectAsState()
     val hiddenItems by viewModel.hiddenItems.collectAsState()
@@ -426,7 +428,8 @@ fun HomeScreen(
                     onDownloads = onOpenDownloads,
                     onLogo = if (profile.compactRail) ::goHome else null,
                     headerFocus = headerFocus,
-                    showClock = showClock
+                    showClock = showClock,
+                    lastUpdate = lastUpdateLabel(lastRefreshAt)
                 )
 
                 if (profile.compactRail && !showSummary && !searchOpen && !contentStale) {
@@ -531,7 +534,9 @@ fun HomeScreen(
                                             else -> 0
                                         }
                                         if (dir != 0) scope.launch {
-                                            tvNav.move(dir) { runCatching { headerFocus.requestFocus() } }
+                                            tvNav.move(dir) {
+                                                runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() }
+                                            }
                                         }
                                     }
                                     true
@@ -582,6 +587,7 @@ fun HomeScreen(
                             onOpenMenu = { setRailExpanded(true) },
                             onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
                             onFullscreen = { onPlayLiveFullscreen(it.id) },
+                            canTakeFocus = !railExpanded,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .onFocusChanged {
@@ -877,6 +883,13 @@ fun HomeScreen(
             onSubtitlesByDefaultChange = viewModel::setSubtitlesByDefault,
             onLiveFormatChange = viewModel::setLiveFormat,
             onDecoderChange = viewModel::setDecoder,
+            refreshMode = refreshMode,
+            onRefreshModeChange = viewModel::setRefreshMode,
+            lastRefreshLabel = lastUpdateLabel(lastRefreshAt),
+            onRefreshNow = {
+                showSettings = false
+                viewModel.refreshAll()
+            },
             downloadWifiOnly = downloadWifiOnly,
             onDownloadWifiOnlyChange = viewModel::setDownloadWifiOnly,
             bufferSeconds = bufferSeconds,
@@ -1108,7 +1121,7 @@ private fun CatalogRows(
         if (continueWatching.isNotEmpty()) add("continue")
         if (content.top10.isNotEmpty()) add("top10")
         others.forEach { add("row:${it.title}") }
-    }
+    }.flatMap { if (it.startsWith("row:")) listOf(it, it + TvCatalogNav.ALL_SUFFIX) else listOf(it) }
     if (tvNav != null) {
         tvNav.rowOrder = rowOrder
         tvNav.columnState = listState
@@ -1454,7 +1467,8 @@ private fun HomeHeader(
     onLogo: (() -> Unit)? = null,
     /** Lupa: a ella sube el foco desde la primera fila en TV. */
     headerFocus: FocusRequester = remember { FocusRequester() },
-    showClock: Boolean = false
+    showClock: Boolean = false,
+    lastUpdate: String = ""
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -1480,6 +1494,16 @@ private fun HomeHeader(
                 contentDescription = stringResource(if (searchOpen) R.string.home_search_close else R.string.home_search)
             )
         }
+        // En el celular no entra junto a los botones: va dentro del menú de tres puntos.
+        if (!profile.compactRail && lastUpdate.isNotEmpty()) {
+            Text(
+                lastUpdate,
+                style = MaterialTheme.typography.labelMedium,
+                color = EntreBrand.TextDim,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
         IconButton(onClick = onRefresh) {
             if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
@@ -1489,6 +1513,14 @@ private fun HomeHeader(
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_more_options))
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                if (profile.compactRail && lastUpdate.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.home_refresh)) },
+                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                        trailingIcon = { Text(lastUpdate, style = MaterialTheme.typography.labelSmall, color = EntreBrand.TextDim) },
+                        onClick = { menuOpen = false; onRefresh() }
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.home_downloads)) },
                     leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
@@ -1699,6 +1731,15 @@ private fun CatalogRow(
                 }
             }
         }
+        // En TV también debajo de la fila: se llega bajando, sin recorrerla hasta el final.
+        if (profile.isTv && tvNav != null) {
+            SeeAllButton(
+                onClick = onSeeAll,
+                modifier = Modifier
+                    .padding(start = profile.edge, top = 2.dp)
+                    .tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0)
+            )
+        }
     }
 }
 
@@ -1773,13 +1814,13 @@ private fun RowHeader(title: String, profile: DeviceProfile, onSeeAll: (() -> Un
 }
 
 @Composable
-private fun SeeAllButton(onClick: () -> Unit) {
+private fun SeeAllButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val shape = RoundedCornerShape(50)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
+        modifier = modifier
             .clip(shape)
             .background(if (focused) EntreBrand.Accent else Color.Transparent)
             .border(1.dp, EntreBrand.Accent.copy(alpha = if (focused) 0f else 0.5f), shape)

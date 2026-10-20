@@ -85,6 +85,12 @@ class SettingsRepository @Inject constructor(
         const val DECODER_HARDWARE = 1
         const val DECODER_SOFTWARE = 2
 
+        /** Actualización del catálogo al entrar a la app. */
+        const val REFRESH_ALWAYS = 0
+        const val REFRESH_DAILY = 1
+        const val REFRESH_TWICE_DAILY = 2
+
+        private val KEY_REFRESH_MODE = intPreferencesKey("refresh_mode")
         private val KEY_BUFFER_SECONDS = intPreferencesKey("start_buffer_seconds")
         private val KEY_MAX_BUFFER_SECONDS = intPreferencesKey("max_buffer_seconds")
         private val KEY_CONTENT_LANGUAGE = stringPreferencesKey("content_language")
@@ -147,6 +153,15 @@ class SettingsRepository @Inject constructor(
 
     suspend fun lastRefreshAt(playlistId: String): Long =
         context.settingsStore.data.first()[lastRefreshKey(playlistId)] ?: 0L
+
+    fun lastRefreshFlow(playlistId: String): Flow<Long> =
+        context.settingsStore.data.map { it[lastRefreshKey(playlistId)] ?: 0L }
+
+    val refreshMode: Flow<Int> = context.settingsStore.data.map { it[KEY_REFRESH_MODE] ?: REFRESH_DAILY }
+
+    suspend fun setRefreshMode(mode: Int) {
+        context.settingsStore.edit { it[KEY_REFRESH_MODE] = mode }
+    }
 
     suspend fun setLastRefreshAt(playlistId: String, at: Long) {
         context.settingsStore.edit {

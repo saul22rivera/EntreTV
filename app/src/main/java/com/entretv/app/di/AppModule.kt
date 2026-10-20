@@ -2,6 +2,7 @@ package com.entretv.app.di
 
 import android.content.Context
 import androidx.room.Room
+import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.local.AppDatabase
 import com.entretv.app.data.local.CatalogDao
 import com.entretv.app.data.local.ChannelDao
@@ -81,6 +82,8 @@ object AppModule {
                 AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5,
                 AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7
             )
+            // Las escrituras grandes (todo el catálogo) no compiten con la reproducción.
+            .setTransactionExecutor(backgroundExecutor("db-write", 2))
             .build()
 
     @Provides fun providePlaylistDao(db: AppDatabase): PlaylistDao = db.playlistDao()

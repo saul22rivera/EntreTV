@@ -382,6 +382,20 @@ class HomeViewModel @Inject constructor(
         .flatMapLatest { id -> if (id == null) flowOf(null) else repository.accountInfo(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** Cuándo se actualizó por última vez el catálogo de la cuenta activa (0 = nunca). */
+    val lastRefreshAt: StateFlow<Long> = account
+        .map { it?.id }
+        .distinctUntilChanged()
+        .flatMapLatest { id -> if (id == null) flowOf(0L) else settings.lastRefreshFlow(id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+
+    val refreshMode: StateFlow<Int> = settings.refreshMode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsRepository.REFRESH_DAILY)
+
+    fun setRefreshMode(mode: Int) {
+        viewModelScope.launch { settings.setRefreshMode(mode) }
+    }
+
     private val hiddenKeys: Flow<Set<String>> =
         repository.hiddenItems.map { list -> list.map { it.contentKey }.toSet() }
 
