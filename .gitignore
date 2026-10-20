@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.cursor/
+.kotlin/
+*.hprof
+
+# Firma de release: nunca subir al repositorio
+keystore.properties
+*.jks
+*.keystore
