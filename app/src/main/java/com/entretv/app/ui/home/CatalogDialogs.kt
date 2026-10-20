@@ -1,5 +1,6 @@
 package com.entretv.app.ui.home
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -62,6 +63,10 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.core.os.ConfigurationCompat
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -70,13 +75,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.entretv.app.R
 import com.entretv.app.data.local.HiddenItemEntity
+import com.entretv.app.data.settings.AccountInfo
 import com.entretv.app.data.settings.ParentalControl
+import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
+import java.text.DateFormat
+import java.util.Date
+import java.util.Locale
 import com.entretv.app.ui.AccountFields
 import com.entretv.app.ui.CategoryInfo
 import com.entretv.app.ui.Section
 import com.entretv.app.ui.SortOrder
+import com.entretv.app.ui.label
 import com.entretv.app.ui.theme.EntreBrand
 
 // ============================ Configuración ============================
@@ -85,10 +97,20 @@ import com.entretv.app.ui.theme.EntreBrand
 fun SettingsPanel(
     accountName: String,
     accountUser: String,
+    accountInfo: AccountInfo?,
     onEditAccount: () -> Unit,
     onLogout: () -> Unit,
     appVersion: String,
     onCheckUpdates: () -> Unit,
+    appLanguage: String,
+    onAppLanguageChange: (String) -> Unit,
+    showClock: Boolean,
+    onShowClockChange: (Boolean) -> Unit,
+    playerPrefs: PlayerPrefs,
+    onContentLanguageChange: (String) -> Unit,
+    onSubtitlesByDefaultChange: (Boolean) -> Unit,
+    onLiveFormatChange: (String) -> Unit,
+    onDecoderChange: (Int) -> Unit,
     downloadWifiOnly: Boolean,
     onDownloadWifiOnlyChange: (Boolean) -> Unit,
     bufferSeconds: Int,
@@ -111,114 +133,266 @@ fun SettingsPanel(
     onUnlock: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    PanelDialog(title = "Configuración", onDismiss = onDismiss) {
+    PanelDialog(title = stringResource(R.string.settings_title), onDismiss = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
-            SectionTitle("Cuenta")
-            Text(
-                if (accountName.isNotBlank() && accountName != accountUser) "$accountName · usuario $accountUser" else "Usuario $accountUser",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-            ActionLine("Cambiar de usuario", "Edita tu nombre, usuario o contraseña", onEditAccount)
-            ActionLine("Cerrar sesión", "Vuelve a la pantalla de inicio de sesión", onLogout)
+            AccountCard(accountName, accountUser, accountInfo)
+            ActionLine(stringResource(R.string.settings_switch_user), stringResource(R.string.settings_switch_user_desc), onEditAccount)
+            ActionLine(stringResource(R.string.settings_logout), stringResource(R.string.settings_logout_desc), onLogout)
 
             Divider()
-            SectionTitle("Reproducción")
+            SectionTitle(stringResource(R.string.settings_section_language))
+            SettingLabel(stringResource(R.string.settings_app_language), stringResource(R.string.settings_app_language_desc))
+            APP_LANGUAGES.forEach { (code, label) ->
+                RadioLine(label, appLanguage == code) { onAppLanguageChange(code) }
+            }
+            Spacer(Modifier.height(10.dp))
             SettingLabel(
-                "Búfer de arranque",
-                "Segundos de video que se cargan antes de empezar y después de un corte."
+                stringResource(R.string.settings_content_language),
+                stringResource(R.string.settings_content_language_desc)
+            )
+            SettingsRepository.CONTENT_LANGUAGES.forEach { code ->
+                RadioLine(stringResource(contentLanguageLabel(code)), playerPrefs.contentLanguage == code) { onContentLanguageChange(code) }
+            }
+            Spacer(Modifier.height(6.dp))
+            SwitchLine(
+                title = stringResource(R.string.settings_subtitles),
+                subtitle = if (playerPrefs.subtitlesByDefault)
+                    stringResource(R.string.settings_subtitles_on, stringResource(contentLanguageInline(playerPrefs.contentLanguage)))
+                else stringResource(R.string.settings_subtitles_off),
+                checked = playerPrefs.subtitlesByDefault,
+                onChange = onSubtitlesByDefaultChange
+            )
+
+            Divider()
+            SectionTitle(stringResource(R.string.settings_section_display))
+            SwitchLine(
+                title = stringResource(R.string.settings_clock),
+                subtitle = stringResource(R.string.settings_clock_desc),
+                checked = showClock,
+                onChange = onShowClockChange
+            )
+
+            Divider()
+            SectionTitle(stringResource(R.string.settings_section_playback))
+            SettingLabel(
+                stringResource(R.string.settings_live_format),
+                stringResource(R.string.settings_live_format_desc)
+            )
+            RadioLine(stringResource(R.string.settings_live_hls), playerPrefs.liveFormat == SettingsRepository.LIVE_HLS) {
+                onLiveFormatChange(SettingsRepository.LIVE_HLS)
+            }
+            RadioLine(stringResource(R.string.settings_live_ts), playerPrefs.liveFormat == SettingsRepository.LIVE_TS) {
+                onLiveFormatChange(SettingsRepository.LIVE_TS)
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingLabel(stringResource(R.string.settings_decoder), stringResource(R.string.settings_decoder_desc))
+            listOf(
+                SettingsRepository.DECODER_AUTO to R.string.settings_decoder_auto,
+                SettingsRepository.DECODER_HARDWARE to R.string.settings_decoder_hardware,
+                SettingsRepository.DECODER_SOFTWARE to R.string.settings_decoder_software
+            ).forEach { (mode, label) ->
+                RadioLine(stringResource(label), playerPrefs.decoder == mode) { onDecoderChange(mode) }
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingLabel(
+                stringResource(R.string.settings_buffer),
+                stringResource(R.string.settings_buffer_desc)
             )
             SettingsRepository.BUFFER_OPTIONS.forEach { seconds ->
                 RadioLine(bufferLabel(seconds), seconds == bufferSeconds) { onBufferChange(seconds) }
             }
             Spacer(Modifier.height(10.dp))
             SettingLabel(
-                "Búfer máximo",
-                "Cuánto video por delante se descarga. Más búfer aguanta mejor una conexión inestable."
+                stringResource(R.string.settings_max_buffer),
+                stringResource(R.string.settings_max_buffer_desc)
             )
             SettingsRepository.MAX_BUFFER_OPTIONS.forEach { seconds ->
                 RadioLine(maxBufferLabel(seconds), seconds == maxBufferSeconds) { onMaxBufferChange(seconds) }
             }
 
             Divider()
-            SectionTitle("Catálogo")
-            SettingLabel("Orden por defecto", "“Original” respeta el orden en que lo manda tu proveedor.")
+            SectionTitle(stringResource(R.string.settings_section_catalog))
+            SettingLabel(stringResource(R.string.settings_default_sort), stringResource(R.string.settings_default_sort_desc))
             SortOrder.entries.forEach { order ->
-                RadioLine(sortLabel(order), order == defaultSort) { onDefaultSortChange(order) }
+                RadioLine(stringResource(sortLabel(order)), order == defaultSort) { onDefaultSortChange(order) }
             }
             Spacer(Modifier.height(6.dp))
             SwitchLine(
-                title = "Limpiar nombres",
-                subtitle = "Quita prefijos y etiquetas como “ES:”, “US|” o “[HD]”.",
+                title = stringResource(R.string.settings_clean_names),
+                subtitle = stringResource(R.string.settings_clean_names_desc),
                 checked = cleanNames,
                 onChange = onCleanNamesChange
             )
-            ActionLine("Organizar categorías", "Ocultar, reordenar y marcar como adultos", onOrganize)
+            ActionLine(stringResource(R.string.settings_organize), stringResource(R.string.settings_organize_desc), onOrganize)
             ActionLine(
-                "Títulos y canales ocultos",
-                if (hiddenCount == 0) "No ocultaste nada" else "$hiddenCount ocultos",
+                stringResource(R.string.settings_hidden),
+                if (hiddenCount == 0) stringResource(R.string.settings_hidden_none)
+                else pluralStringResource(R.plurals.settings_hidden_count, hiddenCount, hiddenCount),
                 onHiddenItems
             )
 
             Divider()
-            SectionTitle("Control parental")
+            SectionTitle(stringResource(R.string.settings_section_parental))
             if (!pinSet) {
                 Text(
-                    "Con un PIN, las categorías de adultos quedan ocultas hasta que lo ingreses.",
+                    stringResource(R.string.settings_pin_intro),
                     style = MaterialTheme.typography.bodySmall,
                     color = EntreBrand.TextDim,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
-                ActionLine("Crear PIN", "4 dígitos", onCreatePin)
+                ActionLine(stringResource(R.string.settings_create_pin), stringResource(R.string.settings_create_pin_desc), onCreatePin)
             } else {
                 Text(
-                    if (unlocked) "Desbloqueado hasta cerrar la app." else "Contenido para adultos bloqueado.",
+                    stringResource(if (unlocked) R.string.settings_unlocked_status else R.string.settings_locked_status),
                     style = MaterialTheme.typography.bodySmall,
                     color = EntreBrand.TextDim,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
-                if (unlocked) ActionLine("Bloquear ahora", null, onLockNow)
-                else ActionLine("Desbloquear", "Muestra el contenido para adultos en esta sesión", onUnlock)
-                ActionLine("Cambiar PIN", null, onChangePin)
-                ActionLine("Quitar PIN", null, onRemovePin)
+                if (unlocked) ActionLine(stringResource(R.string.settings_lock_now), null, onLockNow)
+                else ActionLine(stringResource(R.string.settings_unlock), stringResource(R.string.settings_unlock_desc), onUnlock)
+                ActionLine(stringResource(R.string.settings_change_pin), null, onChangePin)
+                ActionLine(stringResource(R.string.settings_remove_pin), null, onRemovePin)
             }
 
             Divider()
-            SectionTitle("Descargas")
+            SectionTitle(stringResource(R.string.settings_section_downloads))
             SwitchLine(
-                title = "Descargar solo con Wi‑Fi",
-                subtitle = "Espera una red sin límite de datos (Wi‑Fi o cable) para no gastar datos móviles.",
+                title = stringResource(R.string.settings_wifi_only),
+                subtitle = stringResource(R.string.settings_wifi_only_desc),
                 checked = downloadWifiOnly,
                 onChange = onDownloadWifiOnlyChange
             )
 
             Divider()
-            SectionTitle("Aplicación")
-            ActionLine("Buscar actualizaciones", "Versión instalada: $appVersion", onCheckUpdates)
+            SectionTitle(stringResource(R.string.settings_section_app))
+            ActionLine(stringResource(R.string.settings_check_updates), stringResource(R.string.settings_installed_version, appVersion), onCheckUpdates)
         }
     }
 }
 
+/** Idiomas de la app: código para AppCompat y nombre en su propio idioma. */
+val APP_LANGUAGES = listOf("es" to "Español", "en" to "English")
+
+@StringRes
+private fun contentLanguageLabel(code: String): Int = when (code) {
+    "en" -> R.string.settings_language_en
+    else -> R.string.settings_language_es
+}
+
+@StringRes
+private fun contentLanguageInline(code: String): Int = when (code) {
+    "en" -> R.string.settings_language_en_inline
+    else -> R.string.settings_language_es_inline
+}
+
+/** Nombre, usuario, estado y vencimiento de la cuenta, arriba de Configuración. */
+@Composable
+private fun AccountCard(name: String, user: String, info: AccountInfo?) {
+    val locale = ConfigurationCompat.getLocales(LocalConfiguration.current)[0] ?: Locale.getDefault()
+    val now = System.currentTimeMillis()
+    val expiresMs = (info?.expiresAt ?: 0L) * 1000
+    val expired = info?.status.equals("Expired", true) || (expiresMs > 0 && expiresMs < now)
+    val active = !expired && (info?.status.isNullOrBlank() || info?.status.equals("Active", true))
+    val daysLeft = if (expiresMs > now) ((expiresMs - now) / 86_400_000L).toInt() else -1
+    val statusText = when {
+        info == null -> null
+        expired -> stringResource(R.string.settings_status_expired)
+        active && info.isTrial -> stringResource(R.string.settings_status_trial)
+        active -> stringResource(R.string.settings_status_active)
+        info.status.equals("Banned", true) -> stringResource(R.string.settings_status_banned)
+        info.status.equals("Disabled", true) -> stringResource(R.string.settings_status_disabled)
+        else -> info.status
+    }
+    val statusColor = when {
+        expired || !active -> Color(0xFFE5484D)
+        daysLeft in 0..7 -> Color(0xFFF5A524)
+        else -> Color(0xFF30A46C)
+    }
+    Surface(
+        color = Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    name.ifBlank { user },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (statusText != null) {
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        statusText,
+                        color = statusColor,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .background(statusColor.copy(alpha = 0.15f), RoundedCornerShape(50))
+                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                    )
+                }
+            }
+            Text(stringResource(R.string.settings_user, user), style = MaterialTheme.typography.bodyMedium, color = EntreBrand.TextDim)
+            Spacer(Modifier.height(6.dp))
+            val expiry = when {
+                info == null -> stringResource(R.string.settings_status_unknown)
+                expiresMs <= 0 -> stringResource(R.string.settings_no_expiry)
+                else -> {
+                    val date = DateFormat.getDateInstance(DateFormat.LONG, locale).format(Date(expiresMs))
+                    when {
+                        expired -> stringResource(R.string.settings_expired_on, date)
+                        daysLeft == 0 -> stringResource(R.string.settings_expires_today, date)
+                        daysLeft == 1 -> stringResource(R.string.settings_expires_tomorrow, date)
+                        daysLeft <= 30 -> pluralStringResource(R.plurals.settings_expires_days_left, daysLeft, date, daysLeft)
+                        else -> stringResource(R.string.settings_expires_on, date)
+                    }
+                }
+            }
+            Text(
+                expiry,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (expired || daysLeft in 0..7) statusColor else Color.White
+            )
+            if ((info?.maxConnections ?: 0) > 0) {
+                Text(
+                    pluralStringResource(R.plurals.settings_screens, info!!.maxConnections, info.maxConnections),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = EntreBrand.TextDim
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun bufferLabel(seconds: Int): String = when (seconds) {
-    0 -> "0 s · arranca al instante, puede trabarse más"
-    3 -> "3 s · equilibrado (recomendado)"
-    5 -> "5 s · más estable"
-    9 -> "9 s · máxima estabilidad, tarda más en arrancar"
-    else -> "$seconds s"
+    0 -> stringResource(R.string.settings_buffer_0)
+    3 -> stringResource(R.string.settings_buffer_3)
+    5 -> stringResource(R.string.settings_buffer_5)
+    9 -> stringResource(R.string.settings_buffer_9)
+    else -> stringResource(R.string.settings_seconds, seconds)
 }
 
+@Composable
 private fun maxBufferLabel(seconds: Int): String = when (seconds) {
-    15 -> "15 s · usa menos memoria"
-    30 -> "30 s · equilibrado (recomendado)"
-    60 -> "60 s · conexiones inestables; en vivo va un poco más atrasado"
-    else -> "$seconds s"
+    15 -> stringResource(R.string.settings_max_buffer_15)
+    30 -> stringResource(R.string.settings_max_buffer_30)
+    60 -> stringResource(R.string.settings_max_buffer_60)
+    else -> stringResource(R.string.settings_seconds, seconds)
 }
 
-private fun sortLabel(order: SortOrder): String = when (order) {
-    SortOrder.ORIGINAL -> "Original · como viene de la lista"
-    SortOrder.AZ -> "A-Z · alfabético"
-    SortOrder.RATING -> "Puntuación · mejor valorados primero"
-    SortOrder.RECENT -> "Recientes · lo último agregado primero"
+@StringRes
+private fun sortLabel(order: SortOrder): Int = when (order) {
+    SortOrder.ORIGINAL -> R.string.settings_sort_original
+    SortOrder.AZ -> R.string.settings_sort_az
+    SortOrder.RATING -> R.string.settings_sort_rating
+    SortOrder.RECENT -> R.string.settings_sort_recent
 }
 
 // ============================ Organizar categorías ============================
@@ -234,7 +408,11 @@ fun OrganizeCategoriesDialog(
     onResetOrder: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    PanelDialog(title = "Organizar categorías", onDismiss = onDismiss, extraAction = "Orden original" to onResetOrder) {
+    PanelDialog(
+        title = stringResource(R.string.dialog_organize_title),
+        onDismiss = onDismiss,
+        extraAction = stringResource(R.string.dialog_reset_order) to onResetOrder
+    ) {
         Column {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
                 listOf(Section.LIVE, Section.MOVIES, Section.SERIES).forEach { s ->
@@ -242,14 +420,14 @@ fun OrganizeCategoriesDialog(
                 }
             }
             Text(
-                "Sube o baja con las flechas. El ojo oculta la categoría y el candado la marca como de adultos (se bloquea con el PIN).",
+                stringResource(R.string.dialog_organize_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = EntreBrand.TextDim,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             if (categories.isEmpty()) {
                 Text(
-                    "No hay categorías todavía. Actualiza el catálogo para traerlas.",
+                    stringResource(R.string.dialog_organize_empty),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(vertical = 16.dp)
                 )
@@ -271,22 +449,22 @@ fun OrganizeCategoriesDialog(
                             modifier = Modifier.weight(1f)
                         )
                         IconButton(onClick = { onMove(c, -1) }, enabled = index > 0) {
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Subir")
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = stringResource(R.string.dialog_move_up))
                         }
                         IconButton(onClick = { onMove(c, 1) }, enabled = index < categories.lastIndex) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Bajar")
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.dialog_move_down))
                         }
                         IconButton(onClick = { onToggleHidden(c) }) {
                             Icon(
                                 if (c.hidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (c.hidden) "Mostrar" else "Ocultar",
+                                contentDescription = stringResource(if (c.hidden) R.string.dialog_show else R.string.dialog_hide),
                                 tint = if (c.hidden) EntreBrand.TextDim else Color.White
                             )
                         }
                         IconButton(onClick = { onToggleAdult(c) }) {
                             Icon(
                                 if (c.adult) Icons.Default.Lock else Icons.Default.LockOpen,
-                                contentDescription = if (c.adult) "Quitar marca de adultos" else "Marcar como adultos",
+                                contentDescription = stringResource(if (c.adult) R.string.dialog_unmark_adult else R.string.dialog_mark_adult),
                                 tint = if (c.adult) EntreBrand.Accent else EntreBrand.TextDim
                             )
                         }
@@ -314,13 +492,13 @@ fun AccountDialog(
     var user by remember { mutableStateOf(initialUser) }
     var pass by remember { mutableStateOf(initialPass) }
     PanelDialog(
-        title = "Cambiar de usuario",
+        title = stringResource(R.string.dialog_account_title),
         onDismiss = { if (!saving) onDismiss() },
-        extraAction = (if (saving) "Verificando…" else "Guardar") to { if (!saving) onSave(name, user, pass) }
+        extraAction = stringResource(if (saving) R.string.dialog_verifying else R.string.dialog_save) to { if (!saving) onSave(name, user, pass) }
     ) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
-                "Tus listas, tu progreso y Mi lista se conservan si es la misma cuenta.",
+                stringResource(R.string.dialog_account_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = EntreBrand.TextDim,
                 modifier = Modifier.padding(bottom = 8.dp)
@@ -352,10 +530,10 @@ fun HiddenItemsDialog(
     onUnhide: (HiddenItemEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
-    PanelDialog(title = "Títulos y canales ocultos", onDismiss = onDismiss) {
+    PanelDialog(title = stringResource(R.string.dialog_hidden_title), onDismiss = onDismiss) {
         if (items.isEmpty()) {
             Text(
-                "No ocultaste nada. Desde el menú de un póster (mantener presionado o tecla Menú) puedes ocultar un canal o un título.",
+                stringResource(R.string.dialog_hidden_empty),
                 style = MaterialTheme.typography.bodyMedium,
                 color = EntreBrand.TextDim
             )
@@ -383,16 +561,18 @@ fun HiddenItemsDialog(
                         Column(Modifier.weight(1f)) {
                             Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                when (item.kind) {
-                                    "LIVE" -> "Canal"
-                                    "MOVIE" -> "Película"
-                                    else -> "Serie"
-                                },
+                                stringResource(
+                                    when (item.kind) {
+                                        "LIVE" -> R.string.dialog_kind_channel
+                                        "MOVIE" -> R.string.dialog_kind_movie
+                                        else -> R.string.dialog_kind_series
+                                    }
+                                ),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = EntreBrand.TextDim
                             )
                         }
-                        TextButton(onClick = { onUnhide(item) }) { Text("Mostrar") }
+                        TextButton(onClick = { onUnhide(item) }) { Text(stringResource(R.string.dialog_show)) }
                     }
                 }
             }
@@ -480,9 +660,9 @@ fun PinDialog(
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PinKey(label = "✕", description = "Cancelar", onClick = onDismiss)
+                    PinKey(label = "✕", description = stringResource(R.string.dialog_cancel), onClick = onDismiss)
                     PinKey(label = "0") { press('0') }
-                    PinKey(icon = Icons.AutoMirrored.Filled.Backspace, description = "Borrar") { pin = pin.dropLast(1) }
+                    PinKey(icon = Icons.AutoMirrored.Filled.Backspace, description = stringResource(R.string.dialog_delete)) { pin = pin.dropLast(1) }
                 }
             }
         }
@@ -551,7 +731,7 @@ private fun PanelDialog(
                 Box(Modifier.weight(1f, fill = false)) { content() }
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
                     extraAction?.let { (label, action) -> TextButton(onClick = action) { Text(label) } }
-                    TextButton(onClick = onDismiss) { Text("Listo") }
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.dialog_done)) }
                 }
             }
         }

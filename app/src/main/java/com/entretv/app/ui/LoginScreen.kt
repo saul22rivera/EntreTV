@@ -40,6 +40,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -52,6 +53,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.entretv.app.R
+import com.entretv.app.data.repo.AccountException
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
@@ -75,7 +78,7 @@ class SessionViewModel @Inject constructor(repository: PlaylistRepository) : Vie
         .stateIn(viewModelScope, SharingStarted.Eagerly, Session.LOADING)
 }
 
-data class LoginUiState(val loading: Boolean = false, val error: String? = null)
+data class LoginUiState(val loading: Boolean = false, val error: UiText? = null)
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(private val repository: PlaylistRepository) : ViewModel() {
@@ -85,14 +88,14 @@ class LoginViewModel @Inject constructor(private val repository: PlaylistReposit
     fun login(name: String, user: String, pass: String) {
         if (_ui.value.loading) return
         if (user.isBlank() || pass.isBlank()) {
-            _ui.value = LoginUiState(error = "Escribe tu usuario y tu contraseña.")
+            _ui.value = LoginUiState(error = uiText(R.string.login_missing_fields))
             return
         }
         _ui.value = LoginUiState(loading = true)
         viewModelScope.launch {
             repository.login(name.trim(), user.trim(), pass.trim())
                 .onSuccess { _ui.value = LoginUiState() }
-                .onFailure { _ui.value = LoginUiState(error = it.message ?: "No se pudo iniciar sesión. Inténtalo de nuevo.") }
+                .onFailure { _ui.value = LoginUiState(error = (it as? AccountException)?.text ?: uiText(R.string.login_failed)) }
         }
     }
 
@@ -127,7 +130,7 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
             EntreWordmark(fontSize = 44.sp)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Inicia sesión con los datos que te dio tu proveedor",
+                stringResource(R.string.login_subtitle),
                 color = EntreBrand.TextDim,
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium
@@ -143,7 +146,7 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
             ui.error?.let {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    it,
+                    it.asString(),
                     color = Color(0xFFFF8A80),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -154,11 +157,11 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
             if (ui.loading) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                    Text("Verificando tu cuenta…", color = EntreBrand.TextDim, modifier = Modifier.padding(start = 12.dp))
+                    Text(stringResource(R.string.login_verifying), color = EntreBrand.TextDim, modifier = Modifier.padding(start = 12.dp))
                 }
             } else {
                 EntreButton(
-                    "Entrar", Icons.AutoMirrored.Filled.Login,
+                    stringResource(R.string.login_enter), Icons.AutoMirrored.Filled.Login,
                     onClick = { viewModel.login(name, user, pass) },
                     primary = true,
                     modifier = Modifier.fillMaxWidth()
@@ -182,21 +185,21 @@ fun AccountFields(
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(
             value = name, onValueChange = onName, enabled = enabled,
-            label = { Text("Nombre (opcional)") }, singleLine = true,
+            label = { Text(stringResource(R.string.login_name)) }, singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
             keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Down) }),
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
             value = user, onValueChange = onUser, enabled = enabled,
-            label = { Text("Usuario") }, singleLine = true,
+            label = { Text(stringResource(R.string.login_user)) }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next, autoCorrectEnabled = false),
             keyboardActions = KeyboardActions(onNext = { focus.moveFocus(FocusDirection.Down) }),
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
             value = pass, onValueChange = onPass, enabled = enabled,
-            label = { Text("Contraseña") }, singleLine = true,
+            label = { Text(stringResource(R.string.login_password)) }, singleLine = true,
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done, autoCorrectEnabled = false),
             keyboardActions = KeyboardActions(onDone = { focus.clearFocus(); onDone() }),
@@ -204,7 +207,7 @@ fun AccountFields(
                 IconButton(onClick = { showPass = !showPass }) {
                     Icon(
                         if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = if (showPass) "Ocultar contraseña" else "Mostrar contraseña"
+                        contentDescription = stringResource(if (showPass) R.string.login_hide_password else R.string.login_show_password)
                     )
                 }
             },

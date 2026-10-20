@@ -29,25 +29,31 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.entretv.app.R
 import com.entretv.app.data.download.DownloadWorker
+import com.entretv.app.data.download.displayName
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
 import com.entretv.app.ui.theme.EntreBrand
 
 /** "42 % · 1.2 GB" o, si el servidor no informa el tamaño, lo bajado hasta ahora. */
+@Composable
 fun DownloadEntity.progressLabel(): String {
-    val percent = progress?.let { "${(it * 100).toInt()} %" }
+    val percent = progress?.let { stringResource(R.string.download_percent, (it * 100).toInt()) }
     val size = if (totalBytes > 0) DownloadWorker.formatBytes(totalBytes) else DownloadWorker.formatBytes(downloadedBytes)
     return listOfNotNull(percent, size.takeIf { downloadedBytes > 0 || totalBytes > 0 }).joinToString(" · ")
 }
 
+@Composable
 fun DownloadEntity.statusLabel(): String = when (status) {
-    DownloadStatus.QUEUED -> if (error.isNotEmpty()) "Esperando conexión" else "En cola"
-    DownloadStatus.RUNNING -> "Descargando ${progressLabel()}".trim()
-    DownloadStatus.PAUSED -> "En pausa ${progressLabel()}".trim()
-    DownloadStatus.FAILED -> error.ifEmpty { "No se pudo descargar" }
-    else -> if (totalBytes > 0) "Descargada · ${DownloadWorker.formatBytes(totalBytes)}" else "Descargada"
+    DownloadStatus.QUEUED -> stringResource(if (error.isNotEmpty()) R.string.download_waiting_connection else R.string.download_queued)
+    DownloadStatus.RUNNING -> stringResource(R.string.download_downloading, progressLabel()).trim()
+    DownloadStatus.PAUSED -> stringResource(R.string.download_paused, progressLabel()).trim()
+    DownloadStatus.FAILED -> error.ifEmpty { stringResource(R.string.download_failed) }
+    else -> if (totalBytes > 0) stringResource(R.string.download_done_size, DownloadWorker.formatBytes(totalBytes)) else stringResource(R.string.download_done)
 }
 
 /** Botones de la ficha de una película según el estado de su descarga. */
@@ -60,19 +66,23 @@ fun MovieDownloadButtons(
     onDelete: (DownloadEntity) -> Unit
 ) {
     when (download?.status) {
-        null -> EntreButton("Descargar", Icons.Default.Download, onDownload)
-        DownloadStatus.DONE -> EntreButton("Descargada", Icons.Default.DownloadDone, { onDelete(download) })
+        null -> EntreButton(stringResource(R.string.download_action), Icons.Default.Download, onDownload)
+        DownloadStatus.DONE -> EntreButton(stringResource(R.string.download_done), Icons.Default.DownloadDone, { onDelete(download) })
         DownloadStatus.QUEUED, DownloadStatus.RUNNING -> {
             EntreButton(download.statusLabel(), Icons.Default.Pause, { onPause(download.contentKey) })
-            EntreButton("Cancelar", Icons.Default.Close, { onDelete(download) })
+            EntreButton(stringResource(R.string.download_cancel), Icons.Default.Close, { onDelete(download) })
         }
         DownloadStatus.PAUSED -> {
-            EntreButton("Reanudar ${download.progressLabel()}".trim(), Icons.Default.Download, { onResume(download.contentKey) })
-            EntreButton("Cancelar", Icons.Default.Close, { onDelete(download) })
+            EntreButton(
+                stringResource(R.string.download_resume, download.progressLabel()).trim(),
+                Icons.Default.Download,
+                { onResume(download.contentKey) }
+            )
+            EntreButton(stringResource(R.string.download_cancel), Icons.Default.Close, { onDelete(download) })
         }
         else -> {
-            EntreButton("Reintentar descarga", Icons.Default.Download, { onResume(download.contentKey) })
-            EntreButton("Quitar", Icons.Default.Close, { onDelete(download) })
+            EntreButton(stringResource(R.string.download_retry), Icons.Default.Download, { onResume(download.contentKey) })
+            EntreButton(stringResource(R.string.download_remove), Icons.Default.Close, { onDelete(download) })
         }
     }
 }
@@ -90,12 +100,14 @@ fun EpisodeDownloadIcon(
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val status = download?.status
-    val description = when (status) {
-        null -> "Descargar episodio"
-        DownloadStatus.DONE -> "Borrar descarga"
-        DownloadStatus.QUEUED, DownloadStatus.RUNNING -> "Pausar descarga"
-        else -> "Reanudar descarga"
-    }
+    val description = stringResource(
+        when (status) {
+            null -> R.string.download_episode
+            DownloadStatus.DONE -> R.string.download_delete_download
+            DownloadStatus.QUEUED, DownloadStatus.RUNNING -> R.string.download_pause
+            else -> R.string.download_resume_download
+        }
+    )
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -144,24 +156,34 @@ fun EpisodeDownloadIcon(
 @Composable
 fun ConfirmDeleteDownloadDialog(download: DownloadEntity, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val keepFocus = remember { FocusRequester() }
-    val name = if (download.kind == "EPISODE") "${download.title} · ${download.subtitle}" else download.title
+    val name = download.displayName(LocalContext.current)
     val finished = download.isDone
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = EntreBrand.Panel,
-        title = { Text(if (finished) "¿Borrar la descarga?" else "¿Cancelar la descarga?", color = Color.White) },
+        title = {
+            Text(
+                stringResource(if (finished) R.string.download_delete_title else R.string.download_cancel_title),
+                color = Color.White
+            )
+        },
         text = {
             Text(
-                if (finished) "$name dejará de estar disponible sin conexión." else "Se borrará lo descargado de $name.",
+                stringResource(if (finished) R.string.download_delete_text else R.string.download_cancel_text, name),
                 color = EntreBrand.TextDim
             )
         },
         confirmButton = {
-            EntreButton(if (finished) "Borrar" else "Cancelar descarga", null, onConfirm, compact = true)
+            EntreButton(
+                stringResource(if (finished) R.string.download_delete else R.string.download_cancel_download),
+                null,
+                onConfirm,
+                compact = true
+            )
         },
         dismissButton = {
             EntreButton(
-                if (finished) "Cancelar" else "Seguir descargando",
+                stringResource(if (finished) R.string.download_cancel else R.string.download_keep_downloading),
                 null,
                 onDismiss,
                 compact = true,
@@ -180,7 +202,7 @@ fun ConfirmActionDialog(
     confirmLabel: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
-    dismissLabel: String = "Cancelar"
+    dismissLabel: String = stringResource(R.string.download_cancel)
 ) {
     val keepFocus = remember { FocusRequester() }
     AlertDialog(

@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -37,6 +38,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.entretv.app.R
 import com.entretv.app.data.update.UpdateRepository
 import com.entretv.app.data.update.UpdateState
 import com.entretv.app.data.update.isRequired
@@ -124,18 +126,20 @@ fun UpdateHost(suppressed: Boolean, viewModel: UpdateViewModel = hiltViewModel()
     }
 }
 
+@Composable
 private fun title(state: UpdateState): String = when {
-    state.isRequired && state !is UpdateState.Failed -> "Actualización necesaria"
+    state.isRequired && state !is UpdateState.Failed -> stringResource(R.string.update_required_title)
     else -> plainTitle(state)
 }
 
+@Composable
 private fun plainTitle(state: UpdateState): String = when (state) {
-    UpdateState.Checking -> "Buscando actualizaciones"
-    UpdateState.UpToDate -> "EntreTV está al día"
-    is UpdateState.Available -> "Hay una versión nueva"
-    is UpdateState.Downloading -> "Descargando actualización"
-    is UpdateState.ReadyToInstall -> "Lista para instalar"
-    is UpdateState.Failed -> "No se pudo actualizar"
+    UpdateState.Checking -> stringResource(R.string.update_checking_title)
+    UpdateState.UpToDate -> stringResource(R.string.update_up_to_date_title)
+    is UpdateState.Available -> stringResource(R.string.update_available_title)
+    is UpdateState.Downloading -> stringResource(R.string.update_downloading_title)
+    is UpdateState.ReadyToInstall -> stringResource(R.string.update_ready_title)
+    is UpdateState.Failed -> stringResource(R.string.update_failed_title)
     UpdateState.Idle -> ""
 }
 
@@ -145,11 +149,11 @@ private fun UpdateBody(state: UpdateState, current: String) {
     when (state) {
         UpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.padding(end = 12.dp), strokeWidth = 3.dp)
-            Text("Consultando el servidor…", color = dim)
+            Text(stringResource(R.string.update_checking), color = dim)
         }
-        UpdateState.UpToDate -> Text("Tienes la última versión ($current).", color = dim)
+        UpdateState.UpToDate -> Text(stringResource(R.string.update_up_to_date, current), color = dim)
         is UpdateState.Available -> {
-            Text("Versión ${state.info.versionName} (tienes la $current).", color = dim)
+            Text(stringResource(R.string.update_available, state.info.versionName, current), color = dim)
             if (state.info.notes.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -161,10 +165,8 @@ private fun UpdateBody(state: UpdateState, current: String) {
         }
         is UpdateState.Downloading -> {
             Text(
-                if (state.info.isRequired)
-                    "Para seguir usando EntreTV necesitas la versión ${state.info.versionName}. Se está descargando; " +
-                        "al terminar se abrirá el instalador."
-                else "Versión ${state.info.versionName}",
+                if (state.info.isRequired) stringResource(R.string.update_required_downloading, state.info.versionName)
+                else stringResource(R.string.update_version, state.info.versionName),
                 color = dim
             )
             Spacer(Modifier.height(12.dp))
@@ -172,20 +174,14 @@ private fun UpdateBody(state: UpdateState, current: String) {
             if (p == null) LinearProgressIndicator(Modifier.fillMaxWidth())
             else {
                 LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
-                Text("${(p * 100).toInt()} %", color = dim, modifier = Modifier.padding(top = 6.dp))
+                Text(stringResource(R.string.download_percent, (p * 100).toInt()), color = dim, modifier = Modifier.padding(top = 6.dp))
             }
         }
         is UpdateState.ReadyToInstall -> Text(
-            if (state.needsPermission)
-                "Falta un permiso para instalar. Elige \"Dar permiso\" y activa EntreTV en:\n" +
-                    "• Celular o tablet: Ajustes › Apps › EntreTV › Instalar apps desconocidas.\n" +
-                    "• TV: Ajustes › Preferencias del dispositivo › Seguridad y restricciones › " +
-                    "Fuentes desconocidas (o Ajustes › Apps › Seguridad).\n" +
-                    "Luego regresa con el botón Atrás y elige Instalar."
-            else "Se abrirá el instalador de Android. Tu cuenta y tu progreso se conservan.",
+            stringResource(if (state.needsPermission) R.string.update_permission_needed else R.string.update_installer_note),
             color = dim
         )
-        is UpdateState.Failed -> Text(state.message, color = dim)
+        is UpdateState.Failed -> Text(state.message.asString(), color = dim)
         UpdateState.Idle -> Unit
     }
 }
@@ -197,33 +193,35 @@ private fun UpdateActions(state: UpdateState, viewModel: UpdateViewModel) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
         when (state) {
             is UpdateState.Available -> {
-                if (!required) EntreButton("Más tarde", null, onClick = viewModel::dismiss, compact = true)
-                EntreButton("Actualizar", null, onClick = viewModel::download, primary = true, compact = true,
+                if (!required) EntreButton(stringResource(R.string.update_later), null, onClick = viewModel::dismiss, compact = true)
+                EntreButton(stringResource(R.string.update_update), null, onClick = viewModel::download, primary = true, compact = true,
                     modifier = Modifier.focusRequester(primary))
             }
             is UpdateState.Downloading ->
                 if (required) {
                     CircularProgressIndicator(Modifier.focusRequester(primary), strokeWidth = 3.dp)
                 } else {
-                    EntreButton("Cancelar", null, onClick = viewModel::dismiss, compact = true, modifier = Modifier.focusRequester(primary))
+                    EntreButton(stringResource(R.string.update_cancel), null, onClick = viewModel::dismiss, compact = true,
+                        modifier = Modifier.focusRequester(primary))
                 }
             is UpdateState.ReadyToInstall -> {
-                if (!required) EntreButton("Más tarde", null, onClick = viewModel::dismiss, compact = true)
+                if (!required) EntreButton(stringResource(R.string.update_later), null, onClick = viewModel::dismiss, compact = true)
                 EntreButton(
-                    if (state.needsPermission) "Dar permiso" else "Instalar", null,
+                    stringResource(if (state.needsPermission) R.string.update_grant_permission else R.string.update_install), null,
                     onClick = { viewModel.install() }, primary = true, compact = true,
                     modifier = Modifier.focusRequester(primary)
                 )
             }
             is UpdateState.Failed -> {
-                if (!required) EntreButton("Cerrar", null, onClick = viewModel::dismiss, compact = true,
+                if (!required) EntreButton(stringResource(R.string.update_close), null, onClick = viewModel::dismiss, compact = true,
                     modifier = if (state.info == null) Modifier.focusRequester(primary) else Modifier)
                 if (state.info != null) {
-                    EntreButton("Reintentar", null, onClick = viewModel::download, primary = true, compact = true,
+                    EntreButton(stringResource(R.string.update_retry), null, onClick = viewModel::download, primary = true, compact = true,
                         modifier = Modifier.focusRequester(primary))
                 }
             }
-            else -> EntreButton("Cerrar", null, onClick = viewModel::dismiss, compact = true, modifier = Modifier.focusRequester(primary))
+            else -> EntreButton(stringResource(R.string.update_close), null, onClick = viewModel::dismiss, compact = true,
+                modifier = Modifier.focusRequester(primary))
         }
     }
     LaunchedEffect(state::class) { runCatching { primary.requestFocus() } }

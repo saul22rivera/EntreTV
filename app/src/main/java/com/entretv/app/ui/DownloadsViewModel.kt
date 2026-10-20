@@ -2,6 +2,7 @@ package com.entretv.app.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.entretv.app.R
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.download.DownloadWorker
 import com.entretv.app.data.local.DownloadEntity
@@ -24,14 +25,14 @@ class DownloadsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** "Ocupan 3.2 GB · Libres 18.4 GB". */
-    val storage: StateFlow<String> = downloads.downloads
+    val storage: StateFlow<UiText?> = downloads.downloads
         .map {
             val dir = downloads.directory
             val used = dir.listFiles()?.sumOf { it.length() } ?: 0L
-            "Ocupan ${DownloadWorker.formatBytes(used)} · Libres ${DownloadWorker.formatBytes(dir.usableSpace)}"
+            uiText(R.string.download_storage, DownloadWorker.formatBytes(used), DownloadWorker.formatBytes(dir.usableSpace))
         }
         .flowOn(Dispatchers.IO)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun pause(key: String) { viewModelScope.launch { downloads.pause(key) } }
 

@@ -1,7 +1,11 @@
 package com.entretv.app.ui
 
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.entretv.app.R
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.local.CategoryPrefEntity
 import com.entretv.app.data.local.ChannelEntity
@@ -11,13 +15,16 @@ import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.local.PlaylistEntity
 import com.entretv.app.data.local.SeriesEntity
 import com.entretv.app.data.local.VodMovieEntity
+import com.entretv.app.data.repo.AccountException
 import com.entretv.app.data.repo.MetadataRepository
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.repo.SeriesResume
 import com.entretv.app.data.repo.SeriesResumeRule
 import com.entretv.app.data.repo.TrendingTitle
+import com.entretv.app.data.settings.AccountInfo
 import com.entretv.app.data.settings.CatalogPrefs
 import com.entretv.app.data.settings.ParentalControl
+import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.text.Normalizer
@@ -76,24 +83,66 @@ sealed interface BrowseItem {
 }
 
 /** Una fila horizontal estilo Netflix. [title] es la categoría tal cual; [label] lo que se muestra. */
-data class ContentRow(val title: String, val items: List<BrowseItem>, val label: String = title)
+data class ContentRow(val title: String, val items: List<BrowseItem>, val label: UiText = UiText.Raw(title))
 
-enum class Section(val label: String) {
-    LIVE("En vivo"), MOVIES("Películas"), SERIES("Series")
+enum class Section(@StringRes val labelRes: Int) {
+    LIVE(R.string.section_live), MOVIES(R.string.section_movies), SERIES(R.string.section_series)
 }
 
+val Section.label: String
+    @Composable get() = stringResource(labelRes)
+
 /** Orden del catálogo. [ORIGINAL] respeta el orden en que lo manda el servidor. */
-enum class SortOrder(val label: String) {
-    ORIGINAL("Original"), AZ("A-Z"), RATING("Puntuación"), RECENT("Recientes");
+enum class SortOrder(@StringRes val labelRes: Int) {
+    ORIGINAL(R.string.sort_original), AZ(R.string.sort_az), RATING(R.string.sort_rating), RECENT(R.string.sort_recent);
 
     companion object {
         fun fromName(name: String): SortOrder = entries.firstOrNull { it.name == name } ?: ORIGINAL
     }
 }
 
+val SortOrder.label: String
+    @Composable get() = stringResource(labelRes)
+
 const val MY_LIST_ROW = "Mi lista"
+/** "Todas": todo el contenido de la sección en cuadrícula (null es el inicio de la sección). */
+const val ALL_ROW = "__all__"
 const val RECENT_ROW = "Recién agregados"
 const val TOP_RATED_ROW = "Mejor valorados"
+
+/** Grupo de lo que llega del servidor sin categoría. */
+private const val LIVE_GROUP = "En vivo"
+private const val MOVIES_GROUP = "Películas"
+private const val SERIES_GROUP = "Series"
+private val FALLBACK_GROUPS = setOf(LIVE_GROUP, MOVIES_GROUP, SERIES_GROUP)
+
+/** Texto de una fila especial en el idioma de la app; las categorías se muestran tal cual. */
+fun rowLabel(row: String): UiText = when (row) {
+    MY_LIST_ROW -> uiText(R.string.home_my_list)
+    ALL_ROW -> uiText(R.string.home_all)
+    RECENT_ROW -> uiText(R.string.home_row_recent)
+    TOP_RATED_ROW -> uiText(R.string.home_row_top_rated)
+    LIVE_GROUP -> uiText(R.string.section_live)
+    MOVIES_GROUP -> uiText(R.string.section_movies)
+    SERIES_GROUP -> uiText(R.string.section_series)
+    else -> UiText.Raw(row)
+}
+
+/** Filas del resumen del celular. */
+const val SUMMARY_MOVIES = "summary:movies"
+const val SUMMARY_SERIES = "summary:series"
+const val SUMMARY_EVENTS = "summary:events"
+private const val SUMMARY_ROW_SIZE = 20
+private const val EVENTS_ROW_SIZE = 40
+
+/** Resumen al abrir la app en el celular: lo último agregado y los eventos de hoy. */
+data class SummaryContent(
+    val playlistId: String? = null,
+    val rows: List<ContentRow> = emptyList(),
+    /** Primera categoría de eventos: a donde lleva "Ver todo" de los eventos. */
+    val eventsCategory: String? = null,
+    val ready: Boolean = false
+)
 
 /** "Ver todo" de cada grupo de la búsqueda. */
 const val SEARCH_MOVIES = "search:movies"
@@ -124,7 +173,7 @@ data class SectionContent(
     val grid: Boolean = false,
     /** Top 10 con números grandes; vacío en En vivo. */
     val top10: List<BrowseItem> = emptyList(),
-    val top10Label: String = "",
+    val top10Label: UiText = UiText.Raw(""),
     val myListCount: Int = 0,
     /** Resultados de búsqueda agrupados por tipo. */
     val isSearch: Boolean = false,
@@ -141,7 +190,7 @@ data class ContinueItem(
     /** Película o serie (playlistId:id). */
     val key: String,
     val title: String,
-    val subtitle: String,
+    val subtitle: UiText,
     /** De la mejor a la de respaldo: guardada, del catálogo y de TMDB. */
     val images: List<String>,
     val fraction: Float,
@@ -160,11 +209,13 @@ data class HomeUiState(
     val firstSync: Boolean = false,
     /** Actualización pedida a mano: muestra el indicador. */
     val refreshing: Boolean = false,
-    val message: String? = null,
+    val message: UiText? = null,
     val section: Section = Section.LIVE,
     /** null = "Todas". */
     val category: String? = null,
-    val sort: SortOrder = SortOrder.ORIGINAL
+    val sort: SortOrder = SortOrder.ORIGINAL,
+    /** Celular: se ve el resumen en lugar de una sección. */
+    val summary: Boolean = true
 )
 
 private data class CatalogFilter(
@@ -258,22 +309,50 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setCleanNames(enabled) }
     }
 
+    val playerPrefs: StateFlow<PlayerPrefs> = settings.playerPrefs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerPrefs())
+
+    val showClock: StateFlow<Boolean> = settings.showClock
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setContentLanguage(language: String) {
+        viewModelScope.launch { settings.setContentLanguage(language) }
+    }
+
+    fun setSubtitlesByDefault(enabled: Boolean) {
+        viewModelScope.launch { settings.setSubtitlesByDefault(enabled) }
+    }
+
+    fun setLiveFormat(format: String) {
+        viewModelScope.launch { settings.setLiveFormat(format) }
+    }
+
+    fun setDecoder(mode: Int) {
+        viewModelScope.launch { settings.setDecoder(mode) }
+    }
+
+    fun setShowClock(enabled: Boolean) {
+        viewModelScope.launch { settings.setShowClock(enabled) }
+    }
+
     private val selectedPlaylistId = MutableStateFlow<String?>(null)
     private val query = MutableStateFlow("")
     private val firstSync = MutableStateFlow(false)
     private val refreshing = MutableStateFlow(false)
-    private val message = MutableStateFlow<String?>(null)
+    private val message = MutableStateFlow<UiText?>(null)
     private val section = MutableStateFlow(Section.LIVE)
     private val category = MutableStateFlow<String?>(null)
     /** Orden elegido en esta sesión; null = el de Configuración. */
     private val sort = MutableStateFlow<SortOrder?>(null)
     private val trending = MutableStateFlow(Trending())
+    private val summary = MutableStateFlow(true)
 
     private val effectiveSort: Flow<SortOrder> =
         combine(sort, settings.catalogPrefs) { s, p -> s ?: SortOrder.fromName(p.defaultSort) }
 
     val uiState: StateFlow<HomeUiState> = combine(
-        repository.playlists, selectedPlaylistId, query, firstSync, refreshing, message, section, category, effectiveSort
+        repository.playlists, selectedPlaylistId, query, firstSync, refreshing, message, section, category, effectiveSort,
+        summary
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         HomeUiState(
@@ -282,10 +361,11 @@ class HomeViewModel @Inject constructor(
             query = arr[2] as String,
             firstSync = arr[3] as Boolean,
             refreshing = arr[4] as Boolean,
-            message = arr[5] as String?,
+            message = arr[5] as UiText?,
             section = arr[6] as Section,
             category = arr[7] as String?,
-            sort = arr[8] as SortOrder
+            sort = arr[8] as SortOrder,
+            summary = arr[9] as Boolean
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
@@ -293,6 +373,14 @@ class HomeViewModel @Inject constructor(
     val account: StateFlow<PlaylistEntity?> = combine(repository.playlists, selectedPlaylistId) { list, id ->
         list.firstOrNull { it.id == id } ?: list.firstOrNull()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Estado y vencimiento de la cuenta mostrada en Configuración. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val accountInfo: StateFlow<AccountInfo?> = account
+        .map { it?.id }
+        .distinctUntilChanged()
+        .flatMapLatest { id -> if (id == null) flowOf(null) else repository.accountInfo(id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val hiddenKeys: Flow<Set<String>> =
         repository.hiddenItems.map { list -> list.map { it.contentKey }.toSet() }
@@ -360,7 +448,7 @@ class HomeViewModel @Inject constructor(
                 ContinueItem(
                     key = movie.id,
                     title = clean(movie.name, input.cleanNames),
-                    subtitle = "",
+                    subtitle = UiText.Raw(""),
                     images = listOf(p.imageUrl, movie.icon, cached?.backdropUrl.orEmpty(), cached?.posterUrl.orEmpty())
                         .filter { it.isNotBlank() }.distinct(),
                     fraction = p.fraction,
@@ -382,12 +470,15 @@ class HomeViewModel @Inject constructor(
                     val cached = metadata.cachedDetails(seriesKey)
                     val (subtitle, fraction, remaining) = when (resume.mode) {
                         SeriesResume.Mode.RESUME -> Triple(
-                            anchor.subtitle.substringBefore(" · ").ifBlank { target?.let { "T${it.season}:E${it.episodeNum}" }.orEmpty() },
+                            UiText.Raw(
+                                anchor.subtitle.substringBefore(" · ").ifBlank { target?.let { "T${it.season}:E${it.episodeNum}" }.orEmpty() }
+                            ),
                             anchor.fraction,
                             (anchor.durationMs - anchor.positionMs).coerceAtLeast(0)
                         )
                         SeriesResume.Mode.NEXT -> Triple(
-                            target?.let { "Siguiente: T${it.season}:E${it.episodeNum}" } ?: "Siguiente episodio",
+                            target?.let { uiText(R.string.home_continue_next, "T${it.season}:E${it.episodeNum}") }
+                                ?: uiText(R.string.home_continue_next_episode),
                             0f, 0L
                         )
                         // Terminó la serie entera: ya no hay nada que seguir.
@@ -463,17 +554,147 @@ class HomeViewModel @Inject constructor(
             f.query.isNotEmpty() -> searchAll(r, o, order)
             f.section == Section.LIVE -> buildContent(
                 r.channels, PlaylistRepository.SECTION_LIVE, f, r.favoriteKeys, o, order, trending = null,
-                { it.groupTitle.ifEmpty { "En vivo" } }, { it.id }
+                ::liveGroup, { it.id }
             ) { BrowseItem.Live(it, clean(it.name, c)) }
             f.section == Section.MOVIES -> buildContent(
                 r.movies, PlaylistRepository.SECTION_MOVIES, f, r.favoriteKeys, o, order, trending = t.movies,
-                { it.categoryName.ifEmpty { "Películas" } }, { it.id }
+                ::movieGroup, { it.id }
             ) { BrowseItem.Movie(it, clean(it.name, c)) }
             else -> buildContent(
                 r.series, PlaylistRepository.SECTION_SERIES, f, r.favoriteKeys, o, order, trending = t.series,
-                { it.categoryName.ifEmpty { "Series" } }, { it.id }
+                ::seriesGroup, { it.id }
             ) { BrowseItem.Show(it, clean(it.name, c)) }
         }
+    }
+
+    private fun liveGroup(channel: ChannelEntity): String = channel.groupTitle.ifEmpty { LIVE_GROUP }
+    private fun movieGroup(movie: VodMovieEntity): String = movie.categoryName.ifEmpty { MOVIES_GROUP }
+    private fun seriesGroup(series: SeriesEntity): String = series.categoryName.ifEmpty { SERIES_GROUP }
+
+    /** Lo que se puede mostrar de una sección: sin categorías ocultas o bloqueadas ni títulos ocultos. */
+    private fun <T> visibleBySection(
+        items: List<T>,
+        sectionKey: String,
+        o: CatalogOptions,
+        groupOf: (T) -> String,
+        keyOf: (T) -> String
+    ): List<T> {
+        val skip = excluder(sectionKey, o)
+        return items.filter { keyOf(it) !in o.hidden && !skip(groupOf(it)) }
+    }
+
+    // ============================ Resumen (celular) ============================
+
+    /** "Seguir viendo" del resumen: películas y series juntas, lo último primero. */
+    val summaryContinue: StateFlow<List<ContinueItem>> =
+        combine(
+            repository.continueWatching,
+            combine(hiddenKeys, adultContentKeys) { a, b -> a + b },
+            settings.continueDismissed, settings.catalogPrefs
+        ) { list, excluded, dismissed, prefs -> ContinueInput(list, Section.MOVIES, excluded, dismissed, prefs.cleanNames) }
+            .mapLatest { input ->
+                (buildContinue(input) + buildContinue(input.copy(section = Section.SERIES)))
+                    .sortedByDescending { it.updatedAt }
+            }
+            .flowOn(Dispatchers.IO)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Solo se calcula mientras el resumen está en pantalla. */
+    val summaryContent: StateFlow<SummaryContent> = selectedPlaylistId
+        .flatMapLatest { pid ->
+            if (pid == null) flowOf(SummaryContent(ready = true))
+            else combine(
+                repository.channels(pid), repository.movies(pid), repository.series(pid), options
+            ) { channels, movies, series, o -> buildSummary(pid, channels, movies, series, o) }
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SummaryContent())
+
+    private fun buildSummary(
+        pid: String,
+        channels: List<ChannelEntity>,
+        movies: List<VodMovieEntity>,
+        series: List<SeriesEntity>,
+        o: CatalogOptions
+    ): SummaryContent {
+        val c = o.cleanNames
+        val newMovies = visibleBySection(movies, PlaylistRepository.SECTION_MOVIES, o, ::movieGroup) { it.id }
+            .filter { it.added > 0 }
+            .sortedByDescending { it.added }
+            .take(SUMMARY_ROW_SIZE)
+            .map { BrowseItem.Movie(it, clean(it.name, c)) }
+        val newSeries = visibleBySection(series, PlaylistRepository.SECTION_SERIES, o, ::seriesGroup) { it.id }
+            .filter { it.added > 0 }
+            .sortedByDescending { it.added }
+            .take(SUMMARY_ROW_SIZE)
+            .map { BrowseItem.Show(it, clean(it.name, c)) }
+
+        val isEvents = HashMap<String, Boolean>()
+        val eventChannels = visibleBySection(channels, PlaylistRepository.SECTION_LIVE, o, ::liveGroup) { it.id }
+            .filter { ch -> isEvents.getOrPut(liveGroup(ch)) { normalize(liveGroup(ch)).contains("evento") } }
+        val eventCategories = isEvents.filterValues { it }.keys
+        val firstEvents = orderedCategories(PlaylistRepository.SECTION_LIVE, eventCategories, o, SortOrder.ORIGINAL)
+            .firstOrNull { it in eventCategories }
+
+        val rows = listOf(
+            ContentRow(SUMMARY_MOVIES, newMovies, uiText(R.string.home_summary_new_movies)),
+            ContentRow(SUMMARY_SERIES, newSeries, uiText(R.string.home_summary_new_series)),
+            ContentRow(
+                SUMMARY_EVENTS,
+                sortEvents(eventChannels).take(EVENTS_ROW_SIZE).map { BrowseItem.Live(it, clean(it.name, c)) },
+                uiText(R.string.home_summary_events)
+            )
+        ).filter { it.items.isNotEmpty() }
+        return SummaryContent(playlistId = pid, rows = rows, eventsCategory = firstEvents, ready = true)
+    }
+
+    private val eventTime = Regex("(\\d{1,2}):(\\d{2})\\s*([AaPp][Mm])?")
+
+    /** Minuto del día de la hora escrita en el nombre ("20:30", "8:30 PM"); null si no trae. */
+    private fun eventMinute(name: String): Int? {
+        val match = eventTime.find(name) ?: return null
+        var hour = match.groupValues[1].toInt()
+        val minute = match.groupValues[2].toInt()
+        if (minute > 59) return null
+        when (match.groupValues[3].lowercase()) {
+            "am" -> { if (hour !in 1..12) return null; if (hour == 12) hour = 0 }
+            "pm" -> { if (hour !in 1..12) return null; if (hour != 12) hour += 12 }
+            else -> if (hour > 23) return null
+        }
+        return hour * 60 + minute
+    }
+
+    /**
+     * Eventos por la hora del nombre: primero los que vienen y los que empezaron hace menos
+     * de 3 horas, después los demás y al final los que no dicen hora.
+     */
+    private fun sortEvents(channels: List<ChannelEntity>): List<ChannelEntity> {
+        val now = java.time.LocalTime.now().let { it.hour * 60 + it.minute }
+        return channels.map { it to eventMinute(it.name) }
+            .sortedWith(compareBy({ (_, minute) ->
+                if (minute == null) 2 else if (dayOffset(minute - now) >= -180) 0 else 1
+            }, { (_, minute) -> minute?.let { dayOffset(it - now) } ?: 0 }))
+            .map { it.first }
+    }
+
+    /** Diferencia en minutos llevada a ±12 h: pasada la medianoche sigue siendo "hoy". */
+    private fun dayOffset(diff: Int): Int = when {
+        diff < -720 -> diff + 1440
+        diff >= 720 -> diff - 1440
+        else -> diff
+    }
+
+    fun showSummary() {
+        if (query.value.isNotBlank()) onQueryChange("")
+        category.value = null
+        summary.value = true
+    }
+
+    /** Celular: entra a una sección (y opcionalmente a una categoría) desde el resumen o la barra. */
+    fun openSection(s: Section, c: String? = null) {
+        summary.value = false
+        section.value = s
+        category.value = c
     }
 
     private val cleanCache = ConcurrentHashMap<String, String>()
@@ -557,7 +778,7 @@ class HomeViewModel @Inject constructor(
         val counts = shown.associateWith { n ->
             visibleRaw[n]?.size ?: allGroups[n].orEmpty().count { keyOf(it) !in o.hidden }
         }
-        val labels = shown.associateWith { clean(it, o.cleanNames) }
+        val labels = shown.filter { it !in FALLBACK_GROUPS }.associateWith { clean(it, o.cleanNames) }
 
         fun groupItems(name: String, limit: Int): List<BrowseItem> {
             val raw = visibleRaw[name].orEmpty()
@@ -578,6 +799,7 @@ class HomeViewModel @Inject constructor(
 
         if (f.category != null) {
             val list = when (f.category) {
+                ALL_ROW -> if (order == SortOrder.ORIGINAL) wrapped else sortItems(wrapped, order)
                 MY_LIST_ROW -> if (order == SortOrder.ORIGINAL) mine else sortItems(mine, order)
                 RECENT_ROW -> if (order == SortOrder.ORIGINAL) recent else sortItems(recent, order)
                 TOP_RATED_ROW -> if (order == SortOrder.ORIGINAL) topRated else sortItems(topRated, order)
@@ -588,7 +810,7 @@ class HomeViewModel @Inject constructor(
                 categoryCounts = counts,
                 categoryLabels = labels,
                 lockedCategories = locked,
-                rows = listOf(ContentRow(f.category, list, labels[f.category] ?: f.category)),
+                rows = listOf(ContentRow(f.category, list, labels[f.category]?.let { UiText.Raw(it) } ?: rowLabel(f.category))),
                 grid = true,
                 myListCount = mine.size,
                 sortOptions = sortOptions
@@ -597,22 +819,22 @@ class HomeViewModel @Inject constructor(
         val top10 = if (trending != null && wrapped.isNotEmpty()) topTen(wrapped, trending, topRated + recent) else emptyList<BrowseItem>() to false
         val rows = buildList {
             // Solo si el servidor informa fechas o puntuaciones de verdad.
-            if (trending != null && recent.size >= 5) add(ContentRow(RECENT_ROW, recent.take(20)))
-            if (trending != null && topRated.size >= 5) add(ContentRow(TOP_RATED_ROW, topRated.take(20)))
+            if (trending != null && recent.size >= 5) add(ContentRow(RECENT_ROW, recent.take(20), rowLabel(RECENT_ROW)))
+            if (trending != null && topRated.size >= 5) add(ContentRow(TOP_RATED_ROW, topRated.take(20), rowLabel(TOP_RATED_ROW)))
             visibleRaw.keys.forEach { group ->
                 val list = groupItems(group, 20)
-                if (list.isNotEmpty()) add(ContentRow(group, list, labels[group] ?: group))
+                if (list.isNotEmpty()) add(ContentRow(group, list, UiText.Raw(labels[group] ?: group)))
             }
         }
-        val sectionName = if (sectionKey == PlaylistRepository.SECTION_SERIES) "Series" else "Películas"
+        val sectionName = uiText(if (sectionKey == PlaylistRepository.SECTION_SERIES) R.string.section_series else R.string.section_movies)
         return SectionContent(
             categories = shown,
             categoryCounts = counts,
             categoryLabels = labels,
             lockedCategories = locked,
-            rows = listOfNotNull(mine.takeIf { it.isNotEmpty() }?.let { ContentRow(MY_LIST_ROW, it.take(30)) }) + rows,
+            rows = listOfNotNull(mine.takeIf { it.isNotEmpty() }?.let { ContentRow(MY_LIST_ROW, it.take(30), rowLabel(MY_LIST_ROW)) }) + rows,
             top10 = top10.first.takeIf { it.size >= 3 }.orEmpty(),
-            top10Label = if (top10.second) "Top 10 de hoy en $sectionName" else "Top 10 de $sectionName en tu catálogo",
+            top10Label = if (top10.second) uiText(R.string.home_top10_today, sectionName) else uiText(R.string.home_top10_catalog, sectionName),
             myListCount = mine.size,
             sortOptions = sortOptions
         )
@@ -694,26 +916,23 @@ class HomeViewModel @Inject constructor(
         fun ranked(items: List<BrowseItem>, o2: SortOrder): List<BrowseItem> =
             if (o2 == SortOrder.ORIGINAL) items.sortedBy { if (normalize(it.title).startsWith(first)) 0 else 1 }
             else sortItems(items, o2)
-        val skipLive = excluder(PlaylistRepository.SECTION_LIVE, o)
-        val skipMovie = excluder(PlaylistRepository.SECTION_MOVIES, o)
-        val skipSeries = excluder(PlaylistRepository.SECTION_SERIES, o)
         val c = o.cleanNames
         val movies = ranked(
-            r.movies.filter { it.id !in o.hidden && !skipMovie(it.categoryName) && matches(it.name) }
+            visibleBySection(r.movies.filter { matches(it.name) }, PlaylistRepository.SECTION_MOVIES, o, ::movieGroup) { it.id }
                 .map { BrowseItem.Movie(it, clean(it.name, c)) }, order
         )
         val series = ranked(
-            r.series.filter { it.id !in o.hidden && !skipSeries(it.categoryName) && matches(it.name) }
+            visibleBySection(r.series.filter { matches(it.name) }, PlaylistRepository.SECTION_SERIES, o, ::seriesGroup) { it.id }
                 .map { BrowseItem.Show(it, clean(it.name, c)) }, order
         )
         val channels = ranked(
-            r.channels.filter { it.id !in o.hidden && !skipLive(it.groupTitle) && matches(it.name) }
+            visibleBySection(r.channels.filter { matches(it.name) }, PlaylistRepository.SECTION_LIVE, o, ::liveGroup) { it.id }
                 .map { BrowseItem.Live(it, clean(it.name, c)) }, orderFor(PlaylistRepository.SECTION_LIVE, order)
         )
         val groups = listOf(
-            ContentRow(SEARCH_MOVIES, movies, "Películas (${movies.size})"),
-            ContentRow(SEARCH_SERIES, series, "Series (${series.size})"),
-            ContentRow(SEARCH_LIVE, channels, "Canales en vivo (${channels.size})")
+            ContentRow(SEARCH_MOVIES, movies, uiText(R.string.home_search_movies_count, movies.size)),
+            ContentRow(SEARCH_SERIES, series, uiText(R.string.home_search_series_count, series.size)),
+            ContentRow(SEARCH_LIVE, channels, uiText(R.string.home_search_channels_count, channels.size))
         )
         val selected = groups.firstOrNull { it.title == r.filter.category }
         return if (selected != null) {
@@ -783,7 +1002,7 @@ class HomeViewModel @Inject constructor(
         val key = sectionKey(s)
         savePrefs(listOf(prefFor(key, name).copy(hidden = hidden)))
         if (hidden && s == section.value && category.value == name) category.value = null
-        if (hidden) message.value = "Categoría “${clean(name, true)}” oculta. Puedes volver a mostrarla desde Organizar categorías."
+        if (hidden) message.value = uiText(R.string.home_category_hidden, clean(name, true))
     }
 
     fun setCategoryAdult(s: Section, name: String, adult: Boolean) {
@@ -791,9 +1010,9 @@ class HomeViewModel @Inject constructor(
         savePrefs(listOf(prefFor(key, name).copy(adult = adult)))
         if (adult && s == section.value && category.value == name && pinSet.value && !parentalUnlocked.value) category.value = null
         message.value = when {
-            adult && !pinSet.value -> "Marcada como adultos. Crea un PIN en Configuración para bloquearla."
-            adult -> "“${clean(name, true)}” marcada como adultos: queda bloqueada con el PIN."
-            else -> "“${clean(name, true)}” ya no está marcada como adultos."
+            adult && !pinSet.value -> uiText(R.string.home_marked_adult_no_pin)
+            adult -> uiText(R.string.home_marked_adult, clean(name, true))
+            else -> uiText(R.string.home_unmarked_adult, clean(name, true))
         }
     }
 
@@ -827,7 +1046,7 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             repository.hideItem(HiddenItemEntity(item.key, playlistId, kind, item.title, item.imageUrl))
-            message.value = "“${item.title}” oculto. Puedes volver a mostrarlo desde Configuración."
+            message.value = uiText(R.string.home_item_hidden, item.title)
         }
     }
 
@@ -848,13 +1067,13 @@ class HomeViewModel @Inject constructor(
 
     fun lockParental() {
         parental.lock()
-        message.value = "Contenido para adultos bloqueado"
+        message.value = uiText(R.string.home_adult_locked)
     }
 
     fun setPin(pin: String) {
         viewModelScope.launch {
             parental.setPin(pin)
-            message.value = "PIN guardado. Las categorías de adultos quedan bloqueadas."
+            message.value = uiText(R.string.home_pin_saved)
         }
     }
 
@@ -863,7 +1082,7 @@ class HomeViewModel @Inject constructor(
             val ok = parental.checkPin(currentPin)
             if (ok) {
                 parental.clearPin()
-                message.value = "PIN quitado"
+                message.value = uiText(R.string.home_pin_removed)
             }
             onResult(ok)
         }
@@ -877,7 +1096,7 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val added = repository.toggleFavorite(favorite)
-            message.value = if (added) "“${item.title}” agregado a Mi lista" else "“${item.title}” quitado de Mi lista"
+            message.value = uiText(if (added) R.string.home_added_my_list else R.string.home_removed_my_list, item.title)
         }
     }
 
@@ -885,15 +1104,15 @@ class HomeViewModel @Inject constructor(
 
     private val _accountSaving = MutableStateFlow(false)
     val accountSaving: StateFlow<Boolean> = _accountSaving.asStateFlow()
-    private val _accountError = MutableStateFlow<String?>(null)
-    val accountError: StateFlow<String?> = _accountError.asStateFlow()
+    private val _accountError = MutableStateFlow<UiText?>(null)
+    val accountError: StateFlow<UiText?> = _accountError.asStateFlow()
 
     fun clearAccountError() { _accountError.value = null }
 
     fun updateAccount(name: String, user: String, pass: String, onDone: () -> Unit) {
         val current = account.value ?: return
         if (user.isBlank() || pass.isBlank()) {
-            _accountError.value = "Escribe tu usuario y tu contraseña."
+            _accountError.value = uiText(R.string.home_account_missing_fields)
             return
         }
         viewModelScope.launch {
@@ -902,10 +1121,10 @@ class HomeViewModel @Inject constructor(
             repository.updateAccount(current.id, name.trim(), user.trim(), pass.trim())
                 .onSuccess {
                     onDone()
-                    message.value = "Cuenta actualizada"
+                    message.value = uiText(R.string.home_account_updated)
                     if (current.username != user.trim() || current.password != pass.trim()) refreshAll(manual = true)
                 }
-                .onFailure { _accountError.value = it.message ?: "No se pudo guardar. Inténtalo de nuevo." }
+                .onFailure { _accountError.value = (it as? AccountException)?.text ?: uiText(R.string.home_account_save_failed) }
             _accountSaving.value = false
         }
     }
@@ -953,13 +1172,17 @@ class HomeViewModel @Inject constructor(
         refreshAll(manual = false)
     }
 
+    /** Elegir una sección (también la misma) lleva a su inicio. */
     fun selectSection(s: Section) {
-        if (section.value == s) return
+        summary.value = false
         section.value = s
         category.value = null
     }
 
-    fun selectCategory(c: String?) { category.value = c }
+    fun selectCategory(c: String?) {
+        summary.value = false
+        category.value = c
+    }
 
     /** Orden de esta sesión; elegir el de Configuración vuelve a seguirlo. */
     fun selectSort(order: SortOrder) {
@@ -983,7 +1206,7 @@ class HomeViewModel @Inject constructor(
             val resume = SeriesResumeRule.resolve(episodes, progress)
             val target = resume.episode?.id ?: episodes.firstOrNull()?.id
             if (target != null) onReady(target)
-            else message.value = "“${clean(series.name, catalogPrefs.value.cleanNames)}” todavía no tiene episodios disponibles"
+            else message.value = uiText(R.string.home_no_episodes, clean(series.name, catalogPrefs.value.cleanNames))
         }
     }
 
@@ -998,7 +1221,7 @@ class HomeViewModel @Inject constructor(
                     subtitle = movie.categoryName, positionMs = duration, durationMs = duration
                 )
             )
-            message.value = "“$title” marcada como vista"
+            message.value = uiText(R.string.home_marked_watched, title)
         }
     }
 
@@ -1017,7 +1240,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             if (isSeries) settings.dismissContinue(key, System.currentTimeMillis())
             else repository.removeProgress(key)
-            message.value = "“$title” quitado de Seguir viendo"
+            message.value = uiText(R.string.home_removed_continue, title)
         }
     }
 
@@ -1026,7 +1249,7 @@ class HomeViewModel @Inject constructor(
             is BrowseItem.Show -> resetSeries(item.series)
             is BrowseItem.Movie -> viewModelScope.launch {
                 repository.removeProgress(item.movie.id)
-                message.value = "“${item.title}” volverá a empezar desde el principio"
+                message.value = uiText(R.string.home_progress_reset, item.title)
             }
             is BrowseItem.Live -> Unit
         }
@@ -1054,11 +1277,12 @@ class HomeViewModel @Inject constructor(
             repository.refreshAll(force = manual)
                 .onSuccess { failed ->
                     if (failed.isNotEmpty() && (manual || first)) {
-                        message.value = "No se pudo actualizar: ${failed.joinToString(", ")}. Se muestra lo guardado."
+                        val list = failed.reduce { acc, item -> uiText(R.string.home_refresh_list_join, acc, item) }
+                        message.value = uiText(R.string.home_refresh_failed, list)
                     }
                 }
                 .onFailure {
-                    if (manual || first) message.value = "No se pudo actualizar el catálogo. Revisa tu conexión."
+                    if (manual || first) message.value = uiText(R.string.home_refresh_failed_offline)
                 }
             refreshing.value = false
             firstSync.value = false
@@ -1079,14 +1303,14 @@ class HomeViewModel @Inject constructor(
     fun resetSeries(series: SeriesEntity) {
         viewModelScope.launch {
             repository.resetSeries(series.id)
-            message.value = "Serie reiniciada: “${clean(series.name, catalogPrefs.value.cleanNames)}” volverá al episodio 1"
+            message.value = uiText(R.string.home_series_reset, clean(series.name, catalogPrefs.value.cleanNames))
         }
     }
 
     fun resetAllProgress() {
         viewModelScope.launch {
             repository.resetAllProgress()
-            message.value = "Todo el progreso fue borrado"
+            message.value = uiText(R.string.home_all_progress_reset)
         }
     }
 }

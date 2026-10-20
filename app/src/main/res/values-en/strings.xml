@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sections -->
+    <string name="section_live">Live TV</string>
+    <string name="section_movies">Movies</string>
+    <string name="section_series">Series</string>
+
+    <!-- Catalog sort order -->
+    <string name="sort_original">Original</string>
+    <string name="sort_az">A-Z</string>
+    <string name="sort_rating">Rating</string>
+    <string name="sort_recent">Recent</string>
+
+    <!-- Account -->
+    <string name="account_missing">This account no longer exists.</string>
+    <string name="account_wrong_credentials">Wrong username or password.</string>
+    <string name="account_server_down">The server is not available right now. Please try again later.</string>
+    <string name="account_server_error">The server returned an error (%1$d). Please try again later.</string>
+    <string name="account_no_connection">Can\'t reach the server. Check your internet connection and try again.</string>
+    <string name="account_expired">Your account has expired. Contact your provider to renew it.</string>
+    <string name="account_banned">Your account is suspended. Contact your provider.</string>
+    <string name="account_disabled">Your account is disabled. Contact your provider.</string>
+    <string name="account_inactive">Your account is not active (%1$s). Contact your provider.</string>
+</resources>

@@ -14,10 +14,12 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.entretv.app.MainActivity
+import com.entretv.app.R
 import com.entretv.app.data.local.DownloadDao
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
 import com.entretv.app.player.PlayerManager
+import com.entretv.app.ui.AppLanguage
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.File
@@ -47,6 +49,9 @@ class DownloadWorker @AssistedInject constructor(
 
     private val notifications = context.getSystemService(NotificationManager::class.java)
 
+    /** Textos de avisos y errores guardados, en el idioma de la app. */
+    private val texts: Context by lazy { AppLanguage.wrap(applicationContext) }
+
     private enum class Outcome { DONE, STOPPED, FAILED, NETWORK }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -59,7 +64,7 @@ class DownloadWorker @AssistedInject constructor(
                     return@withContext if (runAttemptCount < MAX_ATTEMPTS) {
                         Result.retry()
                     } else {
-                        dao.setStatus(next.contentKey, DownloadStatus.FAILED, "Sin conexión con el servidor.")
+                        dao.setStatus(next.contentKey, DownloadStatus.FAILED, texts.getString(R.string.download_error_no_connection))
                         Result.failure()
                     }
                 }
@@ -91,19 +96,19 @@ class DownloadWorker @AssistedInject constructor(
                     return finish(item, part, target)
                 }
                 if (!response.isSuccessful) {
-                    return fail(key, "El servidor respondió ${response.code}.")
+                    return fail(key, texts.getString(R.string.download_error_http, response.code))
                 }
-                val body = response.body ?: return fail(key, "El servidor no envió el archivo.")
+                val body = response.body ?: return fail(key, texts.getString(R.string.download_error_no_file))
                 val type = body.contentType()?.toString().orEmpty().lowercase()
                 if ("mpegurl" in type || "dash" in type) {
-                    return fail(key, "Este título se transmite por partes y no se puede descargar.")
+                    return fail(key, texts.getString(R.string.download_error_streamed))
                 }
                 val append = response.code == 206
                 if (!append) existing = 0L
                 val length = body.contentLength()
                 val total = if (length > 0) existing + length else -1L
                 if (length > 0 && dir.usableSpace < length + FREE_SPACE_RESERVE) {
-                    return fail(key, "No hay espacio suficiente en el dispositivo.")
+                    return fail(key, texts.getString(R.string.download_error_no_space))
                 }
                 dao.updateProgress(key, existing, total)
 
@@ -132,7 +137,7 @@ class DownloadWorker @AssistedInject constructor(
                                     return Outcome.STOPPED
                                 }
                                 if (dir.usableSpace < FREE_SPACE_RESERVE) {
-                                    return fail(key, "No hay espacio suficiente en el dispositivo.")
+                                    return fail(key, texts.getString(R.string.download_error_no_space))
                                 }
                                 runCatching {
                                     notifications.notify(NOTIFICATION_ID, progressNotification(current, written to total))
@@ -147,7 +152,7 @@ class DownloadWorker @AssistedInject constructor(
                 }
                 dao.updateProgress(key, written, total)
                 if (total > 0 && written < total) {
-                    dao.setStatus(key, DownloadStatus.QUEUED, "Conexión interrumpida; se reintentará.")
+                    dao.setStatus(key, DownloadStatus.QUEUED, texts.getString(R.string.download_error_interrupted))
                     return Outcome.NETWORK
                 }
                 return finish(item, part, target)
@@ -161,16 +166,16 @@ class DownloadWorker @AssistedInject constructor(
                 dao.setStatus(key, DownloadStatus.QUEUED)
                 return Outcome.STOPPED
             }
-            dao.setStatus(key, DownloadStatus.QUEUED, "Conexión interrumpida; se reintentará.")
+            dao.setStatus(key, DownloadStatus.QUEUED, texts.getString(R.string.download_error_interrupted))
             return Outcome.NETWORK
         } catch (e: IllegalArgumentException) {
-            return fail(key, "La dirección del contenido no es válida.")
+            return fail(key, texts.getString(R.string.download_error_bad_url))
         }
     }
 
     private suspend fun finish(item: DownloadEntity, part: File, target: File): Outcome {
         target.delete()
-        if (!part.renameTo(target)) return fail(item.contentKey, "No se pudo guardar el archivo.")
+        if (!part.renameTo(target)) return fail(item.contentKey, texts.getString(R.string.download_error_save))
         dao.updateProgress(item.contentKey, target.length(), target.length())
         dao.setStatus(item.contentKey, DownloadStatus.DONE)
         return Outcome.DONE
@@ -182,11 +187,10 @@ class DownloadWorker @AssistedInject constructor(
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            notifications.getNotificationChannel(CHANNEL_ID) == null
-        ) {
+        // Si el canal ya existe solo se actualiza el nombre (por si cambió el idioma de la app).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             notifications.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Descargas", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(CHANNEL_ID, texts.getString(R.string.download_title), NotificationManager.IMPORTANCE_LOW)
             )
         }
     }
@@ -208,16 +212,17 @@ class DownloadWorker @AssistedInject constructor(
 
     private fun progressNotification(item: DownloadEntity, progress: Pair<Long, Long>?): android.app.Notification {
         val (done, total) = progress ?: (item.downloadedBytes to item.totalBytes)
-        val name = if (item.kind == "EPISODE") "${item.title} · ${item.subtitle}" else item.title
+        val name = item.displayName(texts)
         val builder = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Descargando $name")
+            .setContentTitle(texts.getString(R.string.download_notification_title, name))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openAppIntent())
         if (total > 0) {
             val percent = (done * 100 / total).toInt()
-            builder.setProgress(100, percent, false).setContentText("$percent % · ${formatBytes(done)} de ${formatBytes(total)}")
+            builder.setProgress(100, percent, false)
+                .setContentText(texts.getString(R.string.download_notification_progress, percent, formatBytes(done), formatBytes(total)))
         } else {
             builder.setProgress(0, 0, true).setContentText(formatBytes(done))
         }
@@ -225,11 +230,11 @@ class DownloadWorker @AssistedInject constructor(
     }
 
     private suspend fun notifyFinished(item: DownloadEntity, ok: Boolean) {
-        val name = if (item.kind == "EPISODE") "${item.title} · ${item.subtitle}" else item.title
+        val name = item.displayName(texts)
         val error = dao.get(item.contentKey)?.error.orEmpty()
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
-            .setContentTitle(if (ok) "Descarga lista" else "No se pudo descargar")
+            .setContentTitle(texts.getString(if (ok) R.string.download_notification_done else R.string.download_failed))
             .setContentText(if (ok) name else "$name: $error")
             .setAutoCancel(true)
             .setContentIntent(openAppIntent())

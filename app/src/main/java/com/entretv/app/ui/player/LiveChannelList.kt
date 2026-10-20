@@ -62,14 +62,22 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.entretv.app.R
 import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.ui.LiveCategory
 import com.entretv.app.ui.theme.EntreBrand
@@ -126,6 +134,13 @@ fun LiveChannelList(
                         .pointerInput(Unit) { detectTapGestures { } }
                         .focusProperties { exit = { FocusRequester.Cancel } }
                         .focusGroup()
+                        // Atrás del control: con la salida de foco bloqueada no llegaría al BackHandler.
+                        .onPreviewKeyEvent { event ->
+                            if (event.key == Key.Back || event.key == Key.Escape) {
+                                if (event.type == KeyEventType.KeyDown) onDismiss()
+                                true
+                            } else false
+                        }
                 ) {
                     ChannelBrowser(state, twoColumns = twoColumns, focusCurrent = true)
                 }
@@ -177,7 +192,7 @@ private fun CategoryColumn(state: ChannelBrowserState, modifier: Modifier) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedIndex - 3).coerceAtLeast(0))
     Column(modifier) {
         Text(
-            "Categorías",
+            stringResource(R.string.player_categories),
             color = Color.White,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
@@ -211,8 +226,9 @@ private fun ChannelColumn(state: ChannelBrowserState, focusCurrent: Boolean, inl
         }
     }
     val title = when {
-        state.query.isNotBlank() -> "Resultados (${channels.size})"
-        else -> state.categories.firstOrNull { it.raw == state.category }?.label ?: "Canales"
+        state.query.isNotBlank() -> pluralStringResource(R.plurals.player_search_results, channels.size, channels.size)
+        else -> state.categories.firstOrNull { it.raw == state.category }?.let { categoryLabel(it) }
+            ?: stringResource(R.string.player_channels)
     }
     var searching by remember { mutableStateOf(false) }
     Column(modifier) {
@@ -232,13 +248,13 @@ private fun ChannelColumn(state: ChannelBrowserState, focusCurrent: Boolean, inl
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 14.dp)
             ) {
                 SearchButton(
-                    label = state.query.ifBlank { "Buscar canal" },
+                    label = state.query.ifBlank { stringResource(R.string.player_search_channel) },
                     onClick = { searching = true },
                     modifier = Modifier.weight(1f)
                 )
                 if (state.query.isNotBlank()) {
                     IconButton(onClick = { state.onQuery("") }) {
-                        Icon(Icons.Default.Close, contentDescription = "Borrar búsqueda", tint = Color.White)
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.player_clear_search), tint = Color.White)
                     }
                 }
             }
@@ -254,7 +270,9 @@ private fun ChannelColumn(state: ChannelBrowserState, focusCurrent: Boolean, inl
         )
         if (channels.isEmpty()) {
             Text(
-                if (state.query.isNotBlank()) "No hay canales con ese nombre." else "No hay canales en esta categoría.",
+                stringResource(
+                    if (state.query.isNotBlank()) R.string.player_no_channels_match else R.string.player_no_channels_category
+                ),
                 color = EntreBrand.TextDim,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
@@ -280,7 +298,7 @@ private fun ChannelColumn(state: ChannelBrowserState, focusCurrent: Boolean, inl
         AlertDialog(
             onDismissRequest = { searching = false },
             containerColor = EntreBrand.Panel,
-            title = { Text("Buscar canal", color = Color.White) },
+            title = { Text(stringResource(R.string.player_search_channel), color = Color.White) },
             text = {
                 SearchField(
                     value = draft,
@@ -296,10 +314,10 @@ private fun ChannelColumn(state: ChannelBrowserState, focusCurrent: Boolean, inl
                 TextButton(onClick = {
                     state.onQuery(draft)
                     searching = false
-                }) { Text("Buscar", color = EntreBrand.Accent) }
+                }) { Text(stringResource(R.string.player_search), color = EntreBrand.Accent) }
             },
             dismissButton = {
-                TextButton(onClick = { searching = false }) { Text("Cancelar", color = Color.White) }
+                TextButton(onClick = { searching = false }) { Text(stringResource(R.string.player_cancel), color = Color.White) }
             }
         )
         LaunchedEffect(Unit) {
@@ -315,12 +333,12 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onDone: 
         value = value,
         onValueChange = onValueChange,
         singleLine = true,
-        placeholder = { Text("Buscar canal") },
+        placeholder = { Text(stringResource(R.string.player_search_channel)) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = if (value.isNotEmpty()) {
             {
                 IconButton(onClick = { onValueChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "Borrar búsqueda")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.player_clear_search))
                 }
             }
         } else null,
@@ -358,6 +376,10 @@ private fun SearchButton(label: String, onClick: () -> Unit, modifier: Modifier)
 }
 
 @Composable
+private fun categoryLabel(category: LiveCategory): String =
+    category.label.ifBlank { stringResource(R.string.player_no_category) }
+
+@Composable
 private fun CategoryRow(category: LiveCategory, selected: Boolean, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
@@ -380,7 +402,7 @@ private fun CategoryRow(category: LiveCategory, selected: Boolean, onClick: () -
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Text(
-            category.label,
+            categoryLabel(category),
             color = if (selected) Color.White else EntreBrand.Text,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
@@ -398,7 +420,7 @@ private fun CategoryChip(category: LiveCategory, selected: Boolean, onClick: () 
     val focused by source.collectIsFocusedAsState()
     val shape = RoundedCornerShape(50)
     Text(
-        category.label,
+        categoryLabel(category),
         color = if (selected) Color.White else EntreBrand.Text,
         style = MaterialTheme.typography.labelLarge,
         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,

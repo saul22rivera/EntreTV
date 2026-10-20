@@ -9,6 +9,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import com.entretv.app.data.download.DownloadRepository
+import com.entretv.app.ui.AppLanguage
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -23,6 +24,7 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        AppLanguage.init(this)
         downloads.resumePending()
     }
 

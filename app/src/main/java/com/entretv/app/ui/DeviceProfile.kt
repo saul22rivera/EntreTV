@@ -33,10 +33,11 @@ fun rememberDeviceProfile(): DeviceProfile {
         when {
             isTv -> DeviceProfile(
                 isTv = true, compactRail = false, railWidth = 220.dp,
-                posterWidth = 150.dp, posterHeight = 220.dp,
-                liveWidth = 210.dp, liveHeight = 118.dp,
-                continueWidth = 260.dp, continueHeight = 146.dp,
-                itemGap = 18.dp, rowGap = 14.dp, edge = 28.dp
+                // Unas dos filas y media a la vista en 1080p (960x540 dp).
+                posterWidth = 100.dp, posterHeight = 148.dp,
+                liveWidth = 160.dp, liveHeight = 90.dp,
+                continueWidth = 190.dp, continueHeight = 107.dp,
+                itemGap = 14.dp, rowGap = 6.dp, edge = 28.dp
             )
             width >= 600 -> DeviceProfile(
                 isTv = false, compactRail = false, railWidth = 196.dp,

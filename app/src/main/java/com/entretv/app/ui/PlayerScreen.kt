@@ -94,6 +94,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
@@ -101,6 +102,8 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -115,6 +118,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import com.entretv.app.R
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.player.PipController
@@ -122,7 +126,7 @@ import com.entretv.app.ui.player.ChannelBrowser
 import com.entretv.app.ui.player.ChannelBrowserState
 import com.entretv.app.ui.player.LiveChannelList
 import com.entretv.app.ui.player.PlayerSettingsPanel
-import com.entretv.app.ui.player.resizeLabel
+import com.entretv.app.ui.player.resizeLabelRes
 import com.entretv.app.ui.theme.EntreBrand
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -161,6 +165,7 @@ fun PlayerScreen(
     val notice by viewModel.notice.collectAsState()
     val isFavorite by viewModel.isFavorite.collectAsState()
     val prefs by viewModel.playerPrefs.collectAsState()
+    val showClock by viewModel.showClock.collectAsState()
     val sleepMinutes by viewModel.sleepMinutes.collectAsState()
     val sleepEndsAt by viewModel.sleepEndsAt.collectAsState()
     val nextEpisode by viewModel.nextEpisode.collectAsState()
@@ -207,7 +212,11 @@ fun PlayerScreen(
         position = target
         feedback = Feedback(
             if (deltaMs < 0) Icons.Default.FastRewind else Icons.Default.FastForward,
-            "${if (deltaMs < 0) "−" else "+"}${kotlin.math.abs(deltaMs) / 1000} s · ${PlayerViewModel.formatMs(target)}"
+            context.getString(
+                if (deltaMs < 0) R.string.player_feedback_rewind else R.string.player_feedback_forward,
+                (kotlin.math.abs(deltaMs) / 1000).toInt(),
+                PlayerViewModel.formatMs(target)
+            )
         )
     }
 
@@ -232,17 +241,21 @@ fun PlayerScreen(
         }
         viewModel.setResizeMode(next)
         val detail = when (next) {
-            SettingsRepository.RESIZE_ZOOM -> "recorta los bordes"
-            SettingsRepository.RESIZE_FILL -> "llena la pantalla"
-            else -> "imagen completa"
+            SettingsRepository.RESIZE_ZOOM -> R.string.player_resize_detail_zoom
+            SettingsRepository.RESIZE_FILL -> R.string.player_resize_detail_fill
+            else -> R.string.player_resize_detail_fit
         }
-        feedback = Feedback(Icons.Default.AspectRatio, "${resizeLabel(next)} · $detail", durationMs = 1_800)
+        feedback = Feedback(
+            Icons.Default.AspectRatio,
+            "${context.getString(resizeLabelRes(next))} · ${context.getString(detail)}",
+            durationMs = 1_800
+        )
         interaction++
     }
 
     fun enterPip() {
         val ok = activity?.let { PipController.enter(it) } == true
-        if (!ok) feedback = Feedback(Icons.Default.PictureInPictureAlt, "Tu equipo no permite ventana flotante", durationMs = 1_800)
+        if (!ok) feedback = Feedback(Icons.Default.PictureInPictureAlt, context.getString(R.string.player_pip_unsupported), durationMs = 1_800)
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -380,9 +393,9 @@ fun PlayerScreen(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
                         ) {
-                            Text(playError.orEmpty(), color = Color.White, style = MaterialTheme.typography.titleMedium)
+                            Text(playError?.asString().orEmpty(), color = Color.White, style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(12.dp))
-                            Button(onClick = { manager.retry() }) { Text("Reintentar") }
+                            Button(onClick = { manager.retry() }) { Text(stringResource(R.string.player_retry)) }
                         }
                     }
                     buffering && !controlsVisible && !reconnecting -> CircularProgressIndicator(
@@ -410,8 +423,14 @@ fun PlayerScreen(
                     Box(Modifier.fillMaxSize()) {
                         // En vertical los botones de acción bajan (pastillas), más cerca del pulgar.
                         TopBar(
-                            title = playable?.title ?: "Cargando…",
-                            subtitle = playable?.subtitle.orEmpty(),
+                            title = playable?.title ?: stringResource(R.string.player_loading),
+                            subtitle = when (val p = playable) {
+                                is Playable.Episode -> stringResource(
+                                    R.string.player_episode_subtitle,
+                                    p.episode.season, p.episode.episodeNum, p.episode.title
+                                )
+                                else -> p?.subtitle.orEmpty()
+                            },
                             isLive = isLive,
                             isFavorite = isFavorite,
                             showActions = !portrait,
@@ -422,6 +441,8 @@ fun PlayerScreen(
                             onAspect = if (!profile.isTv) ::cycleAspect else null,
                             onPip = if (pipSupported) ::enterPip else null,
                             onSettings = ::openPanel,
+                            showClock = showClock,
+                            clockWithDate = !portrait,
                             modifier = Modifier.align(Alignment.TopCenter)
                         )
 
@@ -434,12 +455,12 @@ fun PlayerScreen(
                             if (playable?.kind != "MOVIE") {
                                 ControlIcon(
                                     Icons.AutoMirrored.Filled.NavigateBefore,
-                                    if (isLive) "Canal anterior" else "Episodio anterior",
+                                    stringResource(if (isLive) R.string.player_prev_channel else R.string.player_prev_episode),
                                     if (small) 32.dp else 40.dp
                                 ) { viewModel.zap(-1); interaction++ }
                             }
                             if (!isLive) {
-                                ControlIcon(Icons.Default.Replay10, "Atrasar 10 segundos", 40.dp) { seekBy(-10_000); interaction++ }
+                                ControlIcon(Icons.Default.Replay10, stringResource(R.string.player_rewind_10), 40.dp) { seekBy(-10_000); interaction++ }
                             }
                             if (buffering) {
                                 Box(Modifier.size(if (small) 64.dp else 84.dp), contentAlignment = Alignment.Center) {
@@ -451,7 +472,7 @@ fun PlayerScreen(
                             } else {
                                 ControlIcon(
                                     if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    if (isPlaying) "Pausar" else "Reproducir",
+                                    stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
                                     size = if (small) 44.dp else 60.dp,
                                     emphasized = true,
                                     modifier = Modifier.focusRequester(playFocus),
@@ -459,12 +480,12 @@ fun PlayerScreen(
                                 )
                             }
                             if (!isLive) {
-                                ControlIcon(Icons.Default.Forward30, "Adelantar 30 segundos", 40.dp) { seekBy(30_000); interaction++ }
+                                ControlIcon(Icons.Default.Forward30, stringResource(R.string.player_forward_30), 40.dp) { seekBy(30_000); interaction++ }
                             }
                             if (playable?.kind != "MOVIE") {
                                 ControlIcon(
                                     Icons.AutoMirrored.Filled.NavigateNext,
-                                    if (isLive) "Canal siguiente" else "Episodio siguiente",
+                                    stringResource(if (isLive) R.string.player_next_channel else R.string.player_next_episode),
                                     if (small) 32.dp else 40.dp
                                 ) { viewModel.zap(1); interaction++ }
                             }
@@ -510,7 +531,7 @@ fun PlayerScreen(
                     nextEpisode?.let { next ->
                         Column(horizontalAlignment = Alignment.End) {
                             EntreButton(
-                                text = "Siguiente capítulo",
+                                text = stringResource(R.string.player_next_episode_button),
                                 icon = Icons.Default.SkipNext,
                                 primary = true,
                                 onClick = viewModel::playNextEpisode,
@@ -518,7 +539,10 @@ fun PlayerScreen(
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "T${next.season}:E${next.episodeNum} · en ${(remaining / 1000).coerceAtLeast(0)} s",
+                                stringResource(
+                                    R.string.player_next_episode_countdown,
+                                    next.season, next.episodeNum, (remaining / 1000).coerceAtLeast(0).toInt()
+                                ),
                                 color = Color.White.copy(alpha = 0.85f),
                                 style = MaterialTheme.typography.labelMedium
                             )
@@ -545,6 +569,20 @@ fun PlayerScreen(
             .background(Color.Black)
             .focusRequester(rootFocus)
             .focusable()
+            // Respaldo en TV si Atrás llega a la raíz (el foco quedó fuera del panel o de los
+            // controles): sin esto Compose lo gasta moviendo el foco y no pasa nada.
+            .onKeyEvent { event ->
+                if (!profile.isTv || (event.key != Key.Back && event.key != Key.Escape)) return@onKeyEvent false
+                val handled = panelOpen || channelsOpen || controlsVisible
+                if (handled && event.type == KeyEventType.KeyDown) {
+                    when {
+                        panelOpen -> panelOpen = false
+                        channelsOpen -> channelsOpen = false
+                        else -> controlsVisible = false
+                    }
+                }
+                handled
+            }
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 interaction++
@@ -635,7 +673,7 @@ fun PlayerScreen(
         }
 
         if (!inPip) {
-            notice?.let { msg ->
+            notice?.asString()?.let { msg ->
                 Surface(
                     color = Color.Black.copy(alpha = 0.75f),
                     shape = RoundedCornerShape(14.dp),
@@ -693,9 +731,9 @@ private fun ReconnectPill(offline: Boolean, attempt: Int, modifier: Modifier = M
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
-                    offline -> "Sin conexión · se reanuda al volver la red"
-                    attempt >= 4 -> "Reconectando… (intento $attempt)"
-                    else -> "Reconectando…"
+                    offline -> stringResource(R.string.player_offline)
+                    attempt >= 4 -> stringResource(R.string.player_reconnecting_attempt, attempt)
+                    else -> stringResource(R.string.player_reconnecting)
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge
@@ -724,14 +762,16 @@ private fun ActionPills(
         val share = Modifier.weight(1f, fill = false)
         ActionPill(
             icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-            label = if (isFavorite) "En Mi lista" else "Mi lista",
+            label = stringResource(if (isFavorite) R.string.player_in_my_list else R.string.player_my_list),
             tint = if (isFavorite) EntreBrand.Accent else Color.White,
             onClick = onFavorite,
             modifier = share
         )
-        ActionPill(Icons.Default.AspectRatio, resizeLabel(resizeMode), onClick = onAspect, modifier = share)
-        if (pipSupported) ActionPill(Icons.Default.PictureInPictureAlt, "Flotante", onClick = onPip, modifier = share)
-        ActionPill(Icons.Default.Settings, "Ajustes", onClick = onSettings, modifier = share)
+        ActionPill(Icons.Default.AspectRatio, stringResource(resizeLabelRes(resizeMode)), onClick = onAspect, modifier = share)
+        if (pipSupported) {
+            ActionPill(Icons.Default.PictureInPictureAlt, stringResource(R.string.player_pip_short), onClick = onPip, modifier = share)
+        }
+        ActionPill(Icons.Default.Settings, stringResource(R.string.player_settings_short), onClick = onSettings, modifier = share)
     }
 }
 
@@ -776,7 +816,7 @@ private fun LiveTabs(selected: Int, onSelect: (Int) -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
-        listOf("Guía", "Canales").forEachIndexed { index, label ->
+        listOf(stringResource(R.string.player_tab_guide), stringResource(R.string.player_channels)).forEachIndexed { index, label ->
             val active = index == selected
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -814,7 +854,7 @@ private fun EpgGuide(epg: List<EpgEntity>, modifier: Modifier = Modifier) {
     if (current == null && upcoming.isEmpty()) {
         Box(modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.TopCenter) {
             Text(
-                "Este canal no tiene guía de programación.",
+                stringResource(R.string.player_epg_empty),
                 color = EntreBrand.TextDim,
                 style = MaterialTheme.typography.bodyLarge
             )
@@ -829,7 +869,7 @@ private fun EpgGuide(epg: List<EpgEntity>, modifier: Modifier = Modifier) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(color = Color(0xFFE53935), shape = RoundedCornerShape(6.dp)) {
                                 Text(
-                                    "AHORA",
+                                    stringResource(R.string.player_epg_now_badge),
                                     color = Color.White,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
@@ -843,8 +883,9 @@ private fun EpgGuide(epg: List<EpgEntity>, modifier: Modifier = Modifier) {
                                 style = MaterialTheme.typography.labelLarge
                             )
                             Spacer(Modifier.weight(1f))
+                            val minutesLeft = ((program.end - now) / 60).coerceAtLeast(1).toInt()
                             Text(
-                                "Quedan ${((program.end - now) / 60).coerceAtLeast(1)} min",
+                                pluralStringResource(R.plurals.player_minutes_left, minutesLeft, minutesLeft),
                                 color = EntreBrand.TextDim,
                                 style = MaterialTheme.typography.labelMedium
                             )
@@ -873,11 +914,11 @@ private fun EpgGuide(epg: List<EpgEntity>, modifier: Modifier = Modifier) {
             }
         }
         upcoming.firstOrNull()?.let { next ->
-            item(key = "next-title") { GuideHeader("A continuación") }
+            item(key = "next-title") { GuideHeader(stringResource(R.string.player_epg_up_next)) }
             item(key = "next") { GuideRow(next, showDescription = true) }
         }
         if (upcoming.size > 1) {
-            item(key = "later-title") { GuideHeader("Más tarde") }
+            item(key = "later-title") { GuideHeader(stringResource(R.string.player_epg_later)) }
             items(upcoming.drop(1), key = { "${it.start}-${it.title}" }) { GuideRow(it, showDescription = false) }
         }
     }
@@ -932,6 +973,8 @@ private fun TopBar(
     onAspect: (() -> Unit)?,
     onPip: (() -> Unit)?,
     onSettings: () -> Unit,
+    showClock: Boolean = false,
+    clockWithDate: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -942,13 +985,13 @@ private fun TopBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Volver", 26.dp, onClick = onBack)
+        ControlIcon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.player_back), 26.dp, onClick = onBack)
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isLive) {
                     Surface(color = Color(0xFFE53935), shape = RoundedCornerShape(6.dp)) {
                         Text(
-                            "EN VIVO",
+                            stringResource(R.string.player_live_badge),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
@@ -976,18 +1019,19 @@ private fun TopBar(
                 )
             }
         }
-        if (showChannels) ControlIcon(Icons.AutoMirrored.Filled.List, "Canales", 26.dp, onClick = onChannels)
+        if (showClock) SmallClock(Modifier.padding(horizontal = 8.dp), showDate = clockWithDate)
+        if (showChannels) ControlIcon(Icons.AutoMirrored.Filled.List, stringResource(R.string.player_channels), 26.dp, onClick = onChannels)
         if (showActions) {
-            onAspect?.let { ControlIcon(Icons.Default.AspectRatio, "Formato de imagen", 26.dp, onClick = it) }
-            onPip?.let { ControlIcon(Icons.Default.PictureInPictureAlt, "Ventana flotante", 26.dp, onClick = it) }
+            onAspect?.let { ControlIcon(Icons.Default.AspectRatio, stringResource(R.string.player_aspect), 26.dp, onClick = it) }
+            onPip?.let { ControlIcon(Icons.Default.PictureInPictureAlt, stringResource(R.string.player_pip), 26.dp, onClick = it) }
             ControlIcon(
                 if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                if (isFavorite) "Quitar de Mi lista" else "Agregar a Mi lista",
+                stringResource(if (isFavorite) R.string.player_remove_from_list else R.string.player_add_to_list),
                 26.dp,
                 tint = if (isFavorite) EntreBrand.Accent else Color.White,
                 onClick = onFavorite
             )
-            ControlIcon(Icons.Default.Settings, "Ajustes de reproducción", 26.dp, onClick = onSettings)
+            ControlIcon(Icons.Default.Settings, stringResource(R.string.player_settings_title), 26.dp, onClick = onSettings)
         }
     }
 }
@@ -1045,7 +1089,7 @@ private fun BottomBar(
             val current = epg.first()
             if (current.start <= now && current.end > now) {
                 Text(
-                    "Ahora · ${current.title}",
+                    stringResource(R.string.player_now_program, current.title),
                     color = Color.White,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
@@ -1198,10 +1242,22 @@ private fun GestureLayer(
                             activity?.window?.let { window ->
                                 window.attributes = window.attributes.apply { screenBrightness = level.coerceAtLeast(0.01f) }
                             }
-                            onFeedback(Feedback(Icons.Default.BrightnessMedium, "Brillo ${(level * 100).toInt()}%", level))
+                            onFeedback(
+                                Feedback(
+                                    Icons.Default.BrightnessMedium,
+                                    context.getString(R.string.player_feedback_brightness, (level * 100).toInt()),
+                                    level
+                                )
+                            )
                         } else {
                             audio.setStreamVolume(AudioManager.STREAM_MUSIC, (level * maxVolume).toInt(), 0)
-                            onFeedback(Feedback(Icons.AutoMirrored.Filled.VolumeUp, "Volumen ${(level * 100).toInt()}%", level))
+                            onFeedback(
+                                Feedback(
+                                    Icons.AutoMirrored.Filled.VolumeUp,
+                                    context.getString(R.string.player_feedback_volume, (level * 100).toInt()),
+                                    level
+                                )
+                            )
                         }
                     }
                 )

@@ -17,7 +17,9 @@ data class XtreamLogin(
         // 1/0, "1"/"0" o true/false según el panel.
         val auth: JsonElement? = null,
         @SerialName("exp_date") val expDate: JsonElement? = null,
-        @SerialName("is_trial") val isTrial: JsonElement? = null
+        @SerialName("is_trial") val isTrial: JsonElement? = null,
+        @SerialName("max_connections") val maxConnections: JsonElement? = null,
+        @SerialName("active_cons") val activeConnections: JsonElement? = null
     )
 }
 

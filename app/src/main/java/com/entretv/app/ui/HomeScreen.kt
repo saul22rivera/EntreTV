@@ -49,6 +49,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -103,6 +104,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -139,6 +141,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -151,6 +155,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import com.entretv.app.R
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.ui.home.ContentAction
@@ -158,7 +163,10 @@ import com.entretv.app.ui.home.ContentMenu
 import com.entretv.app.ui.home.AccountDialog
 import com.entretv.app.ui.home.HiddenItemsDialog
 import com.entretv.app.ui.home.NavRail
-import com.entretv.app.ui.home.SectionTabs
+import com.entretv.app.ui.home.CategoryChips
+import com.entretv.app.ui.home.TvCatalogNav
+import com.entretv.app.ui.home.TvLiveScreen
+import com.entretv.app.ui.home.tvNavItem
 import com.entretv.app.ui.home.OrganizeCategoriesDialog
 import com.entretv.app.ui.home.PinDialog
 import com.entretv.app.ui.home.SettingsPanel
@@ -180,6 +188,8 @@ fun HomeScreen(
     onPlayMovie: (String) -> Unit,
     onPlayEpisode: (String) -> Unit,
     onOpenDownloads: () -> Unit,
+    /** TV En vivo: pantalla completa del canal que ya suena en el mini reproductor. */
+    onPlayLiveFullscreen: (String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -195,6 +205,9 @@ fun HomeScreen(
     val downloadWifiOnly by viewModel.downloadWifiOnly.collectAsState()
     val maxBufferSeconds by viewModel.maxBufferSeconds.collectAsState()
     val catalogPrefs by viewModel.catalogPrefs.collectAsState()
+    val playerPrefs by viewModel.playerPrefs.collectAsState()
+    val showClock by viewModel.showClock.collectAsState()
+    val accountInfo by viewModel.accountInfo.collectAsState()
     val pinSet by viewModel.pinSet.collectAsState()
     val parentalUnlocked by viewModel.parentalUnlocked.collectAsState()
     val hiddenItems by viewModel.hiddenItems.collectAsState()
@@ -214,11 +227,17 @@ fun HomeScreen(
     var pinError by remember { mutableStateOf<String?>(null) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     val searching = ui.query.isNotBlank()
+    // Celular: al abrir la app se ve el resumen hasta elegir una sección o categoría.
+    val showSummary = profile.compactRail && ui.summary && !searching
+    // TV: En vivo es la vista de categorías, canales y mini reproductor.
+    val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null
 
     var railExpanded by rememberSaveable { mutableStateOf(false) }
     val pillVisible = rememberSaveable { mutableStateOf(true) }
     val catalogFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
+    val headerFocus = remember { FocusRequester() }
+    val tvNav = remember(profile.isTv) { if (profile.isTv) TvCatalogNav() else null }
     var catalogHasFocus by remember { mutableStateOf(false) }
     // Hora de la última flecha izquierda: distingue al usuario que va al menú del foco que
     // el sistema reubica solo al cerrarse el panel.
@@ -247,6 +266,12 @@ fun HomeScreen(
 
     fun setRailExpanded(value: Boolean) {
         railExpanded = value
+    }
+
+    // Una vista corta no se puede deslizar para traer la píldora de vuelta.
+    LaunchedEffect(ui.section, ui.category, ui.summary) {
+        pillVisible.value = true
+        tvNav?.reset()
     }
 
     val contentStale = content.playlistId != ui.selectedPlaylistId ||
@@ -289,7 +314,8 @@ fun HomeScreen(
 
     LaunchedEffect(ui.message) {
         ui.message?.let {
-            scope.launch { snackbar.showSnackbar(it) }
+            val text = it.resolve(context)
+            scope.launch { snackbar.showSnackbar(text) }
             viewModel.consumeMessage()
         }
     }
@@ -304,6 +330,17 @@ fun HomeScreen(
                 searchOpen = false
             }
         }
+    }
+
+    // Celular: desde una sección, Atrás vuelve al resumen; desde el resumen sale de la app.
+    BackHandler(enabled = profile.compactRail && !searchOpen && ui.category == null && !ui.summary) {
+        viewModel.showSummary()
+    }
+
+    fun goHome() {
+        if (searchOpen) searchOpen = false
+        setRailExpanded(false)
+        viewModel.showSummary()
     }
 
     val onItemClick: (BrowseItem) -> Unit = onOpen
@@ -382,25 +419,26 @@ fun HomeScreen(
                     onClearImages = {
                         coil.Coil.imageLoader(context).memoryCache?.clear()
                         coil.Coil.imageLoader(context).diskCache?.clear()
-                        scope.launch { snackbar.showSnackbar("Caché de imágenes borrado") }
+                        scope.launch { snackbar.showSnackbar(context.getString(R.string.home_images_cleared)) }
                     },
                     onResetAll = { showResetAll = true },
                     onSettings = { showSettings = true },
-                    onDownloads = onOpenDownloads
+                    onDownloads = onOpenDownloads,
+                    onLogo = if (profile.compactRail) ::goHome else null,
+                    headerFocus = headerFocus,
+                    showClock = showClock
                 )
 
-                if (profile.compactRail) {
-                    SectionTabs(
-                        section = ui.section,
-                        searchActive = searching,
-                        onSection = {
-                            if (searchOpen) {
-                                viewModel.onQueryChange("")
-                                searchOpen = false
-                            }
-                            viewModel.selectSection(it)
-                        },
-                        modifier = Modifier.padding(horizontal = profile.edge, vertical = 4.dp)
+                if (profile.compactRail && !showSummary && !searchOpen && !contentStale) {
+                    CategoryChips(
+                        categories = content.categories,
+                        labels = content.categoryLabels,
+                        locked = content.lockedCategories,
+                        myListCount = content.myListCount,
+                        selected = ui.category,
+                        onSelect = ::openCategory,
+                        contentPadding = PaddingValues(horizontal = profile.edge),
+                        modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
 
@@ -416,12 +454,12 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .padding(horizontal = profile.edge, vertical = 4.dp)
                             .focusRequester(searchFocus),
-                        placeholder = { Text("Buscar películas, series y canales…") },
+                        placeholder = { Text(stringResource(R.string.home_search_placeholder)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = if (ui.query.isNotEmpty()) {
                             {
                                 IconButton(onClick = { viewModel.onQueryChange("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Borrar")
+                                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.home_search_clear))
                                 }
                             }
                         } else null,
@@ -463,47 +501,111 @@ fun HomeScreen(
                         .focusRequester(catalogFocus)
                         // Vuelve al último póster enfocado. No se usa focusRestorer(): en Compose 1.7
                         // fija ese póster y, si la lista cambia (otra sección), lo libera dos veces y la app se cierra.
+                        // Tampoco restoreFocusedChild(): pide el foco dentro del movimiento y deja las
+                        // flechas sin responder. Se cancela la entrada y se pide en el frame siguiente.
                         .focusProperties {
-                            exit = {
-                                catalogFocus.saveFocusedChild()
-                                FocusRequester.Default
-                            }
                             enter = {
-                                if (catalogFocus.restoreFocusedChild()) FocusRequester.Cancel else FocusRequester.Default
+                                val target = tvNav?.lastRequester()
+                                if (target != null) {
+                                    scope.launch {
+                                        withFrameNanos { }
+                                        runCatching { target.requestFocus() }
+                                    }
+                                    FocusRequester.Cancel
+                                } else FocusRequester.Default
                             }
                         }
                         .focusGroup()
-                        // Tecla Menú del control: abre el menú del póster enfocado.
                         .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
-                                focusedItem?.let { menuItem = it }
-                                true
-                            } else false
+                            when {
+                                // Tecla Menú del control: abre el menú del póster enfocado.
+                                event.type == KeyEventType.KeyUp && event.key == Key.Menu -> {
+                                    focusedItem?.let { menuItem = it }
+                                    true
+                                }
+                                tvNav != null && tvNav.handles(event.key) -> {
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        val dir = when (event.key) {
+                                            Key.DirectionUp -> -1
+                                            Key.DirectionDown -> 1
+                                            else -> 0
+                                        }
+                                        if (dir != 0) scope.launch {
+                                            tvNav.move(dir) { runCatching { headerFocus.requestFocus() } }
+                                        }
+                                    }
+                                    true
+                                }
+                                else -> false
+                            }
                         }
                     val bottomSpace = if (profile.compactRail) PILL_SPACE else 32.dp
                     val nothingYet = content.rows.isEmpty() && content.categories.isEmpty()
                     when {
+                        showSummary && ui.playlists.isNotEmpty() -> {
+                            val summary by viewModel.summaryContent.collectAsState()
+                            val summaryContinue by viewModel.summaryContinue.collectAsState()
+                            PhoneSummary(
+                                profile = profile,
+                                summary = summary,
+                                continueWatching = summaryContinue,
+                                firstSync = ui.firstSync,
+                                bottomSpace = bottomSpace,
+                                focusMemory = focusMemory,
+                                onClick = onItemClick,
+                                onLongClick = onItemLongClick,
+                                onPlayContinue = ::playContinue,
+                                onRemoveContinue = viewModel::removeFromContinue,
+                                onSeeAll = { row ->
+                                    when (row.title) {
+                                        SUMMARY_MOVIES -> viewModel.openSection(Section.MOVIES, RECENT_ROW)
+                                        SUMMARY_SERIES -> viewModel.openSection(Section.SERIES, RECENT_ROW)
+                                        SUMMARY_EVENTS -> viewModel.openSection(Section.LIVE, summary.eventsCategory)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .nestedScroll(hidePillOnScroll)
+                            )
+                        }
                         // Mientras se calcula la nueva sección no se muestran las filas de la anterior:
                         // el foco caería en un póster que desaparece y las flechas dejarían de responder.
                         contentStale || ui.playlists.isEmpty() ->
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator()
                             }
+                        tvLive -> TvLiveScreen(
+                            playlistId = ui.selectedPlaylistId,
+                            categories = content.categories,
+                            categoryLabels = content.categoryLabels,
+                            lockedCategories = content.lockedCategories,
+                            onOpenMenu = { setRailExpanded(true) },
+                            onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
+                            onFullscreen = { onPlayLiveFullscreen(it.id) },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .onFocusChanged {
+                                    catalogHasFocus = it.hasFocus
+                                    if (it.hasFocus && railExpanded) railExpanded = false
+                                }
+                                .focusRequester(catalogFocus)
+                        )
                         ui.firstSync && nothingYet && !searching -> PreparingCatalog()
                         content.grid -> CatalogGrid(
                             profile = profile,
                             content = content,
                             title = when (ui.category) {
-                                SEARCH_MOVIES -> "Películas para “${ui.query.trim()}”"
-                                SEARCH_SERIES -> "Series para “${ui.query.trim()}”"
-                                SEARCH_LIVE -> "Canales para “${ui.query.trim()}”"
-                                MY_LIST_ROW -> "Mi lista · ${ui.section.label}"
-                                else -> ui.category?.let { content.categoryLabels[it] ?: it }.orEmpty()
+                                SEARCH_MOVIES -> stringResource(R.string.home_search_movies_for, ui.query.trim())
+                                SEARCH_SERIES -> stringResource(R.string.home_search_series_for, ui.query.trim())
+                                SEARCH_LIVE -> stringResource(R.string.home_search_channels_for, ui.query.trim())
+                                MY_LIST_ROW -> stringResource(R.string.home_my_list_in_section, ui.section.label)
+                                ALL_ROW -> stringResource(R.string.home_all_in_section, ui.section.label)
+                                else -> ui.category?.let { content.categoryLabels[it] ?: rowLabel(it).asString() }.orEmpty()
                             },
                             emptyText = when {
-                                searching -> "No encontramos nada con “${ui.query.trim()}”"
-                                ui.category == MY_LIST_ROW -> "Tu lista está vacía. Mantén presionado un póster o usa “Mi lista” en la ficha para guardarlo aquí."
-                                else -> "Esta categoría está vacía"
+                                searching -> stringResource(R.string.home_search_empty, ui.query.trim())
+                                ui.category == MY_LIST_ROW -> stringResource(R.string.home_my_list_empty)
+                                else -> stringResource(R.string.home_category_empty)
                             },
                             showBack = ui.category != null,
                             onBack = { viewModel.selectCategory(null) },
@@ -512,6 +614,7 @@ fun HomeScreen(
                             onSort = viewModel::selectSort,
                             bottomSpace = bottomSpace,
                             focusMemory = focusMemory,
+                            tvNav = tvNav,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
                             onFocusItem = { focusedItem = it },
@@ -522,11 +625,12 @@ fun HomeScreen(
                             section = ui.section,
                             content = content,
                             continueWatching = if (searching) emptyList() else continueWatching,
-                            emptyText = if (searching) "No encontramos nada con “${ui.query.trim()}”"
-                            else "Todavía no hay contenido en ${ui.section.label}",
+                            emptyText = if (searching) stringResource(R.string.home_search_empty, ui.query.trim())
+                            else stringResource(R.string.home_section_empty, ui.section.label),
                             stateKey = if (searching) "search" else ui.section.name,
                             bottomSpace = bottomSpace,
                             focusMemory = focusMemory,
+                            tvNav = tvNav,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
                             onFocusItem = { focusedItem = it },
@@ -551,16 +655,19 @@ fun HomeScreen(
                     selectedCategory = ui.category,
                     showCategories = !searching,
                     myListCount = content.myListCount,
+                    tvMenuOnlySections = if (profile.isTv) setOf(Section.LIVE) else emptySet(),
                     expanded = railExpanded,
                     pillVisible = pillVisible.value,
                     onExpandedChange = ::setRailExpanded,
                     onSearch = ::openSearch,
+                    summaryActive = showSummary,
+                    onHome = ::goHome,
                     onSection = {
                         if (searchOpen) {
                             viewModel.onQueryChange("")
                             searchOpen = false
                         }
-                        viewModel.selectSection(it)
+                        if (profile.compactRail) viewModel.openSection(it) else viewModel.selectSection(it)
                         if (!profile.isTv) setRailExpanded(false)
                     },
                     onCategory = ::openCategory,
@@ -590,7 +697,7 @@ fun HomeScreen(
         val inList = item.key in favorites
         val inProgress = continueWatching.any { it.key == item.key }
         val actions = buildList {
-            add(ContentAction(Icons.Default.PlayArrow, if (inProgress) "Seguir viendo" else "Reproducir") {
+            add(ContentAction(Icons.Default.PlayArrow, stringResource(if (inProgress) R.string.home_continue_watching else R.string.home_action_play)) {
                 when (item) {
                     is BrowseItem.Movie -> onPlayMovie(item.movie.id)
                     is BrowseItem.Show -> viewModel.playSeries(item.series, onPlayEpisode)
@@ -598,25 +705,25 @@ fun HomeScreen(
                 }
             })
             if (item !is BrowseItem.Live) {
-                add(ContentAction(Icons.Default.Info, "Ver ficha") { onOpen(item) })
+                add(ContentAction(Icons.Default.Info, stringResource(R.string.home_action_details)) { onOpen(item) })
             }
             add(
                 ContentAction(
                     if (inList) Icons.Default.Check else Icons.Default.Add,
-                    if (inList) "Quitar de Mi lista" else "Agregar a Mi lista"
+                    stringResource(if (inList) R.string.home_action_remove_my_list else R.string.home_action_add_my_list)
                 ) { viewModel.toggleFavorite(item) }
             )
             if (item is BrowseItem.Movie) {
-                add(ContentAction(Icons.Default.DoneAll, "Marcar como vista") { viewModel.markWatched(item.movie) })
+                add(ContentAction(Icons.Default.DoneAll, stringResource(R.string.home_action_mark_watched)) { viewModel.markWatched(item.movie) })
             }
             if (inProgress) {
-                add(ContentAction(Icons.Default.Close, "Quitar de Seguir viendo") { viewModel.removeFromContinue(item) })
+                add(ContentAction(Icons.Default.Close, stringResource(R.string.home_action_remove_continue)) { viewModel.removeFromContinue(item) })
             }
             if (item !is BrowseItem.Live) {
                 add(
                     ContentAction(
                         Icons.Default.Replay,
-                        if (item is BrowseItem.Show) "Reiniciar serie" else "Reiniciar progreso",
+                        stringResource(if (item is BrowseItem.Show) R.string.home_action_restart_series else R.string.home_action_restart_progress),
                         destructive = true
                     ) { viewModel.resetProgress(item) }
                 )
@@ -624,7 +731,7 @@ fun HomeScreen(
             add(
                 ContentAction(
                     Icons.Default.VisibilityOff,
-                    if (item is BrowseItem.Live) "Ocultar canal" else "Ocultar título"
+                    stringResource(if (item is BrowseItem.Live) R.string.home_action_hide_channel else R.string.home_action_hide_title)
                 ) { viewModel.hideItem(item) }
             )
         }
@@ -632,9 +739,9 @@ fun HomeScreen(
         ContentMenu(
             title = item.title,
             subtitle = when (item) {
-                is BrowseItem.Movie -> listOfNotNull("Película", group(item.movie.categoryName), ratingText(item.rating)).joinToString(" · ")
-                is BrowseItem.Show -> listOfNotNull("Serie", group(item.series.categoryName), ratingText(item.rating)).joinToString(" · ")
-                is BrowseItem.Live -> listOfNotNull("Canal en vivo", group(item.channel.groupTitle)).joinToString(" · ")
+                is BrowseItem.Movie -> listOfNotNull(stringResource(R.string.home_kind_movie), group(item.movie.categoryName), ratingText(item.rating)).joinToString(" · ")
+                is BrowseItem.Show -> listOfNotNull(stringResource(R.string.home_kind_series), group(item.series.categoryName), ratingText(item.rating)).joinToString(" · ")
+                is BrowseItem.Live -> listOfNotNull(stringResource(R.string.home_kind_live_channel), group(item.channel.groupTitle)).joinToString(" · ")
             },
             imageUrl = item.imageUrl,
             actions = actions,
@@ -650,7 +757,7 @@ fun HomeScreen(
                 initialUser = current.username,
                 initialPass = current.password,
                 saving = accountSaving,
-                error = accountError,
+                error = accountError?.asString(),
                 onSave = { name, user, pass -> viewModel.updateAccount(name, user, pass) { showAccount = false } },
                 onDismiss = {
                     viewModel.clearAccountError()
@@ -663,72 +770,68 @@ fun HomeScreen(
     if (confirmLogout) {
         AlertDialog(
             onDismissRequest = { confirmLogout = false },
-            title = { Text("Cerrar sesión") },
-            text = {
-                Text(
-                    "Se borrarán de este equipo el catálogo guardado, tu progreso y Mi lista de esta cuenta. " +
-                        "Las descargas terminadas se conservan y puedes verlas desde Descargas."
-                )
-            },
+            title = { Text(stringResource(R.string.home_logout)) },
+            text = { Text(stringResource(R.string.home_logout_message)) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmLogout = false
                     showSettings = false
                     viewModel.logout()
-                }) { Text("Cerrar sesión", color = MaterialTheme.colorScheme.error) }
+                }) { Text(stringResource(R.string.home_logout), color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text(stringResource(R.string.home_cancel)) } }
         )
     }
 
     confirmAdult?.let { change ->
         AlertDialog(
             onDismissRequest = { confirmAdult = null },
-            title = { Text("Marcar como adultos") },
+            title = { Text(stringResource(R.string.home_mark_adult)) },
             text = {
                 Text(
-                    "“${change.label}” se tratará como contenido para adultos: " +
-                        (if (pinSet) "quedará oculta hasta que ingreses el PIN." else "crea un PIN en Configuración para bloquearla.") +
-                        " Para quitar la marca después se pedirá el PIN."
+                    stringResource(
+                        if (pinSet) R.string.home_mark_adult_message_pin else R.string.home_mark_adult_message_no_pin,
+                        change.label
+                    )
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmAdult = null
                     applyChange(change)
-                }) { Text("Marcar") }
+                }) { Text(stringResource(R.string.home_mark_adult_confirm)) }
             },
-            dismissButton = { TextButton(onClick = { confirmAdult = null }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { confirmAdult = null }) { Text(stringResource(R.string.home_cancel)) } }
         )
     }
 
     if (showResetAll) {
         AlertDialog(
             onDismissRequest = { showResetAll = false },
-            title = { Text("Borrar todo el progreso") },
-            text = { Text("Todas las series volverán al episodio 1 y las películas al minuto 0. Esta acción no se puede deshacer.") },
+            title = { Text(stringResource(R.string.home_reset_all_title)) },
+            text = { Text(stringResource(R.string.home_reset_all_message)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.resetAllProgress(); showResetAll = false }) {
-                    Text("Borrar", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.home_reset_all_confirm), color = MaterialTheme.colorScheme.error)
                 }
             },
-            dismissButton = { TextButton(onClick = { showResetAll = false }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { showResetAll = false }) { Text(stringResource(R.string.home_cancel)) } }
         )
     }
 
     categoryMenu?.let { name ->
         val info = organizeList.firstOrNull { it.name == name }
         val adult = info?.adult ?: false
-        val label = content.categoryLabels[name] ?: name
+        val label = content.categoryLabels[name] ?: rowLabel(name).asString()
         val actions = buildList {
-            add(ContentAction(Icons.Default.PlayArrow, "Ver categoría") { openCategory(name) })
-            add(ContentAction(Icons.Default.KeyboardArrowUp, "Subir") { viewModel.moveCategory(ui.section, name, -1) })
-            add(ContentAction(Icons.Default.KeyboardArrowDown, "Bajar") { viewModel.moveCategory(ui.section, name, 1) })
-            add(ContentAction(Icons.Default.VisibilityOff, "Ocultar categoría") { viewModel.setCategoryHidden(ui.section, name, true) })
+            add(ContentAction(Icons.Default.PlayArrow, stringResource(R.string.home_category_open)) { openCategory(name) })
+            add(ContentAction(Icons.Default.KeyboardArrowUp, stringResource(R.string.home_move_up)) { viewModel.moveCategory(ui.section, name, -1) })
+            add(ContentAction(Icons.Default.KeyboardArrowDown, stringResource(R.string.home_move_down)) { viewModel.moveCategory(ui.section, name, 1) })
+            add(ContentAction(Icons.Default.VisibilityOff, stringResource(R.string.home_category_hide)) { viewModel.setCategoryHidden(ui.section, name, true) })
             add(
                 ContentAction(
                     if (adult) Icons.Default.LockOpen else Icons.Default.Lock,
-                    if (adult) "Quitar marca de adultos" else "Marcar como adultos"
+                    stringResource(if (adult) R.string.home_unmark_adult else R.string.home_mark_adult)
                 ) {
                     requestAdultChange(
                         GuardedChange(
@@ -738,13 +841,13 @@ fun HomeScreen(
                     )
                 }
             )
-            add(ContentAction(Icons.AutoMirrored.Filled.Sort, "Organizar categorías…") { openOrganize() })
+            add(ContentAction(Icons.AutoMirrored.Filled.Sort, stringResource(R.string.home_organize_categories)) { openOrganize() })
         }
         ContentMenu(
             title = label,
             subtitle = listOfNotNull(
-                content.categoryCounts[name]?.let { if (it == 1) "1 título" else "$it títulos" },
-                if (adult) "Adultos" else null
+                content.categoryCounts[name]?.let { pluralStringResource(R.plurals.home_titles_count, it, it) },
+                if (adult) stringResource(R.string.home_adult_tag) else null
             ).joinToString(" · "),
             imageUrl = "",
             actions = actions,
@@ -757,6 +860,7 @@ fun HomeScreen(
         SettingsPanel(
             accountName = account?.name.orEmpty(),
             accountUser = account?.username.orEmpty(),
+            accountInfo = accountInfo,
             onEditAccount = {
                 viewModel.clearAccountError()
                 showAccount = true
@@ -764,6 +868,15 @@ fun HomeScreen(
             onLogout = { confirmLogout = true },
             appVersion = updateViewModel.versionName,
             onCheckUpdates = updateViewModel::checkNow,
+            appLanguage = remember { AppLanguage.current(context) },
+            onAppLanguageChange = { AppLanguage.set(context, it) },
+            showClock = showClock,
+            onShowClockChange = viewModel::setShowClock,
+            playerPrefs = playerPrefs,
+            onContentLanguageChange = viewModel::setContentLanguage,
+            onSubtitlesByDefaultChange = viewModel::setSubtitlesByDefault,
+            onLiveFormatChange = viewModel::setLiveFormat,
+            onDecoderChange = viewModel::setDecoder,
             downloadWifiOnly = downloadWifiOnly,
             onDownloadWifiOnlyChange = viewModel::setDownloadWifiOnly,
             bufferSeconds = bufferSeconds,
@@ -821,24 +934,26 @@ fun HomeScreen(
     }
 
     pinStep?.let { step ->
+        val pinWrong = stringResource(R.string.home_pin_wrong)
+        val pinMismatch = stringResource(R.string.home_pin_mismatch)
         PinDialog(
             title = when (step) {
-                is PinStep.Unlock, is PinStep.Guard -> "Ingresa el PIN"
-                PinStep.Create, is PinStep.GuardCreate -> "Nuevo PIN"
-                is PinStep.Confirm, is PinStep.GuardConfirm -> "Repite el PIN"
-                PinStep.VerifyForChange, PinStep.VerifyForRemove -> "PIN actual"
+                is PinStep.Unlock, is PinStep.Guard -> stringResource(R.string.home_pin_enter)
+                PinStep.Create, is PinStep.GuardCreate -> stringResource(R.string.home_pin_new)
+                is PinStep.Confirm, is PinStep.GuardConfirm -> stringResource(R.string.home_pin_repeat)
+                PinStep.VerifyForChange, PinStep.VerifyForRemove -> stringResource(R.string.home_pin_current)
             },
             message = when (step) {
-                is PinStep.Unlock -> "Contenido para adultos. Queda desbloqueado hasta cerrar la app."
+                is PinStep.Unlock -> stringResource(R.string.home_pin_unlock_message)
                 is PinStep.Guard -> when (step.change.kind) {
-                    GuardedChange.Kind.UNHIDE -> "Para mostrar “${step.change.label}” (adultos) ingresa el PIN."
-                    else -> "Para quitar la marca de adultos de “${step.change.label}” ingresa el PIN."
+                    GuardedChange.Kind.UNHIDE -> stringResource(R.string.home_pin_guard_unhide, step.change.label)
+                    else -> stringResource(R.string.home_pin_guard_unmark, step.change.label)
                 }
-                is PinStep.GuardCreate -> "Para quitar la marca de adultos primero crea un PIN de 4 dígitos. Lo usarás para el contenido para adultos."
-                PinStep.Create -> "Elige 4 dígitos para bloquear las categorías de adultos."
-                is PinStep.Confirm, is PinStep.GuardConfirm -> "Ingrésalo otra vez para confirmar."
-                PinStep.VerifyForChange -> "Ingresa el PIN actual para cambiarlo."
-                PinStep.VerifyForRemove -> "Ingresa el PIN actual para quitarlo."
+                is PinStep.GuardCreate -> stringResource(R.string.home_pin_guard_create)
+                PinStep.Create -> stringResource(R.string.home_pin_create_message)
+                is PinStep.Confirm, is PinStep.GuardConfirm -> stringResource(R.string.home_pin_confirm_message)
+                PinStep.VerifyForChange -> stringResource(R.string.home_pin_verify_change)
+                PinStep.VerifyForRemove -> stringResource(R.string.home_pin_verify_remove)
             },
             error = pinError,
             onSubmit = { pin ->
@@ -848,7 +963,7 @@ fun HomeScreen(
                             pinStep = null
                             pinError = null
                             step.category?.let(viewModel::selectCategory)
-                        } else pinError = "PIN incorrecto"
+                        } else pinError = pinWrong
                     }
                     PinStep.Create -> {
                         pinError = null
@@ -859,7 +974,7 @@ fun HomeScreen(
                         pinStep = null
                         pinError = null
                     } else {
-                        pinError = "Los PIN no coinciden, inténtalo de nuevo"
+                        pinError = pinMismatch
                         pinStep = PinStep.Create
                     }
                     is PinStep.Guard -> viewModel.verifyPin(pin) { ok ->
@@ -867,7 +982,7 @@ fun HomeScreen(
                             pinStep = null
                             pinError = null
                             applyChange(step.change)
-                        } else pinError = "PIN incorrecto"
+                        } else pinError = pinWrong
                     }
                     is PinStep.GuardCreate -> {
                         pinError = null
@@ -879,20 +994,20 @@ fun HomeScreen(
                         pinError = null
                         applyChange(step.change)
                     } else {
-                        pinError = "Los PIN no coinciden, inténtalo de nuevo"
+                        pinError = pinMismatch
                         pinStep = PinStep.GuardCreate(step.change)
                     }
                     PinStep.VerifyForChange -> viewModel.unlockParental(pin) { ok ->
                         if (ok) {
                             pinError = null
                             pinStep = PinStep.Create
-                        } else pinError = "PIN incorrecto"
+                        } else pinError = pinWrong
                     }
                     PinStep.VerifyForRemove -> viewModel.clearPin(pin) { ok ->
                         if (ok) {
                             pinStep = null
                             pinError = null
-                        } else pinError = "PIN incorrecto"
+                        } else pinError = pinWrong
                     }
                 }
             },
@@ -950,10 +1065,10 @@ private fun PreparingCatalog() {
     ) {
         CircularProgressIndicator()
         Spacer(Modifier.height(16.dp))
-        Text("Preparando tu catálogo…", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.home_preparing_title), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
         Text(
-            "La primera vez tarda un poco. Después se abre al instante.",
+            stringResource(R.string.home_preparing_message),
             style = MaterialTheme.typography.bodyMedium,
             color = EntreBrand.TextDim,
             textAlign = TextAlign.Center,
@@ -974,6 +1089,7 @@ private fun CatalogRows(
     stateKey: String,
     bottomSpace: Dp,
     focusMemory: FocusMemory,
+    tvNav: TvCatalogNav?,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
@@ -985,7 +1101,18 @@ private fun CatalogRows(
     // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
     val listState = rememberSaveable(stateKey, saver = LazyListState.Saver) { LazyListState() }
     val myList = content.rows.firstOrNull { it.title == MY_LIST_ROW && !content.isSearch }
-    val others = content.rows.filter { it !== myList }
+    val others = content.rows.filter { it !== myList && it.items.isNotEmpty() }
+    // Mismo orden que los ítems del LazyColumn: las flechas del control lo usan para ir de fila en fila.
+    val rowOrder = buildList {
+        if (myList != null) add("row:${myList.title}")
+        if (continueWatching.isNotEmpty()) add("continue")
+        if (content.top10.isNotEmpty()) add("top10")
+        others.forEach { add("row:${it.title}") }
+    }
+    if (tvNav != null) {
+        tvNav.rowOrder = rowOrder
+        tvNav.columnState = listState
+    }
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -994,7 +1121,8 @@ private fun CatalogRows(
     ) {
         if (myList != null) {
             item(key = "row:${myList.title}", contentType = "row") {
-                CatalogRow(profile, myList, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(myList) })
+                CatalogRow(profile, myList, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(myList) },
+                    tvNav = tvNav, navKey = "row:${myList.title}")
             }
         }
         if (continueWatching.isNotEmpty()) {
@@ -1004,7 +1132,9 @@ private fun CatalogRows(
                     items = continueWatching,
                     focusMemory = focusMemory,
                     onPlay = onPlayContinue,
-                    onRemove = onRemoveContinue
+                    onRemove = onRemoveContinue,
+                    tvNav = tvNav,
+                    navKey = "continue"
                 )
             }
         }
@@ -1012,20 +1142,21 @@ private fun CatalogRows(
             item(key = "top10", contentType = "top10") {
                 Top10Row(
                     profile = profile,
-                    title = content.top10Label,
+                    title = content.top10Label.asString(),
                     items = content.top10,
                     focusMemory = focusMemory,
                     onClick = onClick,
                     onLongClick = onLongClick,
-                    onFocusItem = onFocusItem
+                    onFocusItem = onFocusItem,
+                    tvNav = tvNav,
+                    navKey = "top10"
                 )
             }
         }
         others.forEach { row ->
-            if (row.items.isNotEmpty()) {
-                item(key = "row:${row.title}", contentType = "row") {
-                    CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(row) })
-                }
+            item(key = "row:${row.title}", contentType = "row") {
+                CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(row) },
+                    tvNav = tvNav, navKey = "row:${row.title}")
             }
         }
         if (content.rows.all { it.items.isEmpty() } && continueWatching.isEmpty()) {
@@ -1041,8 +1172,70 @@ private fun CatalogRows(
     }
 }
 
+// ============================ Resumen (celular) ============================
+
+@Composable
+private fun PhoneSummary(
+    profile: DeviceProfile,
+    summary: SummaryContent,
+    continueWatching: List<ContinueItem>,
+    firstSync: Boolean,
+    bottomSpace: Dp,
+    focusMemory: FocusMemory,
+    onClick: (BrowseItem) -> Unit,
+    onLongClick: (BrowseItem) -> Unit,
+    onPlayContinue: (ContinueItem) -> Unit,
+    onRemoveContinue: (ContinueItem) -> Unit,
+    onSeeAll: (ContentRow) -> Unit,
+    modifier: Modifier
+) {
+    val nothing = summary.rows.isEmpty() && continueWatching.isEmpty()
+    when {
+        !summary.ready -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        nothing && firstSync -> PreparingCatalog()
+        else -> {
+            // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
+            val listState = rememberSaveable("summary", saver = LazyListState.Saver) { LazyListState() }
+            LazyColumn(
+                state = listState,
+                modifier = modifier,
+                contentPadding = PaddingValues(top = 4.dp, bottom = bottomSpace),
+                verticalArrangement = Arrangement.spacedBy(profile.rowGap)
+            ) {
+                if (continueWatching.isNotEmpty()) {
+                    item(key = "continue", contentType = "continue") {
+                        ContinueWatchingRow(
+                            profile = profile,
+                            items = continueWatching,
+                            focusMemory = focusMemory,
+                            onPlay = onPlayContinue,
+                            onRemove = onRemoveContinue
+                        )
+                    }
+                }
+                summary.rows.forEach { row ->
+                    item(key = "row:${row.title}", contentType = "row") {
+                        CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem = {}, onSeeAll = { onSeeAll(row) })
+                    }
+                }
+                if (nothing) {
+                    item(key = "empty") {
+                        Text(
+                            stringResource(R.string.home_summary_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = profile.edge, vertical = 24.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ============================ Cuadrícula "Ver todo" ============================
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun CatalogGrid(
     profile: DeviceProfile,
@@ -1056,6 +1249,7 @@ private fun CatalogGrid(
     onSort: (SortOrder) -> Unit,
     bottomSpace: Dp,
     focusMemory: FocusMemory,
+    tvNav: TvCatalogNav?,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
@@ -1075,8 +1269,10 @@ private fun CatalogGrid(
         item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
                 if (showBack) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver a todas")
+                    // Arriba de "Volver" solo queda la tira del menú: el foco rebotaba y la cuadrícula
+                    // parecía trabada. Al menú se llega con la flecha izquierda.
+                    IconButton(onClick = onBack, modifier = Modifier.focusProperties { up = FocusRequester.Cancel }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.home_back_to_all))
                     }
                     Spacer(Modifier.width(4.dp))
                 }
@@ -1089,7 +1285,7 @@ private fun CatalogGrid(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        if (total == 1) "1 título" else "$total títulos",
+                        pluralStringResource(R.plurals.home_titles_count, total, total),
                         style = MaterialTheme.typography.labelMedium,
                         color = EntreBrand.TextDim
                     )
@@ -1128,7 +1324,7 @@ private fun CatalogGrid(
             if (multiSection) {
                 item(key = "h:${row.title}", span = { GridItemSpan(maxLineSpan) }) {
                     Text(
-                        "${row.label} · ${row.items.size}",
+                        "${row.label.asString()} · ${row.items.size}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 12.dp)
@@ -1146,7 +1342,7 @@ private fun CatalogGrid(
                     profile = profile,
                     item = item,
                     fillWidth = true,
-                    modifier = focusMemory.modifierFor(memoryKey),
+                    modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, "grid:${row.title}", index),
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
                     onFocused = {
@@ -1170,11 +1366,15 @@ private fun Top10Row(
     focusMemory: FocusMemory,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
-    onFocusItem: (BrowseItem) -> Unit
+    onFocusItem: (BrowseItem) -> Unit,
+    tvNav: TvCatalogNav? = null,
+    navKey: String = ""
 ) {
+    val rowState = rememberTvRowState(tvNav, navKey)
     Column {
         RowHeader(title, profile, onSeeAll = null)
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(profile.itemGap / 2)
         ) {
@@ -1184,7 +1384,7 @@ private fun Top10Row(
                     profile = profile,
                     rank = index + 1,
                     item = item,
-                    modifier = focusMemory.modifierFor(memoryKey),
+                    modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, navKey, index),
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
                     onFocused = {
@@ -1249,7 +1449,12 @@ private fun HomeHeader(
     onClearImages: () -> Unit,
     onResetAll: () -> Unit,
     onSettings: () -> Unit,
-    onDownloads: () -> Unit
+    onDownloads: () -> Unit,
+    /** Celular: tocar el logo vuelve al resumen. En TV es null para que no tome el foco. */
+    onLogo: (() -> Unit)? = null,
+    /** Lupa: a ella sube el foco desde la primera fila en TV. */
+    headerFocus: FocusRequester = remember { FocusRequester() },
+    showClock: Boolean = false
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -1258,39 +1463,48 @@ private fun HomeHeader(
             .fillMaxWidth()
             .padding(start = profile.edge, end = profile.edge / 2, top = 6.dp, bottom = 2.dp)
     ) {
-        EntreWordmark(fontSize = if (profile.isTv) 30.sp else 24.sp)
+        Box(
+            if (onLogo != null) {
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClickLabel = stringResource(R.string.home_home), onClick = onLogo)
+            } else Modifier
+        ) {
+            EntreWordmark(fontSize = if (profile.isTv) 30.sp else 24.sp)
+        }
         Spacer(Modifier.weight(1f))
-        IconButton(onClick = onToggleSearch) {
+        if (showClock) SmallClock(Modifier.padding(end = 8.dp), showDate = !profile.compactRail)
+        IconButton(onClick = onToggleSearch, modifier = Modifier.focusRequester(headerFocus)) {
             Icon(
                 if (searchOpen) Icons.Default.Close else Icons.Default.Search,
-                contentDescription = if (searchOpen) "Cerrar búsqueda" else "Buscar"
+                contentDescription = stringResource(if (searchOpen) R.string.home_search_close else R.string.home_search)
             )
         }
         IconButton(onClick = onRefresh) {
             if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Default.Refresh, contentDescription = "Actualizar")
+            else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
         }
         Box {
             IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Default.MoreVert, contentDescription = "Más opciones")
+                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_more_options))
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
-                    text = { Text("Descargas") },
+                    text = { Text(stringResource(R.string.home_downloads)) },
                     leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
                     onClick = { menuOpen = false; onDownloads() }
                 )
                 DropdownMenuItem(
-                    text = { Text("Configuración") },
+                    text = { Text(stringResource(R.string.home_settings)) },
                     leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                     onClick = { menuOpen = false; onSettings() }
                 )
                 DropdownMenuItem(
-                    text = { Text("Borrar caché de imágenes y miniaturas") },
+                    text = { Text(stringResource(R.string.home_clear_image_cache)) },
                     onClick = { menuOpen = false; onClearImages() }
                 )
                 DropdownMenuItem(
-                    text = { Text("Borrar todo el progreso (series y películas)") },
+                    text = { Text(stringResource(R.string.home_reset_all_menu)) },
                     onClick = { menuOpen = false; onResetAll() }
                 )
             }
@@ -1306,20 +1520,24 @@ private fun ContinueWatchingRow(
     items: List<ContinueItem>,
     focusMemory: FocusMemory,
     onPlay: (ContinueItem) -> Unit,
-    onRemove: (ContinueItem) -> Unit
+    onRemove: (ContinueItem) -> Unit,
+    tvNav: TvCatalogNav? = null,
+    navKey: String = ""
 ) {
+    val rowState = rememberTvRowState(tvNav, navKey)
     Column {
-        RowHeader("Seguir viendo", profile, onSeeAll = null)
+        RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = null)
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(profile.itemGap)
         ) {
-            items(items, key = { it.key }) { item ->
+            itemsIndexed(items, key = { _, it -> it.key }) { index, item ->
                 val memoryKey = "continue|${item.key}"
                 ContinueCard(
                     profile = profile,
                     item = item,
-                    modifier = focusMemory.modifierFor(memoryKey),
+                    modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, navKey, index),
                     onFocused = { focusMemory.onFocused(memoryKey) },
                     onPlay = { onPlay(item) },
                     onRemove = { onRemove(item) }
@@ -1329,13 +1547,11 @@ private fun ContinueWatchingRow(
     }
 }
 
+@Composable
 private fun remainingLabel(ms: Long): String {
-    val minutes = ((ms + 59_999) / 60_000).toInt()
-    return when {
-        minutes <= 1 -> "queda 1 min"
-        minutes < 60 -> "quedan $minutes min"
-        else -> "quedan ${minutes / 60} h ${minutes % 60} min"
-    }
+    val minutes = ((ms + 59_999) / 60_000).toInt().coerceAtLeast(1)
+    return if (minutes < 60) pluralStringResource(R.plurals.home_remaining_minutes, minutes, minutes)
+    else stringResource(R.string.home_remaining_hours, minutes / 60, minutes % 60)
 }
 
 @Composable
@@ -1378,7 +1594,7 @@ private fun ContinueCard(
             Surface(color = Color.Black.copy(alpha = 0.45f), shape = RoundedCornerShape(50)) {
                 Icon(
                     Icons.Default.PlayArrow,
-                    contentDescription = "Continuar",
+                    contentDescription = stringResource(R.string.home_resume),
                     tint = Color.White,
                     modifier = Modifier.size(40.dp)
                 )
@@ -1389,7 +1605,7 @@ private fun ContinueCard(
             ) {
                 Icon(
                     Icons.Default.Close,
-                    contentDescription = "Quitar",
+                    contentDescription = stringResource(R.string.home_remove),
                     tint = Color.White,
                     modifier = Modifier.size(16.dp)
                 )
@@ -1397,8 +1613,8 @@ private fun ContinueCard(
             if (item.fraction > 0f) {
                 Text(
                     listOfNotNull(
-                        "${(item.fraction * 100).toInt()} %".takeIf { item.fraction >= 0.01f },
-                        item.remainingMs.takeIf { it > 0 }?.let(::remainingLabel)
+                        stringResource(R.string.home_percent, (item.fraction * 100).toInt()).takeIf { item.fraction >= 0.01f },
+                        item.remainingMs.takeIf { it > 0 }?.let { remainingLabel(it) }
                     ).joinToString(" · "),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
@@ -1420,9 +1636,10 @@ private fun ContinueCard(
         }
         Column(Modifier.padding(8.dp)) {
             Text(item.title, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (item.subtitle.isNotEmpty()) {
+            val subtitle = item.subtitle.asString()
+            if (subtitle.isNotEmpty()) {
                 Text(
-                    item.subtitle,
+                    subtitle,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1443,21 +1660,26 @@ private fun CatalogRow(
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
-    onSeeAll: () -> Unit
+    onSeeAll: () -> Unit,
+    tvNav: TvCatalogNav? = null,
+    navKey: String = ""
 ) {
+    val rowState = rememberTvRowState(tvNav, navKey)
     Column {
-        RowHeader(row.label, profile, onSeeAll = onSeeAll)
+        // En TV "Ver todo" va como tarjeta al final de la fila: en el encabezado atraía el foco.
+        RowHeader(row.label.asString(), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(profile.itemGap)
         ) {
-            items(row.items, key = { it.key }, contentType = { if (it is BrowseItem.Live) "live" else "poster" }) { item ->
+            itemsIndexed(row.items, key = { _, it -> it.key }, contentType = { _, it -> if (it is BrowseItem.Live) "live" else "poster" }) { index, item ->
                 val memoryKey = "${row.title}|${item.key}"
                 PosterCard(
                     profile = profile,
                     item = item,
                     fillWidth = false,
-                    modifier = focusMemory.modifierFor(memoryKey),
+                    modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, navKey, index),
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
                     onFocused = {
@@ -1466,6 +1688,64 @@ private fun CatalogRow(
                     }
                 )
             }
+            if (profile.isTv) {
+                item(key = "seeAll", contentType = "seeAll") {
+                    SeeAllCard(
+                        profile = profile,
+                        live = row.items.firstOrNull() is BrowseItem.Live,
+                        onClick = onSeeAll,
+                        modifier = Modifier.tvNavItem(tvNav, navKey, row.items.size)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Estado horizontal de una fila, registrado en [tvNav] para las flechas arriba/abajo. */
+@Composable
+private fun rememberTvRowState(tvNav: TvCatalogNav?, navKey: String): LazyListState {
+    val state = rememberLazyListState()
+    if (tvNav != null) {
+        DisposableEffect(tvNav, navKey, state) {
+            tvNav.registerRow(navKey, state)
+            onDispose { tvNav.unregisterRow(navKey, state) }
+        }
+    }
+    return state
+}
+
+/** "Ver todo" al final de la fila en TV, del alto de los pósters. */
+@Composable
+private fun SeeAllCard(profile: DeviceProfile, live: Boolean, onClick: () -> Unit, modifier: Modifier) {
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "seeAllScale")
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .width(if (live) profile.liveWidth else profile.posterWidth)
+            .height(if (live) profile.liveHeight else profile.posterHeight)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(shape)
+            .background(if (focused) EntreBrand.Accent else EntreBrand.PanelHigh)
+            .then(if (focused) Modifier.border(3.dp, Color.White, shape) else Modifier)
+            .clickable(interactionSource = source, indication = null, onClick = onClick)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = if (focused) EntreBrand.OnAccent else Color.White,
+                modifier = Modifier.size(36.dp)
+            )
+            Text(
+                stringResource(R.string.home_see_all),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (focused) EntreBrand.OnAccent else Color.White
+            )
         }
     }
 }
@@ -1476,11 +1756,11 @@ private fun RowHeader(title: String, profile: DeviceProfile, onSeeAll: (() -> Un
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = profile.edge, end = profile.edge - 8.dp, top = 8.dp)
+            .padding(start = profile.edge, end = profile.edge - 8.dp, top = if (profile.isTv) 4.dp else 8.dp)
     ) {
         Text(
             text = title,
-            style = if (profile.isTv) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1507,7 +1787,7 @@ private fun SeeAllButton(onClick: () -> Unit) {
             .padding(start = 14.dp, end = 8.dp, top = 7.dp, bottom = 7.dp)
     ) {
         Text(
-            "Ver todo",
+            stringResource(R.string.home_see_all),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = if (focused) EntreBrand.OnAccent else EntreBrand.Accent
@@ -1598,7 +1878,7 @@ private fun PosterCard(
             item.title,
             style = MaterialTheme.typography.labelSmall,
             color = if (focused) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = if (isLive) 1 else 2,
+            maxLines = if (isLive || profile.isTv) 1 else 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Start
         )

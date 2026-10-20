@@ -32,8 +32,8 @@ android {
         applicationId = "com.entretv.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.2.1"
         resourceConfigurations += listOf("es", "en")
         // Solo el release busca actualizaciones: el APK publicado es otro paquete que el de depuración.
         buildConfigField("String", "UPDATE_URL", "\"\"")
@@ -164,6 +164,8 @@ kotlin {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    // Idioma de la app (setApplicationLocales) también antes de Android 13.
+    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.work.runtime)
     implementation(libs.hilt.work)

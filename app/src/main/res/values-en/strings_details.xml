@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Movie or series details -->
+    <string name="details_back">Back</string>
+    <string name="details_loading_episodes">Loading episodes…</string>
+    <string name="details_resume">Resume</string>
+    <string name="details_play">Play</string>
+    <string name="details_play_from_start">Play from start</string>
+    <string name="details_in_my_list">In My List</string>
+    <string name="details_my_list">My List</string>
+    <string name="details_trailer">Trailer</string>
+    <string name="details_trailer_no_app">No app available to open the trailer</string>
+    <string name="details_time_left">%1$d min left</string>
+    <string name="details_loading_plot">Loading synopsis…</string>
+    <string name="details_no_plot">No synopsis available.</string>
+    <string name="details_cast">Cast</string>
+    <string name="details_director">Directed by</string>
+    <string name="details_created_by">Created by</string>
+    <string name="details_download_season">Download season %1$d</string>
+    <string name="details_stop_downloads_count">Stop downloads (%1$d)</string>
+    <string name="details_stop_downloads">Stop downloads</string>
+    <string name="details_stop_downloads_title">Stop the downloads?</string>
+    <plurals name="details_stop_downloads_text">
+        <item quantity="one">%1$d episode of “%2$s” that is queued, downloading or paused will be cancelled. Episodes already downloaded are kept.</item>
+        <item quantity="other">%1$d episodes of “%2$s” that are queued, downloading or paused will be cancelled. Episodes already downloaded are kept.</item>
+    </plurals>
+    <string name="details_episodes">Episodes</string>
+    <string name="details_season">Season %1$d</string>
+    <string name="details_no_episodes">No episodes found.</string>
+    <string name="details_reset_series">Restart series (back to episode 1)</string>
+    <string name="details_watched">Watched</string>
+    <string name="details_minutes">%1$d min</string>
+
+    <!-- Main button of a series -->
+    <string name="details_episode_code">S%1$d:E%2$d</string>
+    <string name="details_resume_episode">Resume %1$s</string>
+    <string name="details_next_episode">Next: %1$s</string>
+    <string name="details_rewatch_episode">Watch again %1$s</string>
+    <string name="details_play_episode">Play %1$s</string>
+
+    <!-- Details notices -->
+    <string name="details_added_to_list">Added to My List</string>
+    <string name="details_removed_from_list">Removed from My List</string>
+    <string name="details_season_already_downloaded">This season is already downloaded</string>
+    <plurals name="details_episodes_queued">
+        <item quantity="one">%1$d episode queued. %2$s</item>
+        <item quantity="other">%1$d episodes queued. %2$s</item>
+    </plurals>
+    <string name="details_download_wifi_notice">It will download over Wi‑Fi; you can watch it in Downloads.</string>
+    <string name="details_download_notice">Downloading; you can watch it in Downloads.</string>
+    <string name="details_no_pending_downloads">There were no pending downloads</string>
+    <plurals name="details_downloads_cancelled">
+        <item quantity="one">%1$d download cancelled. Anything already downloaded is kept.</item>
+        <item quantity="other">%1$d downloads cancelled. Anything already downloaded is kept.</item>
+    </plurals>
+    <string name="details_download_deleted">Download deleted</string>
+    <string name="details_series_reset">The series will start again from episode 1</string>
+
+    <!-- Info card -->
+    <string name="details_info_title">Details</string>
+    <string name="details_premiere">Premiere</string>
+    <string name="details_release_date">Release date</string>
+    <string name="details_year">Year</string>
+    <string name="details_episode_duration">Episode length</string>
+    <string name="details_duration">Runtime</string>
+    <string name="details_genres">Genres</string>
+    <string name="details_rating">Rating</string>
+    <plurals name="details_rating_votes">
+        <item quantity="one">★ %1$s (%2$s vote)</item>
+        <item quantity="other">★ %1$s (%2$s votes)</item>
+    </plurals>
+    <string name="details_certification">Age rating</string>
+    <string name="details_seasons">Seasons</string>
+    <string name="details_network">Network</string>
+    <string name="details_status">Status</string>
+    <string name="details_original_title">Original title</string>
+    <string name="details_original_language">Original language</string>
+    <string name="details_country">Country</string>
+    <string name="details_production">Production</string>
+    <string name="details_budget">Budget</string>
+    <string name="details_revenue">Box office</string>
+    <!-- Release date: day, short month, year -->
+    <string name="details_date">%2$s %1$s, %3$s</string>
+    <string-array name="details_months_short">
+        <item>Jan</item>
+        <item>Feb</item>
+        <item>Mar</item>
+        <item>Apr</item>
+        <item>May</item>
+        <item>Jun</item>
+        <item>Jul</item>
+        <item>Aug</item>
+        <item>Sep</item>
+        <item>Oct</item>
+        <item>Nov</item>
+        <item>Dec</item>
+    </string-array>
+
+    <!-- Series or movie status from TMDB -->
+    <string name="meta_status_returning">Airing</string>
+    <string name="meta_status_ended">Ended</string>
+    <string name="meta_status_canceled">Canceled</string>
+    <string name="meta_status_in_production">In production</string>
+    <string name="meta_status_planned">Announced</string>
+    <string name="meta_status_pilot">Pilot</string>
+    <string name="meta_status_released">Released</string>
+    <string name="meta_status_post_production">Post-production</string>
+    <string name="meta_status_rumored">Rumored</string>
+
+    <!-- Downloads -->
+    <string name="download_title">Downloads</string>
+    <plurals name="download_selected_count">
+        <item quantity="one">%1$d selected</item>
+        <item quantity="other">%1$d selected</item>
+    </plurals>
+    <string name="download_deselect_all">Deselect all</string>
+    <string name="download_select_all">Select all</string>
+    <string name="download_delete_count">Delete (%1$d)</string>
+    <string name="download_done_selecting">Done</string>
+    <string name="download_select">Select</string>
+    <string name="download_delete_all">Delete all</string>
+    <string name="download_long_press_hint">Press and hold a download to select several.</string>
+    <string name="download_empty">You haven\'t downloaded anything yet.\nOpen a movie or series and choose “Download” to watch it offline.</string>
+    <string name="download_not_ready">Available once it finishes downloading</string>
+    <plurals name="download_delete_many_title">
+        <item quantity="one">Delete %1$d download?</item>
+        <item quantity="other">Delete %1$d downloads?</item>
+    </plurals>
+    <plurals name="download_delete_many_text">
+        <item quantity="one">It will no longer be available offline. If it\'s still downloading, it will be cancelled.</item>
+        <item quantity="other">They will no longer be available offline. Anything still downloading will be cancelled.</item>
+    </plurals>
+    <string name="download_delete">Delete</string>
+    <plurals name="download_deleted_many">
+        <item quantity="one">%1$d download deleted</item>
+        <item quantity="other">%1$d downloads deleted</item>
+    </plurals>
+    <string name="download_delete_all_title">Delete all downloads?</string>
+    <plurals name="download_delete_all_text">
+        <item quantity="one">%1$d download will be deleted, even if it\'s in progress. This frees up the space it uses.</item>
+        <item quantity="other">All %1$d downloads will be deleted, including those in progress. This frees up the space they use.</item>
+    </plurals>
+    <string name="download_all_deleted">All downloads deleted</string>
+    <string name="download_selected">Selected</string>
+    <string name="download_not_selected">Not selected</string>
+    <string name="download_cancel_download">Cancel download</string>
+    <string name="download_storage">Using %1$s · %2$s free</string>
+
+    <!-- Download status -->
+    <string name="download_percent">%1$d%%</string>
+    <string name="download_waiting_connection">Waiting for connection</string>
+    <string name="download_queued">Queued</string>
+    <string name="download_downloading">Downloading %1$s</string>
+    <string name="download_paused">Paused %1$s</string>
+    <string name="download_failed">Couldn\'t download</string>
+    <string name="download_done">Downloaded</string>
+    <string name="download_done_size">Downloaded · %1$s</string>
+
+    <!-- Download buttons and dialogs -->
+    <string name="download_action">Download</string>
+    <string name="download_cancel">Cancel</string>
+    <string name="download_resume">Resume %1$s</string>
+    <string name="download_retry">Retry download</string>
+    <string name="download_remove">Remove</string>
+    <string name="download_episode">Download episode</string>
+    <string name="download_delete_download">Delete download</string>
+    <string name="download_pause">Pause download</string>
+    <string name="download_resume_download">Resume download</string>
+    <string name="download_delete_title">Delete the download?</string>
+    <string name="download_cancel_title">Cancel the download?</string>
+    <string name="download_delete_text">%1$s will no longer be available offline.</string>
+    <string name="download_cancel_text">The downloaded part of %1$s will be deleted.</string>
+    <string name="download_keep_downloading">Keep downloading</string>
+
+    <!-- Background download errors and notifications -->
+    <string name="download_error_no_connection">No connection to the server.</string>
+    <string name="download_error_http">The server responded with %1$d.</string>
+    <string name="download_error_no_file">The server didn\'t send the file.</string>
+    <string name="download_error_streamed">This title is streamed in segments and can\'t be downloaded.</string>
+    <string name="download_error_no_space">Not enough storage space on the device.</string>
+    <string name="download_error_interrupted">Connection interrupted; it will retry.</string>
+    <string name="download_error_bad_url">The content address is not valid.</string>
+    <string name="download_error_save">Couldn\'t save the file.</string>
+    <string name="download_notification_title">Downloading %1$s</string>
+    <string name="download_notification_progress">%1$d%% · %2$s of %3$s</string>
+    <string name="download_notification_done">Download complete</string>
+
+    <!-- Updates -->
+    <string name="update_required_title">Update required</string>
+    <string name="update_checking_title">Checking for updates</string>
+    <string name="update_up_to_date_title">EntreTV is up to date</string>
+    <string name="update_available_title">Update available</string>
+    <string name="update_downloading_title">Downloading update</string>
+    <string name="update_ready_title">Ready to install</string>
+    <string name="update_failed_title">Couldn\'t update</string>
+    <string name="update_checking">Contacting the server…</string>
+    <string name="update_up_to_date">You have the latest version (%1$s).</string>
+    <string name="update_available">Version %1$s (you have %2$s).</string>
+    <string name="update_required_downloading">To keep using EntreTV you need version %1$s. It\'s downloading; the installer will open when it finishes.</string>
+    <string name="update_version">Version %1$s</string>
+    <string name="update_permission_needed">A permission is needed to install. Choose \"Grant permission\" and enable EntreTV in:\n• Phone or tablet: Settings › Apps › EntreTV › Install unknown apps.\n• TV: Settings › Device Preferences › Security &amp; restrictions › Unknown sources (or Settings › Apps › Security).\nThen come back with the Back button and choose Install.</string>
+    <string name="update_installer_note">The Android installer will open. Your account and progress are kept.</string>
+    <string name="update_later">Later</string>
+    <string name="update_update">Update</string>
+    <string name="update_cancel">Cancel</string>
+    <string name="update_grant_permission">Grant permission</string>
+    <string name="update_install">Install</string>
+    <string name="update_close">Close</string>
+    <string name="update_retry">Retry</string>
+    <string name="update_error_not_configured">This version has no update server configured.</string>
+    <string name="update_error_check">Couldn\'t check for a new version. Check your connection.</string>
+    <string name="update_error_download">Couldn\'t download the update. Please try again.</string>
+    <string name="update_error_no_installer">This device has no app installer available.</string>
+</resources>

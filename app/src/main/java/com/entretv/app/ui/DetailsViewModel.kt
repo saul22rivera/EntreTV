@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import com.entretv.app.R
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
@@ -34,7 +35,7 @@ import kotlinx.coroutines.launch
 /** Botón principal de una serie: qué episodio abre y con qué texto. */
 data class ResumeTarget(
     val episode: EpisodeEntity,
-    val label: String,
+    val label: UiText,
     val progress: Float,
     val isResume: Boolean
 )
@@ -64,8 +65,8 @@ class DetailsViewModel @Inject constructor(
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading
 
-    private val _notice = MutableStateFlow<String?>(null)
-    val notice: StateFlow<String?> = _notice
+    private val _notice = MutableStateFlow<UiText?>(null)
+    val notice: StateFlow<UiText?> = _notice
 
     private val _selectedSeason = MutableStateFlow<Int?>(null)
     val selectedSeason: StateFlow<Int?> = _selectedSeason
@@ -98,10 +99,10 @@ class DetailsViewModel @Inject constructor(
             val resume = SeriesResumeRule.resolve(eps, progress)
             val episode = resume.episode ?: eps.first()
             when (resume.mode) {
-                SeriesResume.Mode.RESUME -> ResumeTarget(episode, "Continuar ${episode.code()}", resume.fraction, true)
-                SeriesResume.Mode.NEXT -> ResumeTarget(episode, "Siguiente: ${episode.code()}", 0f, false)
-                SeriesResume.Mode.REWATCH -> ResumeTarget(episode, "Volver a ver ${episode.code()}", 0f, false)
-                SeriesResume.Mode.START -> ResumeTarget(episode, "Reproducir ${episode.code()}", 0f, false)
+                SeriesResume.Mode.RESUME -> ResumeTarget(episode, uiText(R.string.details_resume_episode, episode.code()), resume.fraction, true)
+                SeriesResume.Mode.NEXT -> ResumeTarget(episode, uiText(R.string.details_next_episode, episode.code()), 0f, false)
+                SeriesResume.Mode.REWATCH -> ResumeTarget(episode, uiText(R.string.details_rewatch_episode, episode.code()), 0f, false)
+                SeriesResume.Mode.START -> ResumeTarget(episode, uiText(R.string.details_play_episode, episode.code()), 0f, false)
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -176,7 +177,7 @@ class DetailsViewModel @Inject constructor(
         } ?: return
         viewModelScope.launch {
             val added = repository.toggleFavorite(favorite)
-            _notice.value = if (added) "Agregado a Mi lista" else "Quitado de Mi lista"
+            _notice.value = uiText(if (added) R.string.details_added_to_list else R.string.details_removed_from_list)
         }
     }
 
@@ -208,7 +209,7 @@ class DetailsViewModel @Inject constructor(
             it.season == season && episodeDownloads.value[it.id]?.isDone != true
         }
         if (pending.isEmpty()) {
-            _notice.value = "Esta temporada ya está descargada"
+            _notice.value = uiText(R.string.details_season_already_downloaded)
             return
         }
         downloadEpisodes(pending)
@@ -218,13 +219,13 @@ class DetailsViewModel @Inject constructor(
         val s = _series.value ?: return
         viewModelScope.launch {
             downloads.downloadEpisodes(list, s.name, s.cover)
-            _notice.value = if (list.size > 1) "${list.size} episodios en cola. ${downloadNotice()}" else downloadNotice()
+            _notice.value = if (list.size > 1) uiPlural(R.plurals.details_episodes_queued, list.size, list.size, downloadNotice()) else downloadNotice()
         }
     }
 
-    private suspend fun downloadNotice(): String =
-        if (settings.downloadWifiOnly.first()) "Se descargará con Wi‑Fi; puedes verla en Descargas."
-        else "Descargando; puedes verla en Descargas."
+    private suspend fun downloadNotice(): UiText =
+        if (settings.downloadWifiOnly.first()) uiText(R.string.details_download_wifi_notice)
+        else uiText(R.string.details_download_notice)
 
     /** Episodios de esta serie en cola, bajándose o en pausa. */
     val pendingSeriesDownloads: StateFlow<Int> = episodeDownloads
@@ -238,11 +239,9 @@ class DetailsViewModel @Inject constructor(
     fun stopSeriesDownloads() {
         viewModelScope.launch {
             val cancelled = downloads.cancelSeries(contentKey)
-            _notice.value = when (cancelled) {
-                0 -> "No había descargas pendientes"
-                1 -> "Se canceló 1 descarga. Lo ya descargado se conserva."
-                else -> "Se cancelaron $cancelled descargas. Lo ya descargado se conserva."
-            }
+            _notice.value =
+                if (cancelled == 0) uiText(R.string.details_no_pending_downloads)
+                else uiPlural(R.plurals.details_downloads_cancelled, cancelled, cancelled)
         }
     }
 
@@ -253,7 +252,7 @@ class DetailsViewModel @Inject constructor(
     fun deleteDownload(key: String) {
         viewModelScope.launch {
             downloads.delete(key)
-            _notice.value = "Descarga eliminada"
+            _notice.value = uiText(R.string.details_download_deleted)
         }
     }
 
@@ -268,9 +267,9 @@ class DetailsViewModel @Inject constructor(
     fun resetSeries() {
         viewModelScope.launch {
             repository.resetSeries(contentKey)
-            _notice.value = "La serie volverá a empezar desde el episodio 1"
+            _notice.value = uiText(R.string.details_series_reset)
         }
     }
 }
 
-fun EpisodeEntity.code(): String = "T$season:E$episodeNum"
+fun EpisodeEntity.code(): UiText = uiText(R.string.details_episode_code, season, episodeNum)

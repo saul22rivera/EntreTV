@@ -1,9 +1,11 @@
 package com.entretv.app.ui
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import com.entretv.app.R
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.data.local.DownloadEntity
@@ -11,11 +13,9 @@ import com.entretv.app.data.local.EpisodeEntity
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.local.VodMovieEntity
-import androidx.media3.common.C
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
-import com.entretv.app.data.settings.SUBTITLES_OFF
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.player.PlayerManager
 import com.entretv.app.ui.navigation.PlayerRoute
@@ -23,6 +23,7 @@ import com.entretv.app.ui.player.PlayerSettingsActions
 import com.entretv.app.ui.player.SLEEP_AT_END
 import com.entretv.app.ui.player.TrackOption
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import com.entretv.app.data.local.FavoriteEntity
 import java.text.Normalizer
@@ -43,7 +44,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-/** Categoría en vivo del navegador de canales: [raw] es la clave, [label] lo que se muestra. */
+/** Categoría en vivo del navegador de canales: [raw] es la clave, [label] lo que se muestra (vacío si no tiene nombre). */
 data class LiveCategory(val raw: String, val label: String, val count: Int)
 
 /** Contenido reproducible genérico. */
@@ -90,6 +91,7 @@ sealed interface Playable {
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val appContext: Context,
     private val repository: PlaylistRepository,
     private val settings: SettingsRepository,
     private val parental: ParentalControl,
@@ -145,12 +147,15 @@ class PlayerViewModel @Inject constructor(
     val groupChannels: StateFlow<List<ChannelEntity>> = _groupChannels
 
     /** Mensaje puntual: "Reanudado en 12:34" / "Siguiente episodio…". */
-    private val _notice = MutableStateFlow<String?>(null)
-    val notice: StateFlow<String?> = _notice
+    private val _notice = MutableStateFlow<UiText?>(null)
+    val notice: StateFlow<UiText?> = _notice
     private var noticeJob: Job? = null
 
     val playerPrefs: StateFlow<PlayerPrefs> = settings.playerPrefs
         .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerPrefs())
+
+    val showClock: StateFlow<Boolean> = settings.showClock
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** Minutos del temporizador; 0 apagado, [SLEEP_AT_END] al terminar el contenido. */
     private val _sleepMinutes = MutableStateFlow(0)
@@ -162,7 +167,7 @@ class PlayerViewModel @Inject constructor(
     private var saveJob: Job? = null
     private var lastSavedMs = -1L
 
-    private fun showNotice(message: String, durationMs: Long = 2_500) {
+    private fun showNotice(message: UiText, durationMs: Long = 2_500) {
         noticeJob?.cancel()
         _notice.value = message
         noticeJob = viewModelScope.launch {
@@ -173,22 +178,14 @@ class PlayerViewModel @Inject constructor(
 
     // ============================ Panel de ajustes ============================
 
+    // Audio y subtítulos elegidos aquí valen solo para este video; el siguiente arranca con Configuración.
     override fun selectAudio(option: TrackOption) {
         playerManager.selectTrack(option.group, option.index)
-        option.format.language?.takeIf { it.isNotBlank() && it != C.LANGUAGE_UNDETERMINED }?.let { lang ->
-            viewModelScope.launch { settings.setAudioLanguage(lang) }
-        }
     }
 
     override fun selectSubtitle(option: TrackOption?) {
-        if (option == null) {
-            playerManager.disableSubtitles()
-            viewModelScope.launch { settings.setSubtitleLanguage(SUBTITLES_OFF) }
-            return
-        }
-        playerManager.selectTrack(option.group, option.index)
-        val lang = option.format.language?.takeIf { it.isNotBlank() && it != C.LANGUAGE_UNDETERMINED }
-        viewModelScope.launch { settings.setSubtitleLanguage(lang.orEmpty()) }
+        if (option == null) playerManager.disableSubtitles()
+        else playerManager.selectTrack(option.group, option.index)
     }
 
     override fun selectQuality(option: TrackOption?) {
@@ -219,10 +216,10 @@ class PlayerViewModel @Inject constructor(
                     delay(minutes * 60_000L)
                     sleepNow()
                 }
-                showNotice("Se pausará en $minutes minutos")
+                showNotice(uiPlural(R.plurals.player_notice_sleep_in, minutes, minutes))
             }
-            minutes == SLEEP_AT_END -> showNotice("Se pausará al terminar")
-            else -> showNotice("Temporizador desactivado")
+            minutes == SLEEP_AT_END -> showNotice(uiText(R.string.player_notice_sleep_at_end))
+            else -> showNotice(uiText(R.string.player_notice_sleep_off))
         }
     }
 
@@ -230,7 +227,7 @@ class PlayerViewModel @Inject constructor(
         playerManager.player.pause()
         _sleepMinutes.value = 0
         _sleepEndsAt.value = 0L
-        showNotice("Temporizador: reproducción en pausa", 5_000)
+        showNotice(uiText(R.string.player_notice_sleep_paused), 5_000)
     }
 
     // ============================ Navegador de canales ============================
@@ -243,7 +240,7 @@ class PlayerViewModel @Inject constructor(
     val liveCategories: StateFlow<List<LiveCategory>> = _allChannels
         .map { all ->
             all.groupingBy { it.groupTitle }.eachCount().map { (raw, count) ->
-                LiveCategory(raw, clean(raw).ifBlank { "Sin categoría" }, count)
+                LiveCategory(raw, clean(raw), count)
             }
         }
         .flowOn(Dispatchers.Default)
@@ -343,7 +340,10 @@ class PlayerViewModel @Inject constructor(
                 }
             }
             val added = repository.toggleFavorite(favorite)
-            showNotice(if (added) "Agregado a Mi lista" else "Quitado de Mi lista", 2_000)
+            showNotice(
+                uiText(if (added) R.string.player_notice_added_to_list else R.string.player_notice_removed_from_list),
+                2_000
+            )
         }
     }
 
@@ -370,7 +370,9 @@ class PlayerViewModel @Inject constructor(
                 if (ep != null) {
                     val series = repository.seriesById(ep.seriesKey)
                     _episodes.value = repository.episodeSnapshot(ep.seriesKey)
-                    startPlayable(Playable.Episode(ep, series?.name?.let(::clean) ?: "Serie", series?.cover.orEmpty()))
+                    val seriesTitle = series?.name?.let(::clean)
+                        ?: AppLanguage.wrap(appContext).getString(R.string.player_series_fallback)
+                    startPlayable(Playable.Episode(ep, seriesTitle, series?.cover.orEmpty()))
                 } else {
                     downloads.get(contentKey)?.let { startPlayable(Playable.Episode(it.asEpisode(), it.title, it.imageUrl)) }
                 }
@@ -397,10 +399,11 @@ class PlayerViewModel @Inject constructor(
         playerManager.play(
             url, p.title, p.subtitle,
             startPositionMs = resumeAt,
-            isLive = p.kind == "LIVE"
+            isLive = p.kind == "LIVE",
+            contentKey = p.contentKey
         )
 
-        if (resumeAt > 0L) showNotice("Reanudado en ${formatMs(resumeAt)}", 4_000)
+        if (resumeAt > 0L) showNotice(uiText(R.string.player_notice_resumed, formatMs(resumeAt)), 4_000)
 
         _nextEpisode.value = (p as? Playable.Episode)?.let { ep ->
             val list = _episodes.value
@@ -471,7 +474,9 @@ class PlayerViewModel @Inject constructor(
             if (p is Playable.Episode) {
                 val next = _nextEpisode.value
                 if (next != null) {
-                    showNotice("A continuación: T${next.season}:E${next.episodeNum}")
+                    showNotice(
+                        uiText(R.string.player_notice_up_next, uiText(R.string.player_episode_code, next.season, next.episodeNum))
+                    )
                     delay(2_500)
                     if (_playable.value == p) startPlayable(p.copy(episode = next))
                 }
@@ -517,7 +522,7 @@ class PlayerViewModel @Inject constructor(
         if (current != null) {
             kotlinx.coroutines.runBlocking { savePosition(current) }
         }
-        playerManager.stop()
+        if (!route.keepPlaying || current !is Playable.LiveChannel) playerManager.stop()
         super.onCleared()
     }
 

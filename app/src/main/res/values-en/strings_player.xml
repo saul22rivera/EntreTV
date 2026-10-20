@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Player notices -->
+    <string name="player_notice_resumed">Resumed at %1$s</string>
+    <string name="player_notice_added_to_list">Added to My List</string>
+    <string name="player_notice_removed_from_list">Removed from My List</string>
+    <string name="player_notice_up_next">Up next: %1$s</string>
+    <plurals name="player_notice_sleep_in">
+        <item quantity="one">Pausing in %1$d minute</item>
+        <item quantity="other">Pausing in %1$d minutes</item>
+    </plurals>
+    <string name="player_notice_sleep_at_end">Will pause when it ends</string>
+    <string name="player_notice_sleep_off">Sleep timer off</string>
+    <string name="player_notice_sleep_paused">Sleep timer: playback paused</string>
+    <string name="player_episode_code">S%1$d:E%2$d</string>
+    <string name="player_episode_subtitle">S%1$d:E%2$d · %3$s</string>
+    <string name="player_no_category">Uncategorized</string>
+    <string name="player_series_fallback">Series</string>
+
+    <!-- Errors -->
+    <string name="player_error_live">The channel isn\'t responding. Check your connection or try another channel.</string>
+    <string name="player_error_vod">Couldn\'t play this. Check your connection and try again.</string>
+    <string name="player_retry">Retry</string>
+
+    <!-- Player screen -->
+    <string name="player_loading">Loading…</string>
+    <string name="player_live_badge">LIVE</string>
+    <string name="player_back">Back</string>
+    <string name="player_channels">Channels</string>
+    <string name="player_aspect">Aspect ratio</string>
+    <string name="player_pip">Picture-in-picture</string>
+    <string name="player_pip_short">PiP</string>
+    <string name="player_pip_unsupported">Your device doesn\'t support picture-in-picture</string>
+    <string name="player_add_to_list">Add to My List</string>
+    <string name="player_remove_from_list">Remove from My List</string>
+    <string name="player_my_list">My List</string>
+    <string name="player_in_my_list">In My List</string>
+    <string name="player_settings_short">Settings</string>
+    <string name="player_settings_title">Playback settings</string>
+    <string name="player_prev_channel">Previous channel</string>
+    <string name="player_next_channel">Next channel</string>
+    <string name="player_prev_episode">Previous episode</string>
+    <string name="player_next_episode">Next episode</string>
+    <string name="player_rewind_10">Rewind 10 seconds</string>
+    <string name="player_forward_30">Forward 30 seconds</string>
+    <string name="player_play">Play</string>
+    <string name="player_pause">Pause</string>
+    <string name="player_next_episode_button">Next episode</string>
+    <string name="player_next_episode_countdown">S%1$d:E%2$d · in %3$d s</string>
+    <string name="player_offline">No connection · resumes when the network is back</string>
+    <string name="player_reconnecting">Reconnecting…</string>
+    <string name="player_reconnecting_attempt">Reconnecting… (attempt %1$d)</string>
+    <string name="player_now_program">Now · %1$s</string>
+    <string name="player_feedback_rewind">−%1$d s · %2$s</string>
+    <string name="player_feedback_forward">+%1$d s · %2$s</string>
+    <string name="player_feedback_brightness">Brightness %1$d%%</string>
+    <string name="player_feedback_volume">Volume %1$d%%</string>
+    <string name="player_resize_detail_fit">full picture</string>
+    <string name="player_resize_detail_zoom">crops the edges</string>
+    <string name="player_resize_detail_fill">fills the screen</string>
+
+    <!-- Live guide -->
+    <string name="player_tab_guide">Guide</string>
+    <string name="player_epg_empty">This channel has no program guide.</string>
+    <string name="player_epg_now_badge">NOW</string>
+    <plurals name="player_minutes_left">
+        <item quantity="one">%1$d min left</item>
+        <item quantity="other">%1$d min left</item>
+    </plurals>
+    <string name="player_epg_up_next">Up next</string>
+    <string name="player_epg_later">Later</string>
+
+    <!-- Settings panel -->
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Subtitles</string>
+    <string name="player_quality">Quality</string>
+    <string name="player_screen">Screen</string>
+    <string name="player_speed">Speed</string>
+    <string name="player_sleep_timer">Sleep timer</string>
+    <string name="player_tech_info">Technical info</string>
+    <string name="player_no_tracks">No tracks</string>
+    <string name="player_audio_auto">Automatic</string>
+    <string name="player_subtitles_unavailable">Not available</string>
+    <string name="player_subtitles_off">Off</string>
+    <string name="player_quality_auto">Automatic</string>
+    <string name="player_quality_auto_height">Automatic · %1$dp</string>
+    <string name="player_quality_auto_hint">Adapts to your connection</string>
+    <string name="player_audio_none_hint">This content doesn\'t list any audio tracks.</string>
+    <string name="player_subtitles_none_hint">This content has no subtitles.</string>
+    <string name="player_subtitle_text_size">Text size</string>
+    <string name="player_subtitle_small">Small</string>
+    <string name="player_subtitle_normal">Normal</string>
+    <string name="player_subtitle_large">Large</string>
+    <string name="player_subtitles_hint">What you choose here only applies to this video. The default language and subtitles are set in Settings.</string>
+    <string name="player_resize_fit">Fit</string>
+    <string name="player_resize_zoom">Zoom</string>
+    <string name="player_resize_fill">Stretch</string>
+    <string name="player_resize_fit_hint">Full picture, with borders if needed</string>
+    <string name="player_resize_zoom_hint">Fills the screen by cropping the edges</string>
+    <string name="player_resize_fill_hint">Fills everything by stretching the picture</string>
+    <string name="player_speed_normal">Normal</string>
+    <string name="player_sleep_off">Off</string>
+    <plurals name="player_sleep_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <string name="player_sleep_at_end_option">When this content ends</string>
+    <string name="player_sleep_at_end">At the end</string>
+    <string name="player_info_resolution">Resolution</string>
+    <string name="player_info_video_codec">Video codec</string>
+    <string name="player_info_frame_rate">Frame rate</string>
+    <string name="player_info_video_bitrate">Video bitrate</string>
+    <string name="player_info_buffer">Buffer</string>
+    <string name="player_selected">Selected</string>
+
+    <!-- Tracks -->
+    <string name="player_language_unknown">Unknown</string>
+    <string name="player_audio_description">Audio description</string>
+    <string name="player_subtitles_forced">Forced</string>
+    <string name="player_subtitles_sdh">SDH</string>
+    <string name="player_channels_mono">Mono</string>
+    <string name="player_channels_stereo">Stereo</string>
+    <plurals name="player_channels_count">
+        <item quantity="one">%1$d channel</item>
+        <item quantity="other">%1$d channels</item>
+    </plurals>
+    <string name="player_video">Video</string>
+
+    <!-- Channel browser -->
+    <string name="player_categories">Categories</string>
+    <plurals name="player_search_results">
+        <item quantity="one">Results (%1$d)</item>
+        <item quantity="other">Results (%1$d)</item>
+    </plurals>
+    <string name="player_search_channel">Search channels</string>
+    <string name="player_clear_search">Clear search</string>
+    <string name="player_no_channels_match">No channels with that name.</string>
+    <string name="player_no_channels_category">No channels in this category.</string>
+    <string name="player_search">Search</string>
+    <string name="player_cancel">Cancel</string>
+</resources>

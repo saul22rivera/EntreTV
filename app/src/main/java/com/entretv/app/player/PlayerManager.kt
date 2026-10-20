@@ -12,6 +12,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -29,6 +30,8 @@ import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -36,9 +39,11 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import com.entretv.app.R
 import com.entretv.app.data.settings.PlayerPrefs
-import com.entretv.app.data.settings.SUBTITLES_OFF
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.ui.UiText
+import com.entretv.app.ui.uiText
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.Locale
@@ -89,6 +94,7 @@ class PlayerManager @Inject constructor(
         private const val STABLE_MS = 20_000L
         private const val LIVE_MIN_SPEED = 0.97f
         private const val LIVE_MAX_SPEED = 1.03f
+        private val XTREAM_LIVE = Regex("/live/[^/]+/[^/]+/\\d+\\.(m3u8|ts)$", RegexOption.IGNORE_CASE)
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -204,8 +210,8 @@ class PlayerManager @Inject constructor(
     val offline: StateFlow<Boolean> = _offline
 
     /** Mensaje cuando ya no se pudo recuperar solo; la pantalla ofrece "Reintentar". */
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error
+    private val _error = MutableStateFlow<UiText?>(null)
+    val error: StateFlow<UiText?> = _error
 
     /** Pistas de audio, subtítulos y video del contenido actual. */
     private val _tracks = MutableStateFlow(Tracks.EMPTY)
@@ -213,6 +219,10 @@ class PlayerManager @Inject constructor(
 
     private val _speed = MutableStateFlow(1f)
     val speed: StateFlow<Float> = _speed
+
+    /** Clave del contenido cargado (id del canal, película o episodio); null si no hay nada. */
+    private val _currentKey = MutableStateFlow<String?>(null)
+    val currentKey: StateFlow<String?> = _currentKey
 
     /** Se dispara cuando un contenido VOD termina (para auto-next de episodios). */
     var onEnded: (() -> Unit)? = null
@@ -271,9 +281,12 @@ class PlayerManager @Inject constructor(
 
         // Primero el decodificador del equipo (mantiene el passthrough a receptores);
         // FFmpeg entra solo si el equipo no sabe decodificar ese audio.
+        // El decodificador de video de Configuración se consulta al crear cada decodificador:
+        // vale desde el siguiente video sin rehacer el reproductor.
         val renderers = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setMediaCodecSelector(::decoderInfos)
 
         val exoPlayer = ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(liveSourceFactory)
@@ -340,19 +353,48 @@ class PlayerManager @Inject constructor(
 
     // ============================ Pistas y ajustes ============================
 
-    /** Idiomas guardados por el usuario; se aplican al empezar cada contenido. */
+    /**
+     * Idioma y subtítulos de Configuración; se aplican al empezar cada contenido y borran lo
+     * que se eligió a mano en el anterior.
+     */
     private fun applyPreferences() {
         val p = prefs
-        val audio = p.audioLanguage.ifEmpty { Locale.getDefault().language }
         val builder = player.trackSelectionParameters.buildUpon()
             .clearOverrides()
-            .setPreferredAudioLanguages(audio)
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, p.subtitleLanguage == SUBTITLES_OFF)
-        when (p.subtitleLanguage) {
-            "", SUBTITLES_OFF -> builder.setPreferredTextLanguages()
-            else -> builder.setPreferredTextLanguages(p.subtitleLanguage)
+            .setPreferredAudioLanguages(p.contentLanguage)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !p.subtitlesByDefault)
+        if (p.subtitlesByDefault) {
+            builder.setPreferredTextLanguages(p.contentLanguage).setSelectUndeterminedTextLanguage(false)
+        } else {
+            builder.setPreferredTextLanguages()
         }
         player.trackSelectionParameters = builder.build()
+    }
+
+    /**
+     * Canales en vivo de Xtream (/live/usuario/clave/123.m3u8): se pide el formato elegido en
+     * Configuración. Las URLs de listas M3U se dejan como vienen.
+     */
+    private fun liveUrl(url: String): String {
+        val match = XTREAM_LIVE.find(url.substringBefore('?')) ?: return url
+        val ext = match.groupValues[1]
+        val wanted = prefs.liveFormat
+        if (ext.equals(wanted, ignoreCase = true)) return url
+        return url.replaceRange(match.groups[1]!!.range, wanted)
+    }
+
+    /**
+     * Decodificadores de video en el orden del ajuste: hardware o software primero. Los otros
+     * quedan detrás para que el video igual arranque si el preferido no puede.
+     */
+    private fun decoderInfos(mimeType: String, secure: Boolean, tunneling: Boolean): List<MediaCodecInfo> {
+        val infos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
+        if (!MimeTypes.isVideo(mimeType)) return infos
+        return when (prefs.decoder) {
+            SettingsRepository.DECODER_HARDWARE -> infos.sortedByDescending { it.hardwareAccelerated }
+            SettingsRepository.DECODER_SOFTWARE -> infos.sortedByDescending { it.softwareOnly }
+            else -> infos
+        }
     }
 
     /** Fija una pista concreta de audio, subtítulos o video. */
@@ -438,9 +480,9 @@ class PlayerManager @Inject constructor(
         _reconnecting.value = false
         _reconnectAttempt.value = 0
         _error.value = if (currentIsLive)
-            "El canal no responde. Revisa tu conexión o prueba otro canal."
+            uiText(R.string.player_error_live)
         else
-            "No se pudo reproducir. Revisa tu conexión e inténtalo de nuevo."
+            uiText(R.string.player_error_vod)
     }
 
     /** En vivo casi todo se reintenta: 403/404/509 suelen ser límites momentáneos del panel. */
@@ -569,15 +611,27 @@ class PlayerManager @Inject constructor(
         title: String,
         subtitle: String = "",
         startPositionMs: Long = 0L,
-        isLive: Boolean = false
+        isLive: Boolean = false,
+        contentKey: String = ""
     ) {
+        // El mismo canal que ya suena (del mini reproductor a pantalla completa): no se recarga.
+        val target = if (isLive) liveUrl(url) else url
+        if (isLive && currentIsLive && currentItem != null && target == currentUrl &&
+            player.playerError == null && player.playbackState != Player.STATE_IDLE
+        ) {
+            _currentKey.value = contentKey.ifEmpty { null }
+            player.playWhenReady = true
+            return
+        }
         cancelRecovery()
         reconnectAttempts = 0
         _reconnectAttempt.value = 0
         _reconnecting.value = false
         _error.value = null
         currentIsLive = isLive
+        val url = target
         currentUrl = url
+        _currentKey.value = contentKey.ifEmpty { null }
         lastPositionMs = C.TIME_UNSET
         lastProgressAt = SystemClock.elapsedRealtime()
 
@@ -619,6 +673,7 @@ class PlayerManager @Inject constructor(
         cancelRecovery()
         mainHandler.removeCallbacks(watchdog)
         currentItem = null
+        _currentKey.value = null
         _reconnecting.value = false
         _reconnectAttempt.value = 0
         _error.value = null

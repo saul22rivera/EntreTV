@@ -1,4 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">EntreTV</string>
+    <string name="app_name" translatable="false">EntreTV</string>
+
+    <!-- Secciones -->
+    <string name="section_live">En vivo</string>
+    <string name="section_movies">Películas</string>
+    <string name="section_series">Series</string>
+
+    <!-- Orden del catálogo -->
+    <string name="sort_original">Original</string>
+    <string name="sort_az">A-Z</string>
+    <string name="sort_rating">Puntuación</string>
+    <string name="sort_recent">Recientes</string>
+
+    <!-- Cuenta (errores del servidor al iniciar sesión o editar la cuenta) -->
+    <string name="account_missing">La cuenta ya no existe.</string>
+    <string name="account_wrong_credentials">Usuario o contraseña incorrectos.</string>
+    <string name="account_server_down">El servidor no está disponible en este momento. Inténtalo más tarde.</string>
+    <string name="account_server_error">El servidor respondió con un error (%1$d). Inténtalo más tarde.</string>
+    <string name="account_no_connection">No hay conexión con el servidor. Revisa tu internet e inténtalo de nuevo.</string>
+    <string name="account_expired">Tu cuenta venció. Comunícate con tu proveedor para renovarla.</string>
+    <string name="account_banned">Tu cuenta está suspendida. Comunícate con tu proveedor.</string>
+    <string name="account_disabled">Tu cuenta está desactivada. Comunícate con tu proveedor.</string>
+    <string name="account_inactive">Tu cuenta no está activa (%1$s). Comunícate con tu proveedor.</string>
 </resources>

@@ -5,7 +5,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +39,7 @@ import com.entretv.app.ui.theme.EntreTVTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     /** True mientras el usuario está en la pantalla de reproducción. */
     private var inPlayer by mutableStateOf(false)
@@ -103,7 +103,10 @@ class MainActivity : ComponentActivity() {
                     onPlayEpisode = { episodeId ->
                         navController.navigate(PlayerRoute(episodeId, "EPISODE"))
                     },
-                    onOpenDownloads = { navController.navigate(DownloadsRoute) }
+                    onOpenDownloads = { navController.navigate(DownloadsRoute) },
+                    onPlayLiveFullscreen = { channelId ->
+                        navController.navigate(PlayerRoute(channelId, "LIVE", keepPlaying = true))
+                    }
                 )
             }
             composable<DownloadsRoute> {

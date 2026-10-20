@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Avisos del reproductor -->
+    <string name="player_notice_resumed">Reanudado en %1$s</string>
+    <string name="player_notice_added_to_list">Agregado a Mi lista</string>
+    <string name="player_notice_removed_from_list">Quitado de Mi lista</string>
+    <string name="player_notice_up_next">A continuación: %1$s</string>
+    <plurals name="player_notice_sleep_in">
+        <item quantity="one">Se pausará en %1$d minuto</item>
+        <item quantity="other">Se pausará en %1$d minutos</item>
+    </plurals>
+    <string name="player_notice_sleep_at_end">Se pausará al terminar</string>
+    <string name="player_notice_sleep_off">Temporizador desactivado</string>
+    <string name="player_notice_sleep_paused">Temporizador: reproducción en pausa</string>
+    <string name="player_episode_code">T%1$d:E%2$d</string>
+    <string name="player_episode_subtitle">T%1$d:E%2$d · %3$s</string>
+    <string name="player_no_category">Sin categoría</string>
+    <string name="player_series_fallback">Serie</string>
+
+    <!-- Errores -->
+    <string name="player_error_live">El canal no responde. Revisa tu conexión o prueba otro canal.</string>
+    <string name="player_error_vod">No se pudo reproducir. Revisa tu conexión e inténtalo de nuevo.</string>
+    <string name="player_retry">Reintentar</string>
+
+    <!-- Pantalla del reproductor -->
+    <string name="player_loading">Cargando…</string>
+    <string name="player_live_badge">EN VIVO</string>
+    <string name="player_back">Volver</string>
+    <string name="player_channels">Canales</string>
+    <string name="player_aspect">Formato de imagen</string>
+    <string name="player_pip">Ventana flotante</string>
+    <string name="player_pip_short">Flotante</string>
+    <string name="player_pip_unsupported">Tu equipo no permite ventana flotante</string>
+    <string name="player_add_to_list">Agregar a Mi lista</string>
+    <string name="player_remove_from_list">Quitar de Mi lista</string>
+    <string name="player_my_list">Mi lista</string>
+    <string name="player_in_my_list">En Mi lista</string>
+    <string name="player_settings_short">Ajustes</string>
+    <string name="player_settings_title">Ajustes de reproducción</string>
+    <string name="player_prev_channel">Canal anterior</string>
+    <string name="player_next_channel">Canal siguiente</string>
+    <string name="player_prev_episode">Episodio anterior</string>
+    <string name="player_next_episode">Episodio siguiente</string>
+    <string name="player_rewind_10">Atrasar 10 segundos</string>
+    <string name="player_forward_30">Adelantar 30 segundos</string>
+    <string name="player_play">Reproducir</string>
+    <string name="player_pause">Pausar</string>
+    <string name="player_next_episode_button">Siguiente capítulo</string>
+    <string name="player_next_episode_countdown">T%1$d:E%2$d · en %3$d s</string>
+    <string name="player_offline">Sin conexión · se reanuda al volver la red</string>
+    <string name="player_reconnecting">Reconectando…</string>
+    <string name="player_reconnecting_attempt">Reconectando… (intento %1$d)</string>
+    <string name="player_now_program">Ahora · %1$s</string>
+    <string name="player_feedback_rewind">−%1$d s · %2$s</string>
+    <string name="player_feedback_forward">+%1$d s · %2$s</string>
+    <string name="player_feedback_brightness">Brillo %1$d%%</string>
+    <string name="player_feedback_volume">Volumen %1$d%%</string>
+    <string name="player_resize_detail_fit">imagen completa</string>
+    <string name="player_resize_detail_zoom">recorta los bordes</string>
+    <string name="player_resize_detail_fill">llena la pantalla</string>
+
+    <!-- Guía en vivo -->
+    <string name="player_tab_guide">Guía</string>
+    <string name="player_epg_empty">Este canal no tiene guía de programación.</string>
+    <string name="player_epg_now_badge">AHORA</string>
+    <plurals name="player_minutes_left">
+        <item quantity="one">Queda %1$d min</item>
+        <item quantity="other">Quedan %1$d min</item>
+    </plurals>
+    <string name="player_epg_up_next">A continuación</string>
+    <string name="player_epg_later">Más tarde</string>
+
+    <!-- Panel de ajustes -->
+    <string name="player_audio">Audio</string>
+    <string name="player_subtitles">Subtítulos</string>
+    <string name="player_quality">Calidad</string>
+    <string name="player_screen">Pantalla</string>
+    <string name="player_speed">Velocidad</string>
+    <string name="player_sleep_timer">Temporizador</string>
+    <string name="player_tech_info">Información técnica</string>
+    <string name="player_no_tracks">Sin pistas</string>
+    <string name="player_audio_auto">Automático</string>
+    <string name="player_subtitles_unavailable">No disponibles</string>
+    <string name="player_subtitles_off">Desactivados</string>
+    <string name="player_quality_auto">Automática</string>
+    <string name="player_quality_auto_height">Automática · %1$dp</string>
+    <string name="player_quality_auto_hint">Se adapta a tu conexión</string>
+    <string name="player_audio_none_hint">Este contenido no informa pistas de audio.</string>
+    <string name="player_subtitles_none_hint">Este contenido no trae subtítulos.</string>
+    <string name="player_subtitle_text_size">Tamaño del texto</string>
+    <string name="player_subtitle_small">Pequeño</string>
+    <string name="player_subtitle_normal">Normal</string>
+    <string name="player_subtitle_large">Grande</string>
+    <string name="player_subtitles_hint">Lo que elijas aquí vale solo para este video. El idioma y los subtítulos al iniciar se cambian en Configuración.</string>
+    <string name="player_resize_fit">Ajustar</string>
+    <string name="player_resize_zoom">Rellenar</string>
+    <string name="player_resize_fill">Estirar</string>
+    <string name="player_resize_fit_hint">Imagen completa, con bordes si hace falta</string>
+    <string name="player_resize_zoom_hint">Llena la pantalla recortando los bordes</string>
+    <string name="player_resize_fill_hint">Ocupa todo deformando la imagen</string>
+    <string name="player_speed_normal">Normal</string>
+    <string name="player_sleep_off">Desactivado</string>
+    <plurals name="player_sleep_minutes">
+        <item quantity="one">%1$d minuto</item>
+        <item quantity="other">%1$d minutos</item>
+    </plurals>
+    <string name="player_sleep_at_end_option">Al terminar este contenido</string>
+    <string name="player_sleep_at_end">Al terminar</string>
+    <string name="player_info_resolution">Resolución</string>
+    <string name="player_info_video_codec">Códec de video</string>
+    <string name="player_info_frame_rate">Cuadros por segundo</string>
+    <string name="player_info_video_bitrate">Tasa de video</string>
+    <string name="player_info_buffer">Búfer</string>
+    <string name="player_selected">Seleccionado</string>
+
+    <!-- Pistas -->
+    <string name="player_language_unknown">Desconocido</string>
+    <string name="player_audio_description">Audiodescripción</string>
+    <string name="player_subtitles_forced">Forzados</string>
+    <string name="player_subtitles_sdh">Para sordos</string>
+    <string name="player_channels_mono">Mono</string>
+    <string name="player_channels_stereo">Estéreo</string>
+    <plurals name="player_channels_count">
+        <item quantity="one">%1$d canal</item>
+        <item quantity="other">%1$d canales</item>
+    </plurals>
+    <string name="player_video">Video</string>
+
+    <!-- Navegador de canales -->
+    <string name="player_categories">Categorías</string>
+    <plurals name="player_search_results">
+        <item quantity="one">Resultados (%1$d)</item>
+        <item quantity="other">Resultados (%1$d)</item>
+    </plurals>
+    <string name="player_search_channel">Buscar canal</string>
+    <string name="player_clear_search">Borrar búsqueda</string>
+    <string name="player_no_channels_match">No hay canales con ese nombre.</string>
+    <string name="player_no_channels_category">No hay canales en esta categoría.</string>
+    <string name="player_search">Buscar</string>
+    <string name="player_cancel">Cancelar</string>
+</resources>

@@ -8,8 +8,11 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.entretv.app.BuildConfig
+import com.entretv.app.R
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.ui.UiText
+import com.entretv.app.ui.uiText
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -63,7 +66,7 @@ sealed interface UpdateState {
     data class Available(val info: UpdateInfo) : UpdateState
     data class Downloading(val info: UpdateInfo, val progress: Float?) : UpdateState
     data class ReadyToInstall(val info: UpdateInfo, val needsPermission: Boolean) : UpdateState
-    data class Failed(val message: String, val info: UpdateInfo? = null) : UpdateState
+    data class Failed(val message: UiText, val info: UpdateInfo? = null) : UpdateState
 }
 
 val UpdateState.isRequired: Boolean
@@ -116,7 +119,7 @@ class UpdateRepository @Inject constructor(
         if (!manual && !isConfigured) return
         _manual.value = manual
         if (!isConfigured) {
-            _state.value = UpdateState.Failed("Esta versión no tiene configurado el servidor de actualizaciones.")
+            _state.value = UpdateState.Failed(uiText(R.string.update_error_not_configured))
             return
         }
         _state.value = if (manual) UpdateState.Checking else UpdateState.Idle
@@ -126,7 +129,7 @@ class UpdateRepository @Inject constructor(
             val info = result.getOrNull()
             info?.let { applyRemoteConfig(it) }
             _state.value = when {
-                info == null -> if (manual) UpdateState.Failed("No se pudo consultar si hay una versión nueva. Revisa tu conexión.") else UpdateState.Idle
+                info == null -> if (manual) UpdateState.Failed(uiText(R.string.update_error_check)) else UpdateState.Idle
                 info.versionCode > BuildConfig.VERSION_CODE -> UpdateState.Available(info)
                 manual -> UpdateState.UpToDate
                 else -> UpdateState.Idle
@@ -165,7 +168,7 @@ class UpdateRepository @Inject constructor(
             _state.value = if (ok) {
                 UpdateState.ReadyToInstall(info, needsPermission = !canInstall())
             } else {
-                UpdateState.Failed("No se pudo descargar la actualización. Inténtalo de nuevo.", info)
+                UpdateState.Failed(uiText(R.string.update_error_download), info)
             }
             // En una actualización obligatoria el instalador se abre solo.
             if (ok && info.isRequired) withContext(Dispatchers.Main) { install() }
@@ -243,7 +246,7 @@ class UpdateRepository @Inject constructor(
             _state.value = current.copy(needsPermission = false)
             true
         } catch (_: ActivityNotFoundException) {
-            _state.value = UpdateState.Failed("Este equipo no tiene instalador de apps disponible.", current.info)
+            _state.value = UpdateState.Failed(uiText(R.string.update_error_no_installer), current.info)
             false
         }
     }

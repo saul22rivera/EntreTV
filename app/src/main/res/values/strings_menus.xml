@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Menú lateral, píldora y chips de categorías -->
+    <string name="menu_open">Abrir menú</string>
+    <string name="menu_close">Cerrar menú</string>
+    <string name="menu_home">Inicio</string>
+    <string name="menu_search">Buscar</string>
+    <string name="menu_downloads">Descargas</string>
+    <string name="menu_settings">Configuración</string>
+    <string name="menu_categories">Categorías</string>
+    <string name="menu_categories_header">CATEGORÍAS</string>
+    <string name="menu_organize">Organizar</string>
+    <string name="menu_featured">Destacados</string>
+    <string name="menu_all">Todas</string>
+    <string name="menu_my_list">Mi lista</string>
+    <string name="menu_my_list_count">Mi lista (%1$d)</string>
+    <string name="menu_locked">Bloqueada</string>
+
+    <!-- Configuración -->
+    <string name="settings_title">Configuración</string>
+    <string name="settings_switch_user">Cambiar de usuario</string>
+    <string name="settings_switch_user_desc">Edita tu nombre, usuario o contraseña</string>
+    <string name="settings_logout">Cerrar sesión</string>
+    <string name="settings_logout_desc">Vuelve a la pantalla de inicio de sesión</string>
+
+    <string name="settings_section_language">Idioma</string>
+    <string name="settings_app_language">Idioma de la app</string>
+    <string name="settings_app_language_desc">Menús, botones y mensajes.</string>
+    <string name="settings_content_language">Idioma preferido del contenido</string>
+    <string name="settings_content_language_desc">Las películas, series y canales arrancan con el audio en este idioma si lo tienen.</string>
+    <string name="settings_language_es">Español</string>
+    <string name="settings_language_en">Inglés</string>
+    <string name="settings_language_es_inline">español</string>
+    <string name="settings_language_en_inline">inglés</string>
+    <string name="settings_subtitles">Subtítulos al iniciar</string>
+    <string name="settings_subtitles_on">Se activan en %1$s si el video los trae.</string>
+    <string name="settings_subtitles_off">Los videos arrancan sin subtítulos; los activas tú desde el reproductor.</string>
+
+    <string name="settings_section_display">Pantalla</string>
+    <string name="settings_clock">Fecha y hora</string>
+    <string name="settings_clock_desc">Un reloj pequeño arriba a la derecha en Inicio y en el reproductor.</string>
+
+    <string name="settings_section_playback">Reproducción</string>
+    <string name="settings_live_format">Formato de los canales en vivo</string>
+    <string name="settings_live_format_desc">Si un canal se corta o no arranca, prueba el otro formato.</string>
+    <string name="settings_live_hls">HLS (.m3u8) · recomendado</string>
+    <string name="settings_live_ts">MPEG-TS (.ts) · flujo continuo</string>
+    <string name="settings_decoder">Decodificador de video</string>
+    <string name="settings_decoder_desc">Se aplica desde el siguiente video.</string>
+    <string name="settings_decoder_auto">Automático · el mejor que tenga el equipo (recomendado)</string>
+    <string name="settings_decoder_hardware">Hardware · menos consumo; usa el chip de video</string>
+    <string name="settings_decoder_software">Software · si el video se ve verde, negro o con cortes</string>
+    <string name="settings_buffer">Búfer de arranque</string>
+    <string name="settings_buffer_desc">Segundos de video que se cargan antes de empezar y después de un corte.</string>
+    <string name="settings_buffer_0">0 s · arranca al instante, puede trabarse más</string>
+    <string name="settings_buffer_3">3 s · equilibrado (recomendado)</string>
+    <string name="settings_buffer_5">5 s · más estable</string>
+    <string name="settings_buffer_9">9 s · máxima estabilidad, tarda más en arrancar</string>
+    <string name="settings_seconds">%1$d s</string>
+    <string name="settings_max_buffer">Búfer máximo</string>
+    <string name="settings_max_buffer_desc">Cuánto video por delante se descarga. Más búfer aguanta mejor una conexión inestable.</string>
+    <string name="settings_max_buffer_15">15 s · usa menos memoria</string>
+    <string name="settings_max_buffer_30">30 s · equilibrado (recomendado)</string>
+    <string name="settings_max_buffer_60">60 s · conexiones inestables; en vivo va un poco más atrasado</string>
+
+    <string name="settings_section_catalog">Catálogo</string>
+    <string name="settings_default_sort">Orden por defecto</string>
+    <string name="settings_default_sort_desc">“Original” respeta el orden en que lo manda tu proveedor.</string>
+    <string name="settings_sort_original">Original · como viene de la lista</string>
+    <string name="settings_sort_az">A-Z · alfabético</string>
+    <string name="settings_sort_rating">Puntuación · mejor valorados primero</string>
+    <string name="settings_sort_recent">Recientes · lo último agregado primero</string>
+    <string name="settings_clean_names">Limpiar nombres</string>
+    <string name="settings_clean_names_desc">Quita prefijos y etiquetas como “ES:”, “US|” o “[HD]”.</string>
+    <string name="settings_organize">Organizar categorías</string>
+    <string name="settings_organize_desc">Ocultar, reordenar y marcar como adultos</string>
+    <string name="settings_hidden">Títulos y canales ocultos</string>
+    <string name="settings_hidden_none">No ocultaste nada</string>
+    <plurals name="settings_hidden_count">
+        <item quantity="one">%1$d oculto</item>
+        <item quantity="other">%1$d ocultos</item>
+    </plurals>
+
+    <string name="settings_section_parental">Control parental</string>
+    <string name="settings_pin_intro">Con un PIN, las categorías de adultos quedan ocultas hasta que lo ingreses.</string>
+    <string name="settings_create_pin">Crear PIN</string>
+    <string name="settings_create_pin_desc">4 dígitos</string>
+    <string name="settings_unlocked_status">Desbloqueado hasta cerrar la app.</string>
+    <string name="settings_locked_status">Contenido para adultos bloqueado.</string>
+    <string name="settings_lock_now">Bloquear ahora</string>
+    <string name="settings_unlock">Desbloquear</string>
+    <string name="settings_unlock_desc">Muestra el contenido para adultos en esta sesión</string>
+    <string name="settings_change_pin">Cambiar PIN</string>
+    <string name="settings_remove_pin">Quitar PIN</string>
+
+    <string name="settings_section_downloads">Descargas</string>
+    <string name="settings_wifi_only">Descargar solo con Wi‑Fi</string>
+    <string name="settings_wifi_only_desc">Espera una red sin límite de datos (Wi‑Fi o cable) para no gastar datos móviles.</string>
+
+    <string name="settings_section_app">Aplicación</string>
+    <string name="settings_check_updates">Buscar actualizaciones</string>
+    <string name="settings_installed_version">Versión instalada: %1$s</string>
+
+    <!-- Tarjeta de la cuenta -->
+    <string name="settings_status_expired">Vencida</string>
+    <string name="settings_status_trial">Activa · prueba</string>
+    <string name="settings_status_active">Activa</string>
+    <string name="settings_status_banned">Suspendida</string>
+    <string name="settings_status_disabled">Desactivada</string>
+    <string name="settings_user">Usuario: %1$s</string>
+    <string name="settings_status_unknown">Estado de la cuenta: se consulta al actualizar el catálogo.</string>
+    <string name="settings_no_expiry">Sin fecha de vencimiento</string>
+    <string name="settings_expired_on">Venció el %1$s</string>
+    <string name="settings_expires_today">Vence hoy (%1$s)</string>
+    <string name="settings_expires_tomorrow">Vence mañana (%1$s)</string>
+    <string name="settings_expires_on">Vence el %1$s</string>
+    <plurals name="settings_expires_days_left">
+        <item quantity="one">Vence el %1$s · queda %2$d día</item>
+        <item quantity="other">Vence el %1$s · quedan %2$d días</item>
+    </plurals>
+    <plurals name="settings_screens">
+        <item quantity="one">%1$d pantalla a la vez</item>
+        <item quantity="other">%1$d pantallas a la vez</item>
+    </plurals>
+
+    <!-- Diálogos -->
+    <string name="dialog_done">Listo</string>
+    <string name="dialog_cancel">Cancelar</string>
+    <string name="dialog_delete">Borrar</string>
+    <string name="dialog_save">Guardar</string>
+    <string name="dialog_verifying">Verificando…</string>
+    <string name="dialog_show">Mostrar</string>
+    <string name="dialog_hide">Ocultar</string>
+
+    <string name="dialog_organize_title">Organizar categorías</string>
+    <string name="dialog_reset_order">Orden original</string>
+    <string name="dialog_organize_hint">Sube o baja con las flechas. El ojo oculta la categoría y el candado la marca como de adultos (se bloquea con el PIN).</string>
+    <string name="dialog_organize_empty">No hay categorías todavía. Actualiza el catálogo para traerlas.</string>
+    <string name="dialog_move_up">Subir</string>
+    <string name="dialog_move_down">Bajar</string>
+    <string name="dialog_mark_adult">Marcar como adultos</string>
+    <string name="dialog_unmark_adult">Quitar marca de adultos</string>
+
+    <string name="dialog_account_title">Cambiar de usuario</string>
+    <string name="dialog_account_hint">Tus listas, tu progreso y Mi lista se conservan si es la misma cuenta.</string>
+
+    <string name="dialog_hidden_title">Títulos y canales ocultos</string>
+    <string name="dialog_hidden_empty">No ocultaste nada. Desde el menú de un póster (mantener presionado o tecla Menú) puedes ocultar un canal o un título.</string>
+    <string name="dialog_kind_channel">Canal</string>
+    <string name="dialog_kind_movie">Película</string>
+    <string name="dialog_kind_series">Serie</string>
+
+    <!-- En vivo (TV) -->
+    <string name="live_locked_hint">Categoría bloqueada. Presiona OK sobre ella para ingresar el PIN.</string>
+    <string name="live_no_channels">No hay canales en esta categoría.</string>
+    <string name="live_fullscreen_hint">OK: pantalla completa</string>
+    <string name="live_pick_channel">Elige un canal y presiona OK para verlo aquí</string>
+    <string name="live_guide_loading">Cargando guía…</string>
+    <string name="live_guide_empty">Sin guía para este canal.</string>
+    <string name="live_now">AHORA</string>
+    <string name="live_next">DESPUÉS</string>
+    <string name="live_later">MÁS TARDE</string>
+    <string name="live_playing">Reproduciendo</string>
+
+    <!-- Inicio de sesión -->
+    <string name="login_subtitle">Inicia sesión con los datos que te dio tu proveedor</string>
+    <string name="login_verifying">Verificando tu cuenta…</string>
+    <string name="login_enter">Entrar</string>
+    <string name="login_name">Nombre (opcional)</string>
+    <string name="login_user">Usuario</string>
+    <string name="login_password">Contraseña</string>
+    <string name="login_show_password">Mostrar contraseña</string>
+    <string name="login_hide_password">Ocultar contraseña</string>
+    <string name="login_missing_fields">Escribe tu usuario y tu contraseña.</string>
+    <string name="login_failed">No se pudo iniciar sesión. Inténtalo de nuevo.</string>
+</resources>

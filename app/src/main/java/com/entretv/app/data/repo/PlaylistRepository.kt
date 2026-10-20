@@ -3,8 +3,12 @@ package com.entretv.app.data.repo
 import android.content.Context
 import android.util.Base64
 import android.util.LruCache
+import androidx.annotation.StringRes
 import androidx.room.withTransaction
 import com.entretv.app.BuildConfig
+import com.entretv.app.R
+import com.entretv.app.ui.UiText
+import com.entretv.app.ui.uiText
 import com.entretv.app.data.local.AppDatabase
 import com.entretv.app.data.local.CatalogDao
 import com.entretv.app.data.local.CategoryEntity
@@ -39,6 +43,7 @@ import com.entretv.app.data.remote.asField
 import com.entretv.app.data.remote.asRating
 import com.entretv.app.data.remote.asYear
 import com.entretv.app.data.remote.yearFromName
+import com.entretv.app.data.settings.AccountInfo
 import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
@@ -68,8 +73,10 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import retrofit2.HttpException
 
-/** Error de inicio de sesión con un mensaje listo para mostrar. */
-class AccountException(message: String) : Exception(message)
+/** Error de inicio de sesión con un mensaje listo para mostrar en el idioma de la app. */
+class AccountException(val text: UiText) : Exception() {
+    constructor(@StringRes id: Int, vararg args: Any) : this(UiText.Res(id, args.toList()))
+}
 
 @Singleton
 class PlaylistRepository @Inject constructor(
@@ -138,7 +145,7 @@ class PlaylistRepository @Inject constructor(
         withContext(Dispatchers.IO) {
             runCatching {
                 val root = serverRoot(settings.serverUrl.first())
-                validateAccount(root, username, password)
+                val account = validateAccount(root, username, password)
                 val existing = playlistDao.getAll().firstOrNull {
                     it.type == "XTREAM" && serverRoot(it.url) == root && it.username == username
                 }
@@ -150,6 +157,7 @@ class PlaylistRepository @Inject constructor(
                     )
                 )
                 settings.setLastRefreshAt(id, 0L)
+                settings.setAccountInfo(id, account)
                 id
             }
         }
@@ -158,10 +166,13 @@ class PlaylistRepository @Inject constructor(
     suspend fun updateAccount(id: String, name: String, username: String, password: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val current = playlistDao.get(id) ?: throw AccountException("La cuenta ya no existe.")
+                val current = playlistDao.get(id) ?: throw AccountException(R.string.account_missing)
                 val credentialsChanged = current.username != username || current.password != password
-                if (credentialsChanged && current.type == "XTREAM") validateAccount(serverRoot(current.url), username, password)
+                val account = if (credentialsChanged && current.type == "XTREAM") {
+                    validateAccount(serverRoot(current.url), username, password)
+                } else null
                 playlistDao.upsert(current.copy(name = name.ifBlank { username }, username = username, password = password))
+                if (account != null) settings.setAccountInfo(id, account)
                 if (credentialsChanged) {
                     syncPrefs.edit().apply { syncPrefs.all.keys.filter { it.startsWith("$id:") }.forEach(::remove) }.apply()
                     settings.setLastRefreshAt(id, 0L)
@@ -188,39 +199,61 @@ class PlaylistRepository @Inject constructor(
         }
         syncPrefs.edit().apply { syncPrefs.all.keys.filter { it.startsWith("$id:") }.forEach(::remove) }.apply()
         settings.setLastRefreshAt(id, 0L)
+        settings.setAccountInfo(id, null)
         detailsCache.evictAll()
     }
 
-    private suspend fun validateAccount(root: String, username: String, password: String) {
+    private suspend fun validateAccount(root: String, username: String, password: String): AccountInfo {
         val text = try {
             xtreamApi.loginRaw(apiUrl(root), username, password).string()
         } catch (e: CancellationException) {
             throw e
         } catch (e: HttpException) {
-            throw AccountException(
-                when (e.code()) {
-                    401, 403 -> "Usuario o contraseña incorrectos."
-                    in 500..599 -> "El servidor no está disponible en este momento. Inténtalo más tarde."
-                    else -> "El servidor respondió con un error (${e.code()}). Inténtalo más tarde."
-                }
-            )
+            throw when (e.code()) {
+                401, 403 -> AccountException(R.string.account_wrong_credentials)
+                in 500..599 -> AccountException(R.string.account_server_down)
+                else -> AccountException(R.string.account_server_error, e.code())
+            }
         } catch (e: IOException) {
-            throw AccountException("No hay conexión con el servidor. Revisa tu internet e inténtalo de nuevo.")
+            throw AccountException(R.string.account_no_connection)
         }
         val info = runCatching { json.decodeFromString(XtreamLogin.serializer(), text).userInfo }.getOrNull()
-            ?: throw AccountException("Usuario o contraseña incorrectos.")
+            ?: throw AccountException(R.string.account_wrong_credentials)
         val auth = (info.auth as? JsonPrimitive)?.let { it.booleanOrNull ?: (it.contentOrNull?.trim() == "1") } ?: true
-        if (!auth) throw AccountException("Usuario o contraseña incorrectos.")
-        val expires = info.expDate.asEpochSeconds()
-        val status = info.status.trim()
+        if (!auth) throw AccountException(R.string.account_wrong_credentials)
+        val account = info.toAccountInfo()
+        val expires = account.expiresAt
+        val status = account.status
         when {
             status.equals("Expired", true) || (expires > 0 && expires * 1000 < System.currentTimeMillis()) ->
-                throw AccountException("Tu cuenta venció. Comunícate con tu proveedor para renovarla.")
-            status.equals("Banned", true) -> throw AccountException("Tu cuenta está suspendida. Comunícate con tu proveedor.")
-            status.equals("Disabled", true) -> throw AccountException("Tu cuenta está desactivada. Comunícate con tu proveedor.")
+                throw AccountException(R.string.account_expired)
+            status.equals("Banned", true) -> throw AccountException(R.string.account_banned)
+            status.equals("Disabled", true) -> throw AccountException(R.string.account_disabled)
             status.isNotEmpty() && !status.equals("Active", true) ->
-                throw AccountException("Tu cuenta no está activa ($status). Comunícate con tu proveedor.")
+                throw AccountException(R.string.account_inactive, status)
         }
+        return account
+    }
+
+    private fun XtreamLogin.UserInfo.toAccountInfo() = AccountInfo(
+        status = status.trim(),
+        expiresAt = expDate.asEpochSeconds(),
+        maxConnections = maxConnections.asField().toIntOrNull() ?: 0,
+        isTrial = (isTrial as? JsonPrimitive)?.let { it.booleanOrNull ?: (it.contentOrNull?.trim() == "1") } ?: false,
+        checkedAt = System.currentTimeMillis()
+    )
+
+    /** Estado y vencimiento de la cuenta guardados en la última consulta. */
+    fun accountInfo(playlistId: String): Flow<AccountInfo?> = settings.accountInfo(playlistId)
+
+    /** Vuelve a pedir los datos de la cuenta sin cortar la actualización si el servidor falla. */
+    private suspend fun refreshAccountInfo(p: PlaylistEntity) {
+        if (p.type != "XTREAM") return
+        val info = runCatching {
+            val text = xtreamApi.loginRaw(apiUrl(serverRoot(p.url)), p.username, p.password).string()
+            json.decodeFromString(XtreamLogin.serializer(), text).userInfo
+        }.getOrNull() ?: return
+        settings.setAccountInfo(p.id, info.toAccountInfo())
     }
 
     /**
@@ -259,7 +292,7 @@ class PlaylistRepository @Inject constructor(
      *
      * @return secciones que no se pudieron actualizar, con el motivo.
      */
-    suspend fun refreshAll(force: Boolean = false): Result<List<String>> = withContext(Dispatchers.IO) {
+    suspend fun refreshAll(force: Boolean = false): Result<List<UiText>> = withContext(Dispatchers.IO) {
         runCatching {
             refreshLock.withLock {
                 playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force) }
@@ -267,7 +300,7 @@ class PlaylistRepository @Inject constructor(
         }
     }
 
-    suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<String>> = withContext(Dispatchers.IO) {
+    suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<UiText>> = withContext(Dispatchers.IO) {
         runCatching {
             refreshLock.withLock {
                 val p = playlistDao.get(playlistId) ?: error("Playlist no encontrada")
@@ -279,18 +312,21 @@ class PlaylistRepository @Inject constructor(
     /** True si la lista nunca se descargó completa (primer inicio de sesión). */
     suspend fun needsFirstSync(playlistId: String): Boolean = settings.lastRefreshAt(playlistId) == 0L
 
-    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean): List<String> {
+    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean): List<UiText> {
         val last = settings.lastRefreshAt(p.id)
         if (!force && System.currentTimeMillis() - last < REFRESH_INTERVAL_MS) return emptyList()
-        val failed = refreshPlaylistInternal(p, force)
+        val failed = coroutineScope {
+            val account = async { refreshAccountInfo(p) }
+            refreshPlaylistInternal(p, force).also { account.await() }
+        }
         if (failed.size < 3) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
         return failed
     }
 
-    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<String> = coroutineScope {
+    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<UiText> = coroutineScope {
         when (p.type) {
             "M3U" -> listOfNotNull(
-                runSection("Canales") {
+                runSection(R.string.home_refresh_channels) {
                     val body = withRetry { xtreamApi.fetchText(p.url).string() }
                     if (!force && unchanged(p.id, "m3u", body, "") && channelDao.count(p.id) > 0) return@runSection
                     val channels = M3uParser.parse(p.id, body)
@@ -305,9 +341,9 @@ class PlaylistRepository @Inject constructor(
                 }
             )
             else -> {
-                val live = async { runSection("Canales") { syncLive(p, force) } }
-                val movies = async { runSection("Películas") { syncMovies(p, force) } }
-                val series = async { runSection("Series") { syncSeries(p, force) } }
+                val live = async { runSection(R.string.home_refresh_channels) { syncLive(p, force) } }
+                val movies = async { runSection(R.string.section_movies) { syncMovies(p, force) } }
+                val series = async { runSection(R.string.section_series) { syncSeries(p, force) } }
                 listOfNotNull(live.await(), movies.await(), series.await())
             }
         }
@@ -490,24 +526,24 @@ class PlaylistRepository @Inject constructor(
     private fun Throwable.isRetryable(): Boolean =
         this is IOException || this is SerializationException || (this is HttpException && code() >= 500)
 
-    private suspend fun runSection(label: String, block: suspend () -> Unit): String? =
+    private suspend fun runSection(@StringRes label: Int, block: suspend () -> Unit): UiText? =
         try {
             block()
             null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            "$label (${e.friendlyReason()})"
+            uiText(R.string.home_refresh_section_failed, uiText(label), e.friendlyReason())
         }
 
-    private fun Throwable.friendlyReason(): String = when (this) {
-        is SerializationException -> "el servidor cortó la respuesta"
-        is SocketTimeoutException -> "el servidor tardó demasiado"
-        is HttpException -> "error ${code()} del servidor"
+    private fun Throwable.friendlyReason(): UiText = when (this) {
+        is SerializationException -> uiText(R.string.home_refresh_reason_cut)
+        is SocketTimeoutException -> uiText(R.string.home_refresh_reason_timeout)
+        is HttpException -> uiText(R.string.home_refresh_reason_http, code())
         is IOException ->
-            if (message.orEmpty().contains("unexpected end", ignoreCase = true)) "el servidor cortó la respuesta"
-            else "sin conexión con el servidor"
-        else -> message ?: "error desconocido"
+            if (message.orEmpty().contains("unexpected end", ignoreCase = true)) uiText(R.string.home_refresh_reason_cut)
+            else uiText(R.string.home_refresh_reason_offline)
+        else -> message?.let { UiText.Raw(it) } ?: uiText(R.string.home_refresh_reason_unknown)
     }
 
     // ============================ Organización ============================

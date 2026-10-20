@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Filas especiales del catálogo -->
+    <string name="home_my_list">Mi lista</string>
+    <string name="home_all">Todas</string>
+    <string name="home_row_recent">Recién agregados</string>
+    <string name="home_row_top_rated">Mejor valorados</string>
+    <string name="home_continue_watching">Seguir viendo</string>
+    <string name="home_see_all">Ver todo</string>
+    <string name="home_top10_today">Top 10 de hoy en %1$s</string>
+    <string name="home_top10_catalog">Top 10 de %1$s en tu catálogo</string>
+
+    <!-- Resumen (celular) -->
+    <string name="home_summary_new_movies">Películas recién agregadas</string>
+    <string name="home_summary_new_series">Series recién agregadas</string>
+    <string name="home_summary_events">En vivo: Eventos de hoy</string>
+    <string name="home_summary_empty">Todavía no hay novedades. Elige En vivo, Películas o Series abajo.</string>
+
+    <!-- Búsqueda -->
+    <string name="home_search">Buscar</string>
+    <string name="home_search_close">Cerrar búsqueda</string>
+    <string name="home_search_placeholder">Buscar películas, series y canales…</string>
+    <string name="home_search_clear">Borrar</string>
+    <string name="home_search_movies_count">Películas (%1$d)</string>
+    <string name="home_search_series_count">Series (%1$d)</string>
+    <string name="home_search_channels_count">Canales en vivo (%1$d)</string>
+    <string name="home_search_movies_for">Películas para “%1$s”</string>
+    <string name="home_search_series_for">Series para “%1$s”</string>
+    <string name="home_search_channels_for">Canales para “%1$s”</string>
+    <string name="home_search_empty">No encontramos nada con “%1$s”</string>
+
+    <!-- Cuadrícula "Ver todo" -->
+    <string name="home_my_list_in_section">Mi lista · %1$s</string>
+    <string name="home_all_in_section">Todas · %1$s</string>
+    <string name="home_my_list_empty">Tu lista está vacía. Mantén presionado un póster o usa “Mi lista” en la ficha para guardarlo aquí.</string>
+    <string name="home_category_empty">Esta categoría está vacía</string>
+    <string name="home_section_empty">Todavía no hay contenido en %1$s</string>
+    <string name="home_back_to_all">Volver a todas</string>
+    <plurals name="home_titles_count">
+        <item quantity="one">%1$d título</item>
+        <item quantity="other">%1$d títulos</item>
+    </plurals>
+
+    <!-- Preparando el catálogo -->
+    <string name="home_preparing_title">Preparando tu catálogo…</string>
+    <string name="home_preparing_message">La primera vez tarda un poco. Después se abre al instante.</string>
+
+    <!-- Cabecera -->
+    <string name="home_home">Inicio</string>
+    <string name="home_refresh">Actualizar</string>
+    <string name="home_more_options">Más opciones</string>
+    <string name="home_downloads">Descargas</string>
+    <string name="home_settings">Configuración</string>
+    <string name="home_clear_image_cache">Borrar caché de imágenes y miniaturas</string>
+    <string name="home_reset_all_menu">Borrar todo el progreso (series y películas)</string>
+    <string name="home_images_cleared">Caché de imágenes borrado</string>
+
+    <!-- Seguir viendo -->
+    <string name="home_resume">Continuar</string>
+    <string name="home_remove">Quitar</string>
+    <string name="home_percent">%1$d %%</string>
+    <plurals name="home_remaining_minutes">
+        <item quantity="one">queda %1$d min</item>
+        <item quantity="other">quedan %1$d min</item>
+    </plurals>
+    <string name="home_remaining_hours">quedan %1$d h %2$d min</string>
+    <string name="home_continue_next">Siguiente: %1$s</string>
+    <string name="home_continue_next_episode">Siguiente episodio</string>
+
+    <!-- Menú del póster -->
+    <string name="home_action_play">Reproducir</string>
+    <string name="home_action_details">Ver ficha</string>
+    <string name="home_action_add_my_list">Agregar a Mi lista</string>
+    <string name="home_action_remove_my_list">Quitar de Mi lista</string>
+    <string name="home_action_mark_watched">Marcar como vista</string>
+    <string name="home_action_remove_continue">Quitar de Seguir viendo</string>
+    <string name="home_action_restart_series">Reiniciar serie</string>
+    <string name="home_action_restart_progress">Reiniciar progreso</string>
+    <string name="home_action_hide_channel">Ocultar canal</string>
+    <string name="home_action_hide_title">Ocultar título</string>
+    <string name="home_kind_movie">Película</string>
+    <string name="home_kind_series">Serie</string>
+    <string name="home_kind_live_channel">Canal en vivo</string>
+
+    <!-- Menú de la categoría -->
+    <string name="home_category_open">Ver categoría</string>
+    <string name="home_move_up">Subir</string>
+    <string name="home_move_down">Bajar</string>
+    <string name="home_category_hide">Ocultar categoría</string>
+    <string name="home_mark_adult">Marcar como adultos</string>
+    <string name="home_unmark_adult">Quitar marca de adultos</string>
+    <string name="home_organize_categories">Organizar categorías…</string>
+    <string name="home_adult_tag">Adultos</string>
+
+    <!-- Diálogos -->
+    <string name="home_cancel">Cancelar</string>
+    <string name="home_logout">Cerrar sesión</string>
+    <string name="home_logout_message">Se borrarán de este equipo el catálogo guardado, tu progreso y Mi lista de esta cuenta. Las descargas terminadas se conservan y puedes verlas desde Descargas.</string>
+    <string name="home_mark_adult_message_pin">“%1$s” se tratará como contenido para adultos: quedará oculta hasta que ingreses el PIN. Para quitar la marca después se pedirá el PIN.</string>
+    <string name="home_mark_adult_message_no_pin">“%1$s” se tratará como contenido para adultos: crea un PIN en Configuración para bloquearla. Para quitar la marca después se pedirá el PIN.</string>
+    <string name="home_mark_adult_confirm">Marcar</string>
+    <string name="home_reset_all_title">Borrar todo el progreso</string>
+    <string name="home_reset_all_message">Todas las series volverán al episodio 1 y las películas al minuto 0. Esta acción no se puede deshacer.</string>
+    <string name="home_reset_all_confirm">Borrar</string>
+
+    <!-- PIN -->
+    <string name="home_pin_enter">Ingresa el PIN</string>
+    <string name="home_pin_new">Nuevo PIN</string>
+    <string name="home_pin_repeat">Repite el PIN</string>
+    <string name="home_pin_current">PIN actual</string>
+    <string name="home_pin_unlock_message">Contenido para adultos. Queda desbloqueado hasta cerrar la app.</string>
+    <string name="home_pin_guard_unhide">Para mostrar “%1$s” (adultos) ingresa el PIN.</string>
+    <string name="home_pin_guard_unmark">Para quitar la marca de adultos de “%1$s” ingresa el PIN.</string>
+    <string name="home_pin_guard_create">Para quitar la marca de adultos primero crea un PIN de 4 dígitos. Lo usarás para el contenido para adultos.</string>
+    <string name="home_pin_create_message">Elige 4 dígitos para bloquear las categorías de adultos.</string>
+    <string name="home_pin_confirm_message">Ingrésalo otra vez para confirmar.</string>
+    <string name="home_pin_verify_change">Ingresa el PIN actual para cambiarlo.</string>
+    <string name="home_pin_verify_remove">Ingresa el PIN actual para quitarlo.</string>
+    <string name="home_pin_wrong">PIN incorrecto</string>
+    <string name="home_pin_mismatch">Los PIN no coinciden, inténtalo de nuevo</string>
+
+    <!-- Avisos -->
+    <string name="home_category_hidden">Categoría “%1$s” oculta. Puedes volver a mostrarla desde Organizar categorías.</string>
+    <string name="home_marked_adult_no_pin">Marcada como adultos. Crea un PIN en Configuración para bloquearla.</string>
+    <string name="home_marked_adult">“%1$s” marcada como adultos: queda bloqueada con el PIN.</string>
+    <string name="home_unmarked_adult">“%1$s” ya no está marcada como adultos.</string>
+    <string name="home_item_hidden">“%1$s” oculto. Puedes volver a mostrarlo desde Configuración.</string>
+    <string name="home_adult_locked">Contenido para adultos bloqueado</string>
+    <string name="home_pin_saved">PIN guardado. Las categorías de adultos quedan bloqueadas.</string>
+    <string name="home_pin_removed">PIN quitado</string>
+    <string name="home_added_my_list">“%1$s” agregado a Mi lista</string>
+    <string name="home_removed_my_list">“%1$s” quitado de Mi lista</string>
+    <string name="home_no_episodes">“%1$s” todavía no tiene episodios disponibles</string>
+    <string name="home_marked_watched">“%1$s” marcada como vista</string>
+    <string name="home_removed_continue">“%1$s” quitado de Seguir viendo</string>
+    <string name="home_progress_reset">“%1$s” volverá a empezar desde el principio</string>
+    <string name="home_series_reset">Serie reiniciada: “%1$s” volverá al episodio 1</string>
+    <string name="home_all_progress_reset">Todo el progreso fue borrado</string>
+
+    <!-- Cuenta -->
+    <string name="home_account_missing_fields">Escribe tu usuario y tu contraseña.</string>
+    <string name="home_account_save_failed">No se pudo guardar. Inténtalo de nuevo.</string>
+    <string name="home_account_updated">Cuenta actualizada</string>
+
+    <!-- Actualización del catálogo -->
+    <string name="home_refresh_failed">No se pudo actualizar: %1$s. Se muestra lo guardado.</string>
+    <string name="home_refresh_failed_offline">No se pudo actualizar el catálogo. Revisa tu conexión.</string>
+    <string name="home_refresh_channels">Canales</string>
+    <string name="home_refresh_section_failed" translatable="false">%1$s (%2$s)</string>
+    <string name="home_refresh_list_join" translatable="false">%1$s, %2$s</string>
+    <string name="home_refresh_reason_cut">el servidor cortó la respuesta</string>
+    <string name="home_refresh_reason_timeout">el servidor tardó demasiado</string>
+    <string name="home_refresh_reason_http">error %1$d del servidor</string>
+    <string name="home_refresh_reason_offline">sin conexión con el servidor</string>
+    <string name="home_refresh_reason_unknown">error desconocido</string>
+</resources>

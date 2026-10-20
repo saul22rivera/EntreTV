@@ -67,12 +67,17 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.entretv.app.R
+import com.entretv.app.data.download.episodeSubtitle
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
 import com.entretv.app.ui.theme.EntreBrand
@@ -98,6 +103,7 @@ fun DownloadsScreen(
     var selected by rememberSaveable { mutableStateOf(setOf<String>()) }
     val firstFocus = remember { FocusRequester() }
     val backFocus = remember { FocusRequester() }
+    val notReady = stringResource(R.string.download_not_ready)
 
     val sorted = remember(items) {
         items.orEmpty().sortedWith(compareBy<DownloadEntity> { it.isDone }.thenByDescending { it.addedAt })
@@ -143,18 +149,19 @@ fun DownloadsScreen(
                 modifier = Modifier.padding(start = profile.edge / 2, end = profile.edge, top = 8.dp, bottom = 4.dp)
             ) {
                 IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.details_back), tint = Color.White)
                 }
                 Spacer(Modifier.width(4.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (selecting) "${chosen.size} seleccionada${if (chosen.size == 1) "" else "s"}" else "Descargas",
+                        if (selecting) pluralStringResource(R.plurals.download_selected_count, chosen.size, chosen.size)
+                        else stringResource(R.string.download_title),
                         style = if (profile.isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    if (storage.isNotEmpty() && sorted.isNotEmpty()) {
-                        Text(storage, style = MaterialTheme.typography.labelMedium, color = EntreBrand.TextDim)
+                    storage?.takeIf { sorted.isNotEmpty() }?.let {
+                        Text(it.asString(), style = MaterialTheme.typography.labelMedium, color = EntreBrand.TextDim)
                     }
                 }
             }
@@ -168,14 +175,14 @@ fun DownloadsScreen(
                     if (selecting) {
                         val all = chosen.size == keys.size
                         EntreButton(
-                            text = if (all) "Quitar selección" else "Seleccionar todo",
+                            text = stringResource(if (all) R.string.download_deselect_all else R.string.download_select_all),
                             icon = if (all) Icons.Default.Deselect else Icons.Default.SelectAll,
                             compact = true,
                             onClick = { selected = if (all) emptySet() else keys }
                         )
                         if (chosen.isNotEmpty()) {
                             EntreButton(
-                                text = "Borrar (${chosen.size})",
+                                text = stringResource(R.string.download_delete_count, chosen.size),
                                 icon = Icons.Default.Delete,
                                 primary = true,
                                 compact = true,
@@ -183,7 +190,7 @@ fun DownloadsScreen(
                             )
                         }
                         EntreButton(
-                            text = "Listo",
+                            text = stringResource(R.string.download_done_selecting),
                             icon = Icons.Default.Close,
                             compact = true,
                             onClick = {
@@ -193,13 +200,13 @@ fun DownloadsScreen(
                         )
                     } else {
                         EntreButton(
-                            text = "Seleccionar",
+                            text = stringResource(R.string.download_select),
                             icon = Icons.Default.Checklist,
                             compact = true,
                             onClick = { selecting = true }
                         )
                         EntreButton(
-                            text = "Borrar todo",
+                            text = stringResource(R.string.download_delete_all),
                             icon = Icons.Default.DeleteSweep,
                             compact = true,
                             onClick = { confirmAll = true }
@@ -208,7 +215,7 @@ fun DownloadsScreen(
                 }
                 if (!profile.isTv && !selecting) {
                     Text(
-                        "Mantén presionada una descarga para seleccionar varias.",
+                        stringResource(R.string.download_long_press_hint),
                         style = MaterialTheme.typography.labelMedium,
                         color = EntreBrand.TextDim,
                         modifier = Modifier.padding(horizontal = profile.edge)
@@ -225,7 +232,7 @@ fun DownloadsScreen(
                         Icon(Icons.Default.Download, contentDescription = null, tint = EntreBrand.TextDim, modifier = Modifier.size(48.dp))
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "Todavía no descargaste nada.\nAbre una película o una serie y elige “Descargar” para verla sin conexión.",
+                            stringResource(R.string.download_empty),
                             color = EntreBrand.TextDim,
                             textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyLarge
@@ -247,7 +254,7 @@ fun DownloadsScreen(
                                     selecting -> toggle(download.contentKey)
                                     download.isDone -> onPlay(download)
                                     download.status == DownloadStatus.FAILED -> viewModel.resume(download.contentKey)
-                                    else -> scope.launch { snackbar.showSnackbar("Disponible cuando termine de descargarse") }
+                                    else -> scope.launch { snackbar.showSnackbar(notReady) }
                                 }
                             },
                             onLongClick = {
@@ -270,30 +277,32 @@ fun DownloadsScreen(
 
     if (confirmMany) {
         val count = chosen.size
+        val deletedMessage = pluralStringResource(R.plurals.download_deleted_many, count, count)
         ConfirmActionDialog(
-            title = "¿Borrar $count descarga${if (count == 1) "" else "s"}?",
-            text = "Dejarán de estar disponibles sin conexión. Lo que se esté descargando se cancela.",
-            confirmLabel = "Borrar",
+            title = pluralStringResource(R.plurals.download_delete_many_title, count, count),
+            text = pluralStringResource(R.plurals.download_delete_many_text, count),
+            confirmLabel = stringResource(R.string.download_delete),
             onConfirm = {
                 viewModel.deleteMany(chosen)
                 confirmMany = false
                 selecting = false
                 selected = emptySet()
-                scope.launch { snackbar.showSnackbar(if (count == 1) "Se borró 1 descarga" else "Se borraron $count descargas") }
+                scope.launch { snackbar.showSnackbar(deletedMessage) }
             },
             onDismiss = { confirmMany = false }
         )
     }
 
     if (confirmAll) {
+        val allDeletedMessage = stringResource(R.string.download_all_deleted)
         ConfirmActionDialog(
-            title = "¿Borrar todas las descargas?",
-            text = "Se borrarán las ${sorted.size} descargas, incluidas las que están en curso. Esto libera el espacio que ocupan.",
-            confirmLabel = "Borrar todo",
+            title = stringResource(R.string.download_delete_all_title),
+            text = pluralStringResource(R.plurals.download_delete_all_text, sorted.size, sorted.size),
+            confirmLabel = stringResource(R.string.download_delete_all),
             onConfirm = {
                 viewModel.deleteAll()
                 confirmAll = false
-                scope.launch { snackbar.showSnackbar("Se borraron todas las descargas") }
+                scope.launch { snackbar.showSnackbar(allDeletedMessage) }
             },
             onDismiss = { confirmAll = false }
         )
@@ -355,7 +364,7 @@ private fun DownloadRow(
             if (selection != null) {
                 Icon(
                     if (selection) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                    contentDescription = if (selection) "Seleccionada" else "Sin seleccionar",
+                    contentDescription = stringResource(if (selection) R.string.download_selected else R.string.download_not_selected),
                     tint = if (selection) EntreBrand.Accent else EntreBrand.TextDim,
                     modifier = Modifier.padding(start = 4.dp, end = 10.dp).size(26.dp)
                 )
@@ -397,7 +406,7 @@ private fun DownloadRow(
                 )
                 if (download.kind == "EPISODE") {
                     Text(
-                        download.subtitle,
+                        download.episodeSubtitle(LocalContext.current),
                         style = MaterialTheme.typography.bodySmall,
                         color = EntreBrand.Text,
                         maxLines = 1,
@@ -443,7 +452,7 @@ private fun DownloadRow(
             )
             if (!download.isDone) {
                 IconButton(onClick = { onDelete(download) }) {
-                    Icon(Icons.Default.Close, contentDescription = "Cancelar descarga", tint = EntreBrand.TextDim)
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.download_cancel_download), tint = EntreBrand.TextDim)
                 }
             }
         }

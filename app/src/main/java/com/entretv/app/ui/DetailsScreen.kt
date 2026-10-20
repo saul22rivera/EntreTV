@@ -69,7 +69,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringArrayResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -83,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.entretv.app.R
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
 import com.entretv.app.data.local.EpisodeEntity
@@ -129,7 +134,7 @@ fun DetailsScreen(
 
     LaunchedEffect(notice) {
         notice?.let {
-            snackbar.showSnackbar(it)
+            snackbar.showSnackbar(it.resolve(context))
             viewModel.consumeNotice()
         }
     }
@@ -188,7 +193,7 @@ fun DetailsScreen(
                             if (viewModel.isSeries) {
                                 val target = resumeTarget
                                 EntreButton(
-                                    text = target?.label ?: "Cargando episodios…",
+                                    text = target?.label?.asString() ?: stringResource(R.string.details_loading_episodes),
                                     icon = Icons.Default.PlayArrow,
                                     primary = true,
                                     onClick = { target?.let { onPlayEpisode(it.episode.id) } },
@@ -199,7 +204,7 @@ fun DetailsScreen(
                             } else {
                                 val resumable = movieProgress.isResumable()
                                 EntreButton(
-                                    text = if (resumable) "Continuar" else "Reproducir",
+                                    text = stringResource(if (resumable) R.string.details_resume else R.string.details_play),
                                     icon = Icons.Default.PlayArrow,
                                     primary = true,
                                     onClick = { movie?.let { onPlayMovie(it.id) } },
@@ -209,7 +214,7 @@ fun DetailsScreen(
                                 )
                                 if (resumable) {
                                     EntreButton(
-                                        text = "Desde el inicio",
+                                        text = stringResource(R.string.details_play_from_start),
                                         icon = Icons.Default.Replay,
                                         onClick = {
                                             movie?.let { m -> viewModel.playFromStart(m.id) { onPlayMovie(m.id) } }
@@ -218,7 +223,7 @@ fun DetailsScreen(
                                 }
                             }
                             EntreButton(
-                                text = if (isFavorite) "En Mi lista" else "Mi lista",
+                                text = stringResource(if (isFavorite) R.string.details_in_my_list else R.string.details_my_list),
                                 icon = if (isFavorite) Icons.Default.Check else Icons.Default.Add,
                                 onClick = viewModel::toggleFavorite
                             )
@@ -232,8 +237,9 @@ fun DetailsScreen(
                                 )
                             }
                             details?.trailerUrl?.takeIf { it.isNotEmpty() }?.let { url ->
+                                val noTrailerApp = stringResource(R.string.details_trailer_no_app)
                                 EntreButton(
-                                    text = "Tráiler",
+                                    text = stringResource(R.string.details_trailer),
                                     icon = Icons.Default.Slideshow,
                                     onClick = {
                                         runCatching {
@@ -242,7 +248,7 @@ fun DetailsScreen(
                                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                             )
                                         }.onFailure {
-                                            scope.launch { snackbar.showSnackbar("No hay una app para abrir el tráiler") }
+                                            scope.launch { snackbar.showSnackbar(noTrailerApp) }
                                         }
                                     }
                                 )
@@ -261,7 +267,9 @@ fun DetailsScreen(
                         } else {
                             val p = movieProgress
                             progressFraction = if (p.isResumable()) p!!.positionMs.toFloat() / p.durationMs else null
-                            remainingLabel = if (p.isResumable()) "Quedan ${(p!!.durationMs - p.positionMs) / 60_000} min" else null
+                            remainingLabel = if (p.isResumable()) {
+                                stringResource(R.string.details_time_left, ((p!!.durationMs - p.positionMs) / 60_000).toInt())
+                            } else null
                         }
                         if (progressFraction != null) {
                             Spacer(Modifier.height(12.dp))
@@ -301,23 +309,23 @@ fun DetailsScreen(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.clickable { plotExpanded = !plotExpanded }
                             )
-                            loading -> Text("Cargando sinopsis…", color = EntreBrand.TextDim, style = plotStyle)
-                            else -> Text("Sin sinopsis disponible.", color = EntreBrand.TextDim, style = plotStyle)
+                            loading -> Text(stringResource(R.string.details_loading_plot), color = EntreBrand.TextDim, style = plotStyle)
+                            else -> Text(stringResource(R.string.details_no_plot), color = EntreBrand.TextDim, style = plotStyle)
                         }
                         val creditStyle = if (profile.isTv) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
                         if (details?.castMembers.isNullOrEmpty()) {
                             details?.cast?.takeIf { it.isNotEmpty() }?.let {
                                 Spacer(Modifier.height(12.dp))
-                                CreditLine("Reparto", it, creditStyle)
+                                CreditLine(stringResource(R.string.details_cast), it, creditStyle)
                             }
                         }
                         details?.director?.takeIf { it.isNotEmpty() }?.let {
                             Spacer(Modifier.height(6.dp))
-                            CreditLine("Dirección", it, creditStyle)
+                            CreditLine(stringResource(R.string.details_director), it, creditStyle)
                         }
                         details?.creators?.takeIf { it.isNotEmpty() }?.let {
                             Spacer(Modifier.height(6.dp))
-                            CreditLine("Creada por", it, creditStyle)
+                            CreditLine(stringResource(R.string.details_created_by), it, creditStyle)
                         }
                         // Series: las descargas van entre la sinopsis y la lista de episodios.
                         if (viewModel.isSeries && season != null && seasonEpisodes.isNotEmpty()) {
@@ -327,14 +335,14 @@ fun DetailsScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 EntreButton(
-                                    text = "Descargar temporada $season",
+                                    text = stringResource(R.string.details_download_season, season),
                                     icon = Icons.Default.Download,
                                     compact = true,
                                     onClick = { viewModel.downloadSeason(season) }
                                 )
                                 if (pendingDownloads > 0) {
                                     EntreButton(
-                                        text = "Detener descargas ($pendingDownloads)",
+                                        text = stringResource(R.string.details_stop_downloads_count, pendingDownloads),
                                         icon = Icons.Default.StopCircle,
                                         compact = true,
                                         onClick = { confirmStop = true }
@@ -362,7 +370,7 @@ fun DetailsScreen(
                     item(key = "seasons") {
                         Column(Modifier.padding(top = 24.dp)) {
                             Text(
-                                "Episodios",
+                                stringResource(R.string.details_episodes),
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = profile.edge)
@@ -374,7 +382,7 @@ fun DetailsScreen(
                                 ) {
                                     items(seasons, key = { it }) { s ->
                                         EntreButton(
-                                            text = "Temporada $s",
+                                            text = stringResource(R.string.details_season, s),
                                             icon = null,
                                             primary = s == season,
                                             compact = true,
@@ -391,7 +399,7 @@ fun DetailsScreen(
                         item(key = "episodes-loading") {
                             Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                                 if (loading) CircularProgressIndicator(color = EntreBrand.Accent)
-                                else Text("No se encontraron episodios.", color = EntreBrand.TextDim)
+                                else Text(stringResource(R.string.details_no_episodes), color = EntreBrand.TextDim)
                             }
                         }
                     }
@@ -421,7 +429,7 @@ fun DetailsScreen(
                                 onClick = viewModel::resetSeries,
                                 modifier = Modifier.padding(horizontal = profile.edge - 8.dp, vertical = 8.dp)
                             ) {
-                                Text("Reiniciar serie (volver al episodio 1)", color = MaterialTheme.colorScheme.error)
+                                Text(stringResource(R.string.details_reset_series), color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -436,7 +444,7 @@ fun DetailsScreen(
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.45f))
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Color.White)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.details_back), tint = Color.White)
             }
         }
     }
@@ -454,11 +462,10 @@ fun DetailsScreen(
 
     if (confirmStop) {
         ConfirmActionDialog(
-            title = "¿Detener las descargas?",
-            text = "Se cancelarán $pendingDownloads episodios de “$title” que están en cola, descargándose o en pausa. " +
-                "Los episodios ya descargados se conservan.",
-            confirmLabel = "Detener descargas",
-            dismissLabel = "Seguir descargando",
+            title = stringResource(R.string.details_stop_downloads_title),
+            text = pluralStringResource(R.plurals.details_stop_downloads_text, pendingDownloads, pendingDownloads, title),
+            confirmLabel = stringResource(R.string.details_stop_downloads),
+            dismissLabel = stringResource(R.string.download_keep_downloading),
             onConfirm = {
                 confirmStop = false
                 viewModel.stopSeriesDownloads()
@@ -476,38 +483,81 @@ private fun ContentDetails.hasExtraInfo(): Boolean =
 private fun money(value: Long): String =
     "US$ " + NumberFormat.getIntegerInstance(Locale("es", "MX")).format(value)
 
+@Composable
 private fun releaseLabel(raw: String): String {
     val parts = raw.take(10).split('-')
     if (parts.size != 3) return raw
-    val months = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+    val months = stringArrayResource(R.array.details_months_short)
     val month = parts[1].toIntOrNull()?.let { months.getOrNull(it - 1) } ?: return raw
-    return "${parts[2].trimStart('0')} $month ${parts[0]}"
+    return stringResource(R.string.details_date, parts[2].trimStart('0'), month, parts[0])
+}
+
+/** El estado se guarda en la ficha ya traducido al español (MetadataRepository.status). */
+private val statusLabels = mapOf(
+    "En emisión" to R.string.meta_status_returning,
+    "Finalizada" to R.string.meta_status_ended,
+    "Cancelada" to R.string.meta_status_canceled,
+    "En producción" to R.string.meta_status_in_production,
+    "Anunciada" to R.string.meta_status_planned,
+    "Piloto" to R.string.meta_status_pilot,
+    "Estrenada" to R.string.meta_status_released,
+    "Posproducción" to R.string.meta_status_post_production,
+    "Rumor" to R.string.meta_status_rumored
+)
+
+@Composable
+private fun contentStatusLabel(status: String): String = statusLabels[status]?.let { stringResource(it) } ?: status
+
+/** El idioma original se guarda con su nombre en español (MetadataRepository.languageName). */
+@Composable
+private fun originalLanguageLabel(stored: String): String {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(stored, locale) {
+        if (locale.language == "es") return@remember stored
+        val spanish = Locale("es", "MX")
+        Locale.getISOLanguages()
+            .firstOrNull { Locale(it).getDisplayLanguage(spanish).equals(stored, ignoreCase = true) }
+            ?.let { code -> Locale(code).getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) } }
+            ?: stored
+    }
 }
 
 /** Ficha técnica (TMDB y servidor). Enfocable para que en TV el D-pad pueda pasar por ella. */
 @Composable
 private fun InfoCard(d: ContentDetails, isSeries: Boolean, profile: DeviceProfile, modifier: Modifier) {
     val rows = buildList {
-        if (d.releaseDate.isNotEmpty()) add((if (isSeries) "Estreno" else "Fecha de estreno") to releaseLabel(d.releaseDate))
-        else if (d.year.isNotEmpty()) add("Año" to d.year)
-        if (d.durationLabel.isNotEmpty()) add((if (isSeries) "Duración por episodio" else "Duración") to d.durationLabel)
-        if (d.genre.isNotEmpty()) add("Géneros" to d.genre)
-        if (d.rating.isNotEmpty()) {
-            add("Puntuación" to ("★ ${d.rating}" + if (d.voteCount > 0) " (${NumberFormat.getIntegerInstance(Locale("es", "MX")).format(d.voteCount)} votos)" else ""))
+        if (d.releaseDate.isNotEmpty()) {
+            add(stringResource(if (isSeries) R.string.details_premiere else R.string.details_release_date) to releaseLabel(d.releaseDate))
+        } else if (d.year.isNotEmpty()) add(stringResource(R.string.details_year) to d.year)
+        if (d.durationLabel.isNotEmpty()) {
+            add(stringResource(if (isSeries) R.string.details_episode_duration else R.string.details_duration) to d.durationLabel)
         }
-        if (d.certification.isNotEmpty()) add("Clasificación" to d.certification)
+        if (d.genre.isNotEmpty()) add(stringResource(R.string.details_genres) to d.genre)
+        if (d.rating.isNotEmpty()) {
+            val votes = NumberFormat.getIntegerInstance(Locale("es", "MX")).format(d.voteCount)
+            add(
+                stringResource(R.string.details_rating) to
+                    if (d.voteCount > 0) pluralStringResource(R.plurals.details_rating_votes, d.voteCount, d.rating, votes)
+                    else "★ ${d.rating}"
+            )
+        }
+        if (d.certification.isNotEmpty()) add(stringResource(R.string.details_certification) to d.certification)
         if (isSeries) {
-            if (d.seasons > 0) add("Temporadas" to d.seasons.toString())
-            if (d.episodes > 0) add("Episodios" to d.episodes.toString())
-            if (d.networks.isNotEmpty()) add("Cadena" to d.networks)
-            if (d.status.isNotEmpty()) add("Estado" to d.status)
-        } else if (d.status.isNotEmpty() && d.status != "Estrenada") add("Estado" to d.status)
-        if (d.originalTitle.isNotEmpty()) add("Título original" to d.originalTitle)
-        if (d.originalLanguage.isNotEmpty()) add("Idioma original" to d.originalLanguage)
-        if (d.countries.isNotEmpty()) add("País" to d.countries)
-        if (d.companies.isNotEmpty()) add("Producción" to d.companies)
-        if (d.budget > 0) add("Presupuesto" to money(d.budget))
-        if (d.revenue > 0) add("Recaudación" to money(d.revenue))
+            if (d.seasons > 0) add(stringResource(R.string.details_seasons) to d.seasons.toString())
+            if (d.episodes > 0) add(stringResource(R.string.details_episodes) to d.episodes.toString())
+            if (d.networks.isNotEmpty()) add(stringResource(R.string.details_network) to d.networks)
+            if (d.status.isNotEmpty()) add(stringResource(R.string.details_status) to contentStatusLabel(d.status))
+        } else if (d.status.isNotEmpty() && d.status != "Estrenada") {
+            add(stringResource(R.string.details_status) to contentStatusLabel(d.status))
+        }
+        if (d.originalTitle.isNotEmpty()) add(stringResource(R.string.details_original_title) to d.originalTitle)
+        if (d.originalLanguage.isNotEmpty()) {
+            add(stringResource(R.string.details_original_language) to originalLanguageLabel(d.originalLanguage))
+        }
+        if (d.countries.isNotEmpty()) add(stringResource(R.string.details_country) to d.countries)
+        if (d.companies.isNotEmpty()) add(stringResource(R.string.details_production) to d.companies)
+        if (d.budget > 0) add(stringResource(R.string.details_budget) to money(d.budget))
+        if (d.revenue > 0) add(stringResource(R.string.details_revenue) to money(d.revenue))
     }
     if (rows.isEmpty()) return
     val source = remember { MutableInteractionSource() }
@@ -525,7 +575,7 @@ private fun InfoCard(d: ContentDetails, isSeries: Boolean, profile: DeviceProfil
             .focusable(interactionSource = source)
             .padding(16.dp)
     ) {
-        Text("Ficha", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+        Text(stringResource(R.string.details_info_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
         rows.forEach { (label, value) ->
             Row(Modifier.padding(vertical = 3.dp)) {
                 Text(label, style = labelStyle, color = EntreBrand.TextDim, modifier = Modifier.width(if (profile.isTv) 220.dp else 140.dp))
@@ -539,7 +589,7 @@ private fun InfoCard(d: ContentDetails, isSeries: Boolean, profile: DeviceProfil
 private fun CastRow(cast: List<CastMember>, profile: DeviceProfile) {
     Column(Modifier.padding(top = 8.dp)) {
         Text(
-            "Reparto",
+            stringResource(R.string.details_cast),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = profile.edge)
@@ -796,7 +846,8 @@ private fun EpisodeRow(
                 }
                 if (fraction != null && fraction > 0f) {
                     Text(
-                        if (progress?.isCompleted == true) "Visto" else "${(fraction * 100).toInt().coerceIn(1, 99)} %",
+                        if (progress?.isCompleted == true) stringResource(R.string.details_watched)
+                        else stringResource(R.string.download_percent, (fraction * 100).toInt().coerceIn(1, 99)),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
@@ -830,7 +881,7 @@ private fun EpisodeRow(
                 )
                 if (episode.durationSecs > 0) {
                     Text(
-                        "${episode.durationSecs / 60} min",
+                        stringResource(R.string.details_minutes, episode.durationSecs / 60),
                         style = MaterialTheme.typography.labelSmall,
                         color = EntreBrand.TextDim
                     )

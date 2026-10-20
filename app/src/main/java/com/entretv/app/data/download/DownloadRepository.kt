@@ -7,6 +7,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.entretv.app.R
 import com.entretv.app.data.local.DownloadDao
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
@@ -180,3 +181,15 @@ class DownloadRepository @Inject constructor(
         const val PART_SUFFIX = ".part"
     }
 }
+
+/** En episodios el subtítulo se guarda como "T1:E3 · Nombre"; el código se muestra en el idioma de [context]. */
+fun DownloadEntity.episodeSubtitle(context: Context): String {
+    if (kind != "EPISODE" || season <= 0) return subtitle
+    val code = context.getString(R.string.details_episode_code, season, episodeNum)
+    val name = subtitle.substringAfter(" · ", "")
+    return if (name.isEmpty()) code else "$code · $name"
+}
+
+/** "Serie · T1:E3 · Nombre" en episodios; el título en películas. */
+fun DownloadEntity.displayName(context: Context): String =
+    if (kind == "EPISODE") "$title · ${episodeSubtitle(context)}" else title

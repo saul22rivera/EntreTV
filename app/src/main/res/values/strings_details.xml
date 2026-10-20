@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ficha de película o serie -->
+    <string name="details_back">Volver</string>
+    <string name="details_loading_episodes">Cargando episodios…</string>
+    <string name="details_resume">Continuar</string>
+    <string name="details_play">Reproducir</string>
+    <string name="details_play_from_start">Desde el inicio</string>
+    <string name="details_in_my_list">En Mi lista</string>
+    <string name="details_my_list">Mi lista</string>
+    <string name="details_trailer">Tráiler</string>
+    <string name="details_trailer_no_app">No hay una app para abrir el tráiler</string>
+    <string name="details_time_left">Quedan %1$d min</string>
+    <string name="details_loading_plot">Cargando sinopsis…</string>
+    <string name="details_no_plot">Sin sinopsis disponible.</string>
+    <string name="details_cast">Reparto</string>
+    <string name="details_director">Dirección</string>
+    <string name="details_created_by">Creada por</string>
+    <string name="details_download_season">Descargar temporada %1$d</string>
+    <string name="details_stop_downloads_count">Detener descargas (%1$d)</string>
+    <string name="details_stop_downloads">Detener descargas</string>
+    <string name="details_stop_downloads_title">¿Detener las descargas?</string>
+    <plurals name="details_stop_downloads_text">
+        <item quantity="one">Se cancelará %1$d episodio de “%2$s” que está en cola, descargándose o en pausa. Los episodios ya descargados se conservan.</item>
+        <item quantity="other">Se cancelarán %1$d episodios de “%2$s” que están en cola, descargándose o en pausa. Los episodios ya descargados se conservan.</item>
+    </plurals>
+    <string name="details_episodes">Episodios</string>
+    <string name="details_season">Temporada %1$d</string>
+    <string name="details_no_episodes">No se encontraron episodios.</string>
+    <string name="details_reset_series">Reiniciar serie (volver al episodio 1)</string>
+    <string name="details_watched">Visto</string>
+    <string name="details_minutes">%1$d min</string>
+
+    <!-- Botón principal de una serie -->
+    <string name="details_episode_code">T%1$d:E%2$d</string>
+    <string name="details_resume_episode">Continuar %1$s</string>
+    <string name="details_next_episode">Siguiente: %1$s</string>
+    <string name="details_rewatch_episode">Volver a ver %1$s</string>
+    <string name="details_play_episode">Reproducir %1$s</string>
+
+    <!-- Avisos de la ficha -->
+    <string name="details_added_to_list">Agregado a Mi lista</string>
+    <string name="details_removed_from_list">Quitado de Mi lista</string>
+    <string name="details_season_already_downloaded">Esta temporada ya está descargada</string>
+    <plurals name="details_episodes_queued">
+        <item quantity="one">%1$d episodio en cola. %2$s</item>
+        <item quantity="other">%1$d episodios en cola. %2$s</item>
+    </plurals>
+    <string name="details_download_wifi_notice">Se descargará con Wi‑Fi; puedes verla en Descargas.</string>
+    <string name="details_download_notice">Descargando; puedes verla en Descargas.</string>
+    <string name="details_no_pending_downloads">No había descargas pendientes</string>
+    <plurals name="details_downloads_cancelled">
+        <item quantity="one">Se canceló %1$d descarga. Lo ya descargado se conserva.</item>
+        <item quantity="other">Se cancelaron %1$d descargas. Lo ya descargado se conserva.</item>
+    </plurals>
+    <string name="details_download_deleted">Descarga eliminada</string>
+    <string name="details_series_reset">La serie volverá a empezar desde el episodio 1</string>
+
+    <!-- Ficha técnica -->
+    <string name="details_info_title">Ficha</string>
+    <string name="details_premiere">Estreno</string>
+    <string name="details_release_date">Fecha de estreno</string>
+    <string name="details_year">Año</string>
+    <string name="details_episode_duration">Duración por episodio</string>
+    <string name="details_duration">Duración</string>
+    <string name="details_genres">Géneros</string>
+    <string name="details_rating">Puntuación</string>
+    <plurals name="details_rating_votes">
+        <item quantity="one">★ %1$s (%2$s voto)</item>
+        <item quantity="other">★ %1$s (%2$s votos)</item>
+    </plurals>
+    <string name="details_certification">Clasificación</string>
+    <string name="details_seasons">Temporadas</string>
+    <string name="details_network">Cadena</string>
+    <string name="details_status">Estado</string>
+    <string name="details_original_title">Título original</string>
+    <string name="details_original_language">Idioma original</string>
+    <string name="details_country">País</string>
+    <string name="details_production">Producción</string>
+    <string name="details_budget">Presupuesto</string>
+    <string name="details_revenue">Recaudación</string>
+    <!-- Fecha de estreno: día, mes abreviado, año -->
+    <string name="details_date">%1$s %2$s %3$s</string>
+    <string-array name="details_months_short">
+        <item>ene</item>
+        <item>feb</item>
+        <item>mar</item>
+        <item>abr</item>
+        <item>may</item>
+        <item>jun</item>
+        <item>jul</item>
+        <item>ago</item>
+        <item>sep</item>
+        <item>oct</item>
+        <item>nov</item>
+        <item>dic</item>
+    </string-array>
+
+    <!-- Estado de la serie o película según TMDB -->
+    <string name="meta_status_returning">En emisión</string>
+    <string name="meta_status_ended">Finalizada</string>
+    <string name="meta_status_canceled">Cancelada</string>
+    <string name="meta_status_in_production">En producción</string>
+    <string name="meta_status_planned">Anunciada</string>
+    <string name="meta_status_pilot">Piloto</string>
+    <string name="meta_status_released">Estrenada</string>
+    <string name="meta_status_post_production">Posproducción</string>
+    <string name="meta_status_rumored">Rumor</string>
+
+    <!-- Descargas -->
+    <string name="download_title">Descargas</string>
+    <plurals name="download_selected_count">
+        <item quantity="one">%1$d seleccionada</item>
+        <item quantity="other">%1$d seleccionadas</item>
+    </plurals>
+    <string name="download_deselect_all">Quitar selección</string>
+    <string name="download_select_all">Seleccionar todo</string>
+    <string name="download_delete_count">Borrar (%1$d)</string>
+    <string name="download_done_selecting">Listo</string>
+    <string name="download_select">Seleccionar</string>
+    <string name="download_delete_all">Borrar todo</string>
+    <string name="download_long_press_hint">Mantén presionada una descarga para seleccionar varias.</string>
+    <string name="download_empty">Todavía no descargaste nada.\nAbre una película o una serie y elige “Descargar” para verla sin conexión.</string>
+    <string name="download_not_ready">Disponible cuando termine de descargarse</string>
+    <plurals name="download_delete_many_title">
+        <item quantity="one">¿Borrar %1$d descarga?</item>
+        <item quantity="other">¿Borrar %1$d descargas?</item>
+    </plurals>
+    <plurals name="download_delete_many_text">
+        <item quantity="one">Dejará de estar disponible sin conexión. Si se está descargando, se cancela.</item>
+        <item quantity="other">Dejarán de estar disponibles sin conexión. Lo que se esté descargando se cancela.</item>
+    </plurals>
+    <string name="download_delete">Borrar</string>
+    <plurals name="download_deleted_many">
+        <item quantity="one">Se borró %1$d descarga</item>
+        <item quantity="other">Se borraron %1$d descargas</item>
+    </plurals>
+    <string name="download_delete_all_title">¿Borrar todas las descargas?</string>
+    <plurals name="download_delete_all_text">
+        <item quantity="one">Se borrará %1$d descarga, aunque esté en curso. Esto libera el espacio que ocupa.</item>
+        <item quantity="other">Se borrarán las %1$d descargas, incluidas las que están en curso. Esto libera el espacio que ocupan.</item>
+    </plurals>
+    <string name="download_all_deleted">Se borraron todas las descargas</string>
+    <string name="download_selected">Seleccionada</string>
+    <string name="download_not_selected">Sin seleccionar</string>
+    <string name="download_cancel_download">Cancelar descarga</string>
+    <string name="download_storage">Ocupan %1$s · Libres %2$s</string>
+
+    <!-- Estado de una descarga -->
+    <string name="download_percent">%1$d %%</string>
+    <string name="download_waiting_connection">Esperando conexión</string>
+    <string name="download_queued">En cola</string>
+    <string name="download_downloading">Descargando %1$s</string>
+    <string name="download_paused">En pausa %1$s</string>
+    <string name="download_failed">No se pudo descargar</string>
+    <string name="download_done">Descargada</string>
+    <string name="download_done_size">Descargada · %1$s</string>
+
+    <!-- Botones y diálogos de descarga -->
+    <string name="download_action">Descargar</string>
+    <string name="download_cancel">Cancelar</string>
+    <string name="download_resume">Reanudar %1$s</string>
+    <string name="download_retry">Reintentar descarga</string>
+    <string name="download_remove">Quitar</string>
+    <string name="download_episode">Descargar episodio</string>
+    <string name="download_delete_download">Borrar descarga</string>
+    <string name="download_pause">Pausar descarga</string>
+    <string name="download_resume_download">Reanudar descarga</string>
+    <string name="download_delete_title">¿Borrar la descarga?</string>
+    <string name="download_cancel_title">¿Cancelar la descarga?</string>
+    <string name="download_delete_text">%1$s dejará de estar disponible sin conexión.</string>
+    <string name="download_cancel_text">Se borrará lo descargado de %1$s.</string>
+    <string name="download_keep_downloading">Seguir descargando</string>
+
+    <!-- Errores y notificaciones de la descarga en segundo plano -->
+    <string name="download_error_no_connection">Sin conexión con el servidor.</string>
+    <string name="download_error_http">El servidor respondió %1$d.</string>
+    <string name="download_error_no_file">El servidor no envió el archivo.</string>
+    <string name="download_error_streamed">Este título se transmite por partes y no se puede descargar.</string>
+    <string name="download_error_no_space">No hay espacio suficiente en el dispositivo.</string>
+    <string name="download_error_interrupted">Conexión interrumpida; se reintentará.</string>
+    <string name="download_error_bad_url">La dirección del contenido no es válida.</string>
+    <string name="download_error_save">No se pudo guardar el archivo.</string>
+    <string name="download_notification_title">Descargando %1$s</string>
+    <string name="download_notification_progress">%1$d %% · %2$s de %3$s</string>
+    <string name="download_notification_done">Descarga lista</string>
+
+    <!-- Actualizaciones -->
+    <string name="update_required_title">Actualización necesaria</string>
+    <string name="update_checking_title">Buscando actualizaciones</string>
+    <string name="update_up_to_date_title">EntreTV está al día</string>
+    <string name="update_available_title">Hay una versión nueva</string>
+    <string name="update_downloading_title">Descargando actualización</string>
+    <string name="update_ready_title">Lista para instalar</string>
+    <string name="update_failed_title">No se pudo actualizar</string>
+    <string name="update_checking">Consultando el servidor…</string>
+    <string name="update_up_to_date">Tienes la última versión (%1$s).</string>
+    <string name="update_available">Versión %1$s (tienes la %2$s).</string>
+    <string name="update_required_downloading">Para seguir usando EntreTV necesitas la versión %1$s. Se está descargando; al terminar se abrirá el instalador.</string>
+    <string name="update_version">Versión %1$s</string>
+    <string name="update_permission_needed">Falta un permiso para instalar. Elige \"Dar permiso\" y activa EntreTV en:\n• Celular o tablet: Ajustes › Apps › EntreTV › Instalar apps desconocidas.\n• TV: Ajustes › Preferencias del dispositivo › Seguridad y restricciones › Fuentes desconocidas (o Ajustes › Apps › Seguridad).\nLuego regresa con el botón Atrás y elige Instalar.</string>
+    <string name="update_installer_note">Se abrirá el instalador de Android. Tu cuenta y tu progreso se conservan.</string>
+    <string name="update_later">Más tarde</string>
+    <string name="update_update">Actualizar</string>
+    <string name="update_cancel">Cancelar</string>
+    <string name="update_grant_permission">Dar permiso</string>
+    <string name="update_install">Instalar</string>
+    <string name="update_close">Cerrar</string>
+    <string name="update_retry">Reintentar</string>
+    <string name="update_error_not_configured">Esta versión no tiene configurado el servidor de actualizaciones.</string>
+    <string name="update_error_check">No se pudo consultar si hay una versión nueva. Revisa tu conexión.</string>
+    <string name="update_error_download">No se pudo descargar la actualización. Inténtalo de nuevo.</string>
+    <string name="update_error_no_installer">Este equipo no tiene instalador de apps disponible.</string>
+</resources>
