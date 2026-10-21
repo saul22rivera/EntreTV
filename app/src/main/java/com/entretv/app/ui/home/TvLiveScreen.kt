@@ -94,8 +94,12 @@ import com.entretv.app.ui.theme.EntreBrand
 import java.util.Date
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 private enum class LiveZone { CATEGORIES, CHANNELS, PLAYER }
+
+/** Ancho de la columna de categorías en TV (En vivo, Películas y Series). */
+val TV_CATEGORY_COLUMN_WIDTH = 160.dp
 
 /**
  * En vivo en TV: categorías, canales y a la derecha el mini reproductor con la guía del
@@ -118,6 +122,10 @@ fun TvLiveScreen(
     modifier: Modifier = Modifier,
     /** False con el menú abierto: entonces no se recupera el foco solo. */
     canTakeFocus: Boolean = true,
+    /** Cada aumento pide el foco a la zona actual (requestFocus sobre el grupo no pasa por `enter`). */
+    focusRequests: Int = 0,
+    /** Arriba desde el primer canal: lleva el foco a Buscar. */
+    onExitUp: () -> Unit = {},
     viewModel: TvLiveViewModel = hiltViewModel()
 ) {
     LaunchedEffect(playlistId) { viewModel.setPlaylist(playlistId) }
@@ -169,11 +177,24 @@ fun TvLiveScreen(
         withFrameNanos { }
     }
 
+    // Un pedido de foco hecho desde aquí pasa por el `enter` de la raíz si el foco viene de
+    // afuera; sin esta marca, `enter` lo cancelaba y volvía a pedirlo, en un ciclo sin fin.
+    val focusingFromCode = remember { AtomicBoolean(false) }
+
+    fun request(requester: FocusRequester): Boolean {
+        focusingFromCode.set(true)
+        return try {
+            runCatching { requester.requestFocus() }.isSuccess
+        } finally {
+            focusingFromCode.set(false)
+        }
+    }
+
     /** La fila recién desplazada puede tardar un frame más en componerse: se reintenta. */
     suspend fun focusRow(state: LazyListState, index: Int, requester: FocusRequester) {
         repeat(3) {
             reveal(state, index)
-            if (runCatching { requester.requestFocus() }.isSuccess) return
+            if (request(requester)) return
         }
     }
 
@@ -193,7 +214,7 @@ fun TvLiveScreen(
     fun focusPlayer() {
         scope.launch {
             withFrameNanos { }
-            runCatching { playerFocus.requestFocus() }
+            request(playerFocus)
         }
     }
 
@@ -211,12 +232,20 @@ fun TvLiveScreen(
         }
     }
 
+    LaunchedEffect(focusRequests) {
+        if (focusRequests > 0) {
+            withFrameNanos { }
+            focusZone()
+        }
+    }
+
     val allowFocus by rememberUpdatedState(canTakeFocus)
     LaunchedEffect(pendingFocus, cats.isNotEmpty(), canTakeFocus) {
         if (!canTakeFocus) pendingFocus = false
         if (pendingFocus && cats.isNotEmpty()) {
-            pendingFocus = false
+            // Bajar la marca relanza este efecto: hacerlo antes de esperar cancelaba el pedido.
             withFrameNanos { }
+            pendingFocus = false
             focusZone()
         }
     }
@@ -224,6 +253,9 @@ fun TvLiveScreen(
     // Si la lista cambia (actualización) y desaparece la fila enfocada, el foco queda en
     // ningún lado: se devuelve a la zona donde estaba, salvo que se haya ido al menú.
     var rootFocused by remember { mutableStateOf(false) }
+    // El usuario subió a Buscar: no es un foco perdido y no se recupera.
+    var exitedUp by remember { mutableStateOf(false) }
+    var focusedCategory by remember { mutableStateOf<String?>(null) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
 
     // Otra categoría: la lista arranca arriba (o en el canal que suena si está ahí).
@@ -266,17 +298,21 @@ fun TvLiveScreen(
             .onFocusChanged {
                 val had = rootFocused
                 rootFocused = it.hasFocus
+                if (it.hasFocus) exitedUp = false
                 if (had && !it.hasFocus) scope.launch {
                     withFrameNanos { }
                     withFrameNanos { }
                     val resumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-                    if (!rootFocused && allowFocus && resumed && !viewModel.openingFullscreen) focusZone()
+                    if (!rootFocused && allowFocus && resumed && !viewModel.openingFullscreen && !exitedUp) focusZone()
                 }
             }
             .focusProperties {
                 enter = {
-                    focusZone()
-                    FocusRequester.Cancel
+                    if (focusingFromCode.get()) FocusRequester.Default
+                    else {
+                        focusZone()
+                        FocusRequester.Cancel
+                    }
                 }
             }
             .focusGroup()
@@ -288,10 +324,14 @@ fun TvLiveScreen(
             state = catState,
             contentPadding = PaddingValues(vertical = 4.dp),
             modifier = Modifier
-                .width(210.dp)
+                .width(TV_CATEGORY_COLUMN_WIDTH)
                 .fillMaxHeight()
                 .keys(setOf(Key.DirectionRight, Key.DirectionLeft)) { key ->
                     if (key == Key.DirectionRight) focusChannel() else onOpenMenu()
+                }
+                // Arriba de la primera categoría no hay nada: se queda ahí.
+                .onPreviewKeyEvent { event ->
+                    event.key == Key.DirectionUp && focusedCategory != null && focusedCategory == cats.firstOrNull()
                 }
         ) {
             itemsIndexed(cats, key = { _, c -> c }) { _, name ->
@@ -305,6 +345,7 @@ fun TvLiveScreen(
                     modifier = Modifier
                         .focusRequester(catRequester(name))
                         .onFocusChanged {
+                            if (it.isFocused) focusedCategory = name else if (focusedCategory == name) focusedCategory = null
                             if (it.isFocused) {
                                 zone = LiveZone.CATEGORIES
                                 if (name != selected) {
@@ -337,6 +378,17 @@ fun TvLiveScreen(
                             if (key == Key.DirectionRight) {
                                 if (playing != null) focusPlayer()
                             } else focusCategory()
+                        }
+                        // Arriba del primer canal se sube a Buscar, como desde los pósters.
+                        .onPreviewKeyEvent { event ->
+                            if (event.key != Key.DirectionUp || focusedId == null || focusedId != list.firstOrNull()?.id) {
+                                return@onPreviewKeyEvent false
+                            }
+                            if (event.type == KeyEventType.KeyDown) {
+                                exitedUp = true
+                                onExitUp()
+                            }
+                            true
                         }
                 ) {
                     itemsIndexed(list, key = { _, ch -> ch.id }) { _, channel ->
@@ -564,7 +616,7 @@ private fun ChannelLogo(channel: ChannelEntity, modifier: Modifier) {
 }
 
 @Composable
-private fun LiveCategoryRow(
+internal fun LiveCategoryRow(
     label: String,
     count: Int,
     selected: Boolean,
@@ -656,12 +708,6 @@ private fun LiveChannelRow(
             .clickable(interactionSource = source, indication = null, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
-        Text(
-            if (channel.number > 0) "${channel.number}" else "",
-            color = content.copy(alpha = 0.7f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.width(34.dp)
-        )
         ChannelLogo(channel, Modifier.size(width = 40.dp, height = 28.dp))
         Spacer(Modifier.width(10.dp))
         Text(

@@ -236,15 +236,36 @@ class PlayerViewModel @Inject constructor(
     private val _allChannels = MutableStateFlow<List<ChannelEntity>>(emptyList())
     private var loadedPlaylist: String? = null
     private val _currentGroup = MutableStateFlow("")
+    /** Posición de cada categoría en vivo, la misma que en la sección En vivo de Inicio. */
+    private val _categoryOrder = MutableStateFlow<Map<String, Int>>(emptyMap())
 
-    val liveCategories: StateFlow<List<LiveCategory>> = _allChannels
-        .map { all ->
-            all.groupingBy { it.groupTitle }.eachCount().map { (raw, count) ->
-                LiveCategory(raw, clean(raw), count)
-            }
-        }
+    val liveCategories: StateFlow<List<LiveCategory>> = combine(_allChannels, _categoryOrder) { all, order ->
+        all.groupingBy { it.groupTitle }.eachCount()
+            .map { (raw, count) -> LiveCategory(raw, clean(raw), count) }
+            .sortedBy { order[it.raw] ?: Int.MAX_VALUE }
+    }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Mismo criterio que Inicio: primero el orden que armó el usuario, después el del servidor;
+     * sin orden propio y con A-Z como orden por defecto, alfabético.
+     */
+    private suspend fun liveCategoryOrder(playlistId: String): Map<String, Int> {
+        val prefs = repository.categoryPrefsSnapshot(playlistId)
+            .filter { it.section == PlaylistRepository.SECTION_LIVE }
+            .associateBy { it.name }
+        val server = repository.categoriesSnapshot(playlistId, PlaylistRepository.SECTION_LIVE)
+            .associate { it.name to it.position }
+        val names = (server.keys + prefs.keys).distinct()
+        val userOrdered = prefs.values.any { it.userPosition != null }
+        val sorted = if (!userOrdered && settings.catalogPrefs.first().defaultSort == SortOrder.AZ.name) {
+            names.sortedBy { searchKey(clean(it)) }
+        } else {
+            names.sortedWith(compareBy({ prefs[it]?.userPosition ?: Int.MAX_VALUE }, { server[it] ?: Int.MAX_VALUE }))
+        }
+        return sorted.withIndex().associate { it.value to it.index }
+    }
 
     /** Categoría abierta en el navegador; null = la del canal que se está viendo. */
     private val _browseCategory = MutableStateFlow<String?>(null)
@@ -412,6 +433,7 @@ class PlayerViewModel @Inject constructor(
         startProgressLoop(p)
         if (p is Playable.LiveChannel) {
             if (loadedPlaylist != p.channel.playlistId) {
+                _categoryOrder.value = liveCategoryOrder(p.channel.playlistId)
                 _allChannels.value = zappableChannels(p.channel.playlistId)
                 loadedPlaylist = p.channel.playlistId
             }

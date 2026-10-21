@@ -36,6 +36,8 @@
     <string name="home_category_empty">Esta categoría está vacía</string>
     <string name="home_section_empty">Todavía no hay contenido en %1$s</string>
     <string name="home_back_to_all">Volver a todas</string>
+    <string name="home_view_list">Ver en lista</string>
+    <string name="home_view_grid">Ver en cuadrícula</string>
     <plurals name="home_titles_count">
         <item quantity="one">%1$d título</item>
         <item quantity="other">%1$d títulos</item>

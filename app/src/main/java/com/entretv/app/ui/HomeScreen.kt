@@ -26,6 +26,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -57,7 +58,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Add
@@ -102,7 +105,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -120,6 +122,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -137,10 +140,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -149,6 +154,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -165,6 +171,7 @@ import com.entretv.app.ui.home.HiddenItemsDialog
 import com.entretv.app.ui.home.NavRail
 import com.entretv.app.ui.home.CategoryChips
 import com.entretv.app.ui.home.TvCatalogNav
+import com.entretv.app.ui.home.TvCategoryColumn
 import com.entretv.app.ui.home.TvLiveScreen
 import com.entretv.app.ui.home.tvNavItem
 import com.entretv.app.ui.home.OrganizeCategoriesDialog
@@ -174,6 +181,7 @@ import com.entretv.app.ui.home.PILL_SPACE
 import com.entretv.app.ui.home.RAIL_COLLAPSED_WIDTH
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -210,6 +218,7 @@ fun HomeScreen(
     val accountInfo by viewModel.accountInfo.collectAsState()
     val lastRefreshAt by viewModel.lastRefreshAt.collectAsState()
     val refreshMode by viewModel.refreshMode.collectAsState()
+    val listViewSections by viewModel.listViewSections.collectAsState()
     val pinSet by viewModel.pinSet.collectAsState()
     val parentalUnlocked by viewModel.parentalUnlocked.collectAsState()
     val hiddenItems by viewModel.hiddenItems.collectAsState()
@@ -229,18 +238,40 @@ fun HomeScreen(
     var pinError by remember { mutableStateOf<String?>(null) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     val searching = ui.query.isNotBlank()
-    // Celular: al abrir la app se ve el resumen hasta elegir una sección o categoría.
-    val showSummary = profile.compactRail && ui.summary && !searching
+    // Celular: al abrir la app se ve el resumen hasta elegir una sección o categoría. En TV la
+    // app abre en su sección de siempre y al resumen se entra con Inicio del menú.
+    var tvHomeChosen by rememberSaveable { mutableStateOf(false) }
+    val showSummary = (profile.compactRail || (profile.isTv && tvHomeChosen)) && ui.summary && !searching
     // TV: En vivo es la vista de categorías, canales y mini reproductor.
-    val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null
-
+    val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null && !showSummary
+    // La vista en lista o cuadrícula se recuerda por sección; los resultados de búsqueda usan la de su tipo.
+    val gridSection = when (ui.category) {
+        SEARCH_MOVIES -> Section.MOVIES
+        SEARCH_SERIES -> Section.SERIES
+        SEARCH_LIVE -> Section.LIVE
+        else -> ui.section
+    }
     var railExpanded by rememberSaveable { mutableStateOf(false) }
     val pillVisible = rememberSaveable { mutableStateOf(true) }
     val catalogFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     val headerFocus = remember { FocusRequester() }
     val tvNav = remember(profile.isTv) { if (profile.isTv) TvCatalogNav() else null }
     var catalogHasFocus by remember { mutableStateOf(false) }
+    // Pedir el foco de un póster desde fuera del catálogo pasa por su `enter`: si este lo
+    // cancelara, la petición se repetiría sin fin y el foco nunca llegaría.
+    val catalogFocusFromCode = remember { AtomicBoolean(false) }
+    fun focusInCatalog(requester: FocusRequester): Boolean {
+        catalogFocusFromCode.set(true)
+        return try {
+            runCatching { requester.requestFocus() }.isSuccess
+        } finally {
+            catalogFocusFromCode.set(false)
+        }
+    }
+    // En vivo decide adónde va el foco (categoría, canal o mini reproductor): se le avisa.
+    var liveFocusRequests by remember { mutableIntStateOf(0) }
     // Hora de la última flecha izquierda: distingue al usuario que va al menú del foco que
     // el sistema reubica solo al cerrarse el panel.
     var lastLeftKeyAt by remember { mutableStateOf(0L) }
@@ -270,6 +301,33 @@ fun HomeScreen(
         railExpanded = value
     }
 
+    // Celular: deslizar a la derecha abre las categorías cuando ya no hay nada más a la
+    // izquierda. Las filas se mueven con el dedo: solo cuenta lo que la fila ya no pudo mover.
+    val openCategoriesOnSwipe = profile.compactRail && !showSummary && !searchOpen && !railExpanded && ui.playlists.isNotEmpty()
+    val swipeOpenPx = with(LocalDensity.current) { 56.dp.toPx() }
+    val swipeToCategories = remember(swipeOpenPx) {
+        object : NestedScrollConnection {
+            var pulled = 0f
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (source != NestedScrollSource.UserInput || consumed.x != 0f || available.x <= 0f) {
+                    pulled = 0f
+                    return Offset.Zero
+                }
+                pulled += available.x
+                if (pulled > swipeOpenPx) {
+                    pulled = Float.NEGATIVE_INFINITY
+                    setRailExpanded(true)
+                }
+                return Offset(available.x, 0f)
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                pulled = 0f
+                return Velocity.Zero
+            }
+        }
+    }
+
     // Una vista corta no se puede deslizar para traer la píldora de vuelta.
     LaunchedEffect(ui.section, ui.category, ui.summary) {
         pillVisible.value = true
@@ -279,6 +337,13 @@ fun HomeScreen(
     val contentStale = content.playlistId != ui.selectedPlaylistId ||
         content.section != ui.section || content.category != ui.category
 
+    // TV, Películas y Series: categorías en columna a la izquierda, como En vivo.
+    val tvCategoryColumn = profile.isTv && !searching && !showSummary && ui.section != Section.LIVE && ui.playlists.isNotEmpty()
+    var tvCatsHaveFocus by remember { mutableStateOf(false) }
+    var tvCatsFocusRequests by remember { mutableIntStateOf(0) }
+    // OK sobre una categoría que todavía se calcula: el foco pasa al contenido cuando esté listo.
+    var contentFocusPending by remember { mutableStateOf(false) }
+
     // En TV el foco vuelve a los pósters al abrir la app, al cerrar el panel y al cambiar de
     // sección. Pedirlo dentro del cambio de foco que cierra el panel deja el árbol de foco a
     // medias (el póster queda marcado pero las flechas no responden): se espera un frame.
@@ -286,25 +351,55 @@ fun HomeScreen(
     // quitarse la pantalla anterior Android le devuelve el foco a la vista y el catálogo queda
     // "con foco" sin ningún póster enfocado, así que esa primera vez no se confía en catalogHasFocus.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(railExpanded, contentStale) {
-        if (!railExpanded && !contentStale && profile.isTv) {
+    val summaryReady = if (showSummary) viewModel.summaryContent.collectAsState().value.ready else false
+    val shownStale = if (showSummary) !summaryReady else contentStale
+    LaunchedEffect(railExpanded, shownStale, showSummary) {
+        if (!railExpanded && !shownStale && profile.isTv) {
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
             withFrameNanos { }
             if (focusRestored && catalogHasFocus) return@LaunchedEffect
+            // Recorriendo la columna de categorías el contenido cambia solo: el foco se queda en ella.
+            if (focusRestored && tvCatsHaveFocus && !contentFocusPending) return@LaunchedEffect
+            contentFocusPending = false
             if (!focusRestored && focusMemory.target != null) {
                 focusRestored = true
-                val restored = runCatching { restoreFocus.requestFocus() }.isSuccess
+                val restored = focusInCatalog(restoreFocus)
                 withFrameNanos { }
                 if (restored && catalogHasFocus) return@LaunchedEffect
             }
             focusRestored = true
-            runCatching { catalogFocus.requestFocus() }
+            // Recién abierta la búsqueda el foco es del campo: En vivo se lo quitaba.
+            if (searchOpen && ui.query.isBlank()) {
+                runCatching { searchFocus.requestFocus() }
+                return@LaunchedEffect
+            }
+            if (tvLive) {
+                liveFocusRequests++
+            } else {
+                val last = tvNav?.lastRequester()
+                if (!(last != null && focusInCatalog(last) && run { withFrameNanos { }; catalogHasFocus })) {
+                    runCatching { catalogFocus.requestFocus() }
+                }
+            }
         }
     }
 
     fun openSearch() {
         searchOpen = true
         pillVisible.value = true
+    }
+
+    /** Derecha u OK en la columna de categorías: al último póster de la categoría o al primero. */
+    fun focusTvContent() {
+        if (contentStale) {
+            contentFocusPending = true
+            return
+        }
+        scope.launch {
+            withFrameNanos { }
+            val last = tvNav?.lastRequester()
+            if (!(last != null && focusInCatalog(last))) runCatching { catalogFocus.requestFocus() }
+        }
     }
 
     LaunchedEffect(searchOpen) {
@@ -341,6 +436,7 @@ fun HomeScreen(
 
     fun goHome() {
         if (searchOpen) searchOpen = false
+        tvHomeChosen = true
         setRailExpanded(false)
         viewModel.showSummary()
     }
@@ -432,7 +528,7 @@ fun HomeScreen(
                     lastUpdate = lastUpdateLabel(lastRefreshAt)
                 )
 
-                if (profile.compactRail && !showSummary && !searchOpen && !contentStale) {
+                if (profile.isPhone && !showSummary && !searchOpen && !contentStale) {
                     CategoryChips(
                         categories = content.categories,
                         labels = content.categoryLabels,
@@ -456,7 +552,16 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = profile.edge, vertical = 4.dp)
-                            .focusRequester(searchFocus),
+                            .focusRequester(searchFocus)
+                            // El campo de texto se queda con las flechas: en TV abajo baja a los resultados.
+                            .onPreviewKeyEvent { event ->
+                                if (!profile.isTv || event.key != Key.DirectionDown || ui.query.isBlank()) return@onPreviewKeyEvent false
+                                if (event.type == KeyEventType.KeyDown) {
+                                    keyboard?.hide()
+                                    runCatching { catalogFocus.requestFocus() }
+                                }
+                                true
+                            },
                         placeholder = { Text(stringResource(R.string.home_search_placeholder)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         trailingIcon = if (ui.query.isNotEmpty()) {
@@ -486,13 +591,48 @@ fun HomeScreen(
                     }
                 }
 
-                PullToRefreshBox(
-                    isRefreshing = ui.refreshing,
-                    onRefresh = { viewModel.refreshAll() },
-                    modifier = Modifier
+                // Sin "deslizar para actualizar": se actualiza solo con el botón (en el celular, en
+                // el menú de tres puntos) para no recargar sin querer al subir al principio.
+                Box(
+                    Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .then(if (openCategoriesOnSwipe) Modifier.nestedScroll(swipeToCategories).pointerInput(Unit) {
+                            var total = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { total = 0f },
+                                onHorizontalDrag = { change, amount ->
+                                    total += amount
+                                    if (total > swipeOpenPx) {
+                                        change.consume()
+                                        total = Float.NEGATIVE_INFINITY
+                                        setRailExpanded(true)
+                                    }
+                                }
+                            )
+                        } else Modifier)
                 ) {
+                    Row(Modifier.fillMaxSize()) {
+                    if (tvCategoryColumn) {
+                        // Mientras se calcula otra sección no se muestran las categorías de la anterior.
+                        val fresh = content.section == ui.section && content.playlistId == ui.selectedPlaylistId
+                        TvCategoryColumn(
+                            categories = if (fresh) content.categories else emptyList(),
+                            labels = content.categoryLabels,
+                            counts = if (fresh) content.categoryCounts else emptyMap(),
+                            locked = content.lockedCategories,
+                            myListCount = if (fresh) content.myListCount else 0,
+                            selected = ui.category,
+                            focusRequests = tvCatsFocusRequests,
+                            onSelect = viewModel::selectCategory,
+                            onOpenLocked = ::openCategory,
+                            onRight = ::focusTvContent,
+                            onLeft = { setRailExpanded(true) },
+                            onFocusChange = { tvCatsHaveFocus = it },
+                            modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 12.dp)
+                        )
+                    }
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
                     val catalogModifier = Modifier
                         .fillMaxSize()
                         .nestedScroll(hidePillOnScroll)
@@ -509,11 +649,20 @@ fun HomeScreen(
                         .focusProperties {
                             enter = {
                                 val target = tvNav?.lastRequester()
-                                if (target != null) {
+                                if (catalogFocusFromCode.get()) FocusRequester.Default
+                                else if (target != null) {
                                     scope.launch {
                                         withFrameNanos { }
-                                        runCatching { target.requestFocus() }
+                                        focusInCatalog(target)
                                     }
+                                    FocusRequester.Cancel
+                                } else FocusRequester.Default
+                            }
+                            // Con la columna de categorías, izquierda vuelve a la elegida y no a
+                            // la que quede enfrente.
+                            exit = { direction ->
+                                if (direction == FocusDirection.Left && tvCategoryColumn) {
+                                    tvCatsFocusRequests++
                                     FocusRequester.Cancel
                                 } else FocusRequester.Default
                             }
@@ -557,6 +706,8 @@ fun HomeScreen(
                                 firstSync = ui.firstSync,
                                 bottomSpace = bottomSpace,
                                 focusMemory = focusMemory,
+                                tvNav = tvNav,
+                                onFocusItem = { focusedItem = it },
                                 onClick = onItemClick,
                                 onLongClick = onItemLongClick,
                                 onPlayContinue = ::playContinue,
@@ -568,9 +719,7 @@ fun HomeScreen(
                                         SUMMARY_EVENTS -> viewModel.openSection(Section.LIVE, summary.eventsCategory)
                                     }
                                 },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .nestedScroll(hidePillOnScroll)
+                                modifier = catalogModifier
                             )
                         }
                         // Mientras se calcula la nueva sección no se muestran las filas de la anterior:
@@ -588,6 +737,8 @@ fun HomeScreen(
                             onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
                             onFullscreen = { onPlayLiveFullscreen(it.id) },
                             canTakeFocus = !railExpanded,
+                            focusRequests = liveFocusRequests,
+                            onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .onFocusChanged {
@@ -613,7 +764,7 @@ fun HomeScreen(
                                 ui.category == MY_LIST_ROW -> stringResource(R.string.home_my_list_empty)
                                 else -> stringResource(R.string.home_category_empty)
                             },
-                            showBack = ui.category != null,
+                            showBack = ui.category != null && !tvCategoryColumn,
                             onBack = { viewModel.selectCategory(null) },
                             stateKey = "${ui.section}|${ui.category}|${ui.query.trim()}",
                             sort = ui.sort,
@@ -624,7 +775,9 @@ fun HomeScreen(
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
                             onFocusItem = { focusedItem = it },
-                            modifier = catalogModifier
+                            modifier = catalogModifier,
+                            listView = if (profile.isTv) null else gridSection.name in listViewSections,
+                            onListViewChange = { viewModel.setListView(gridSection, it) }
                         )
                         else -> CatalogRows(
                             profile = profile,
@@ -646,6 +799,8 @@ fun HomeScreen(
                             modifier = catalogModifier
                         )
                     }
+                    }
+                    }
                 }
             }
 
@@ -654,14 +809,16 @@ fun HomeScreen(
                     profile = profile,
                     section = ui.section,
                     searchActive = searchOpen,
-                    categories = if (searching) emptyList() else content.categories,
-                    categoryCounts = content.categoryCounts,
+                    // Mientras se calcula la sección nueva, las de la anterior no se ofrecen.
+                    categories = if (searching || contentStale) emptyList() else content.categories,
+                    categoryCounts = if (contentStale) emptyMap() else content.categoryCounts,
                     categoryLabels = content.categoryLabels,
                     lockedCategories = content.lockedCategories,
                     selectedCategory = ui.category,
-                    showCategories = !searching,
-                    myListCount = content.myListCount,
-                    tvMenuOnlySections = if (profile.isTv) setOf(Section.LIVE) else emptySet(),
+                    showCategories = !searching && !showSummary,
+                    myListCount = if (contentStale) 0 else content.myListCount,
+                    // En TV cada sección trae sus categorías en pantalla: el menú es solo de secciones.
+                    tvMenuOnlySections = if (profile.isTv) Section.entries.toSet() else emptySet(),
                     expanded = railExpanded,
                     pillVisible = pillVisible.value,
                     onExpandedChange = ::setRailExpanded,
@@ -689,7 +846,8 @@ fun HomeScreen(
                     },
                     isUserMoveToStrip = { SystemClock.uptimeMillis() - lastLeftKeyAt < STRIP_KEY_WINDOW_MS },
                     onStrayStripFocus = {
-                        scope.launch {
+                        if (tvLive) liveFocusRequests++
+                        else scope.launch {
                             withFrameNanos { }
                             runCatching { catalogFocus.requestFocus() }
                         }
@@ -1195,6 +1353,8 @@ private fun PhoneSummary(
     firstSync: Boolean,
     bottomSpace: Dp,
     focusMemory: FocusMemory,
+    tvNav: TvCatalogNav?,
+    onFocusItem: (BrowseItem) -> Unit,
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onPlayContinue: (ContinueItem) -> Unit,
@@ -1209,6 +1369,13 @@ private fun PhoneSummary(
         else -> {
             // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
             val listState = rememberSaveable("summary", saver = LazyListState.Saver) { LazyListState() }
+            if (tvNav != null) {
+                tvNav.rowOrder = buildList {
+                    if (continueWatching.isNotEmpty()) add("continue")
+                    summary.rows.forEach { add("row:${it.title}"); add("row:${it.title}" + TvCatalogNav.ALL_SUFFIX) }
+                }
+                tvNav.columnState = listState
+            }
             LazyColumn(
                 state = listState,
                 modifier = modifier,
@@ -1222,13 +1389,16 @@ private fun PhoneSummary(
                             items = continueWatching,
                             focusMemory = focusMemory,
                             onPlay = onPlayContinue,
-                            onRemove = onRemoveContinue
+                            onRemove = onRemoveContinue,
+                            tvNav = tvNav,
+                            navKey = "continue"
                         )
                     }
                 }
                 summary.rows.forEach { row ->
                     item(key = "row:${row.title}", contentType = "row") {
-                        CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem = {}, onSeeAll = { onSeeAll(row) })
+                        CatalogRow(profile, row, focusMemory, onClick, onLongClick, onFocusItem, onSeeAll = { onSeeAll(row) },
+                            tvNav = tvNav, navKey = "row:${row.title}")
                     }
                 }
                 if (nothing) {
@@ -1266,18 +1436,22 @@ private fun CatalogGrid(
     onClick: (BrowseItem) -> Unit,
     onLongClick: (BrowseItem) -> Unit,
     onFocusItem: (BrowseItem) -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
+    /** Vista en lista (un renglón por título); null = solo cuadrícula, sin botón para cambiarla. */
+    listView: Boolean? = null,
+    onListViewChange: (Boolean) -> Unit = {}
 ) {
     val gridState = rememberSaveable(stateKey, sort, saver = LazyGridState.Saver) { LazyGridState() }
     val total = content.rows.sumOf { it.items.size }
     val multiSection = content.rows.count { it.items.isNotEmpty() } > 1
+    val list = listView == true
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = profile.posterWidth),
+        columns = if (list) GridCells.Fixed(1) else GridCells.Adaptive(minSize = profile.posterWidth),
         state = gridState,
         modifier = modifier,
         contentPadding = PaddingValues(start = profile.edge, end = profile.edge, top = 4.dp, bottom = bottomSpace),
         horizontalArrangement = Arrangement.spacedBy(profile.itemGap),
-        verticalArrangement = Arrangement.spacedBy(profile.itemGap)
+        verticalArrangement = Arrangement.spacedBy(if (list) 2.dp else profile.itemGap)
     ) {
         item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
@@ -1302,6 +1476,14 @@ private fun CatalogGrid(
                         style = MaterialTheme.typography.labelMedium,
                         color = EntreBrand.TextDim
                     )
+                }
+                if (listView != null) {
+                    IconButton(onClick = { onListViewChange(!listView) }) {
+                        Icon(
+                            if (listView) Icons.Default.GridView else Icons.AutoMirrored.Filled.ViewList,
+                            contentDescription = stringResource(if (listView) R.string.home_view_grid else R.string.home_view_list)
+                        )
+                    }
                 }
             }
         }
@@ -1347,21 +1529,35 @@ private fun CatalogGrid(
             items(
                 count = row.items.size,
                 key = { index -> "${row.title}:${row.items[index].key}" },
-                contentType = { index -> if (row.items[index] is BrowseItem.Live) "live" else "poster" }
+                contentType = { index ->
+                    when {
+                        list -> "listItem"
+                        row.items[index] is BrowseItem.Live -> "live"
+                        else -> "poster"
+                    }
+                }
             ) { index ->
                 val item = row.items[index]
                 val memoryKey = "grid|${row.title}|${item.key}"
-                PosterCard(
+                val itemModifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, "grid:${row.title}", index)
+                val onFocused = {
+                    focusMemory.onFocused(memoryKey)
+                    onFocusItem(item)
+                }
+                if (list) ListItemCard(
+                    item = item,
+                    modifier = itemModifier,
+                    onClick = { onClick(item) },
+                    onLongClick = { onLongClick(item) },
+                    onFocused = onFocused
+                ) else PosterCard(
                     profile = profile,
                     item = item,
                     fillWidth = true,
-                    modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, "grid:${row.title}", index),
+                    modifier = itemModifier,
                     onClick = { onClick(item) },
                     onLongClick = { onLongClick(item) },
-                    onFocused = {
-                        focusMemory.onFocused(memoryKey)
-                        onFocusItem(item)
-                    }
+                    onFocused = onFocused
                 )
             }
         }
@@ -1504,20 +1700,28 @@ private fun HomeHeader(
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
-        IconButton(onClick = onRefresh) {
-            if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
+        // En el celular actualizar va solo en el menú de tres puntos; aquí queda el indicador mientras actualiza.
+        if (!profile.compactRail) {
+            IconButton(onClick = onRefresh) {
+                if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
+            }
+        } else if (refreshing) {
+            CircularProgressIndicator(Modifier.padding(horizontal = 13.dp).size(22.dp), strokeWidth = 2.dp)
         }
         Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_more_options))
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (profile.compactRail && lastUpdate.isNotEmpty()) {
+                if (profile.compactRail) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.home_refresh)) },
                         leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                        trailingIcon = { Text(lastUpdate, style = MaterialTheme.typography.labelSmall, color = EntreBrand.TextDim) },
+                        trailingIcon = if (lastUpdate.isNotEmpty()) {
+                            { Text(lastUpdate, style = MaterialTheme.typography.labelSmall, color = EntreBrand.TextDim) }
+                        } else null,
+                        enabled = !refreshing,
                         onClick = { menuOpen = false; onRefresh() }
                     )
                 }
@@ -1863,7 +2067,7 @@ private fun PosterCard(
     val outer = if (fillWidth) Modifier.fillMaxWidth()
     else Modifier.width(if (isLive) profile.liveWidth else profile.posterWidth)
     val imageBox = when {
-        fillWidth && isLive -> Modifier.fillMaxWidth().aspectRatio(16f / 10f)
+        fillWidth && isLive -> Modifier.fillMaxWidth().aspectRatio(2f)
         fillWidth -> Modifier.fillMaxWidth().aspectRatio(2f / 3f)
         else -> Modifier.fillMaxWidth().height(if (isLive) profile.liveHeight else profile.posterHeight)
     }
@@ -1893,7 +2097,7 @@ private fun PosterCard(
                 AsyncImage(
                     model = item.imageUrl,
                     contentDescription = item.title,
-                    modifier = if (isLive) Modifier.fillMaxSize().padding(14.dp) else Modifier.fillMaxSize(),
+                    modifier = if (isLive) Modifier.fillMaxSize().padding(8.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop
                 )
             } else {
@@ -1919,10 +2123,74 @@ private fun PosterCard(
             item.title,
             style = MaterialTheme.typography.labelSmall,
             color = if (focused) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = if (isLive || profile.isTv) 1 else 2,
+            // Los canales de partidos traen nombres largos ("Liga MX 7:00 Guadalajara vs América").
+            maxLines = if (isLive || !profile.isTv) 2 else 1,
+            minLines = if (isLive) 2 else 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Start
         )
+    }
+}
+
+/** Renglón de la vista en lista: imagen chica y el nombre completo. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ListItemCard(
+    item: BrowseItem,
+    modifier: Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onFocused: () -> Unit
+) {
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    LaunchedEffect(focused) { if (focused) onFocused() }
+    val isLive = item is BrowseItem.Live
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (focused) EntreBrand.PanelHigh else Color.Transparent)
+            .combinedClickable(
+                interactionSource = source,
+                indication = LocalIndication.current,
+                onLongClick = onLongClick,
+                onClick = onClick
+            )
+            .padding(4.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = if (isLive) 72.dp else 52.dp, height = if (isLive) 44.dp else 76.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(EntreBrand.PanelHigh),
+            contentAlignment = Alignment.Center
+        ) {
+            if (item.imageUrl.isNotEmpty()) {
+                AsyncImage(
+                    model = item.imageUrl,
+                    contentDescription = null,
+                    modifier = if (isLive) Modifier.fillMaxSize().padding(4.dp) else Modifier.fillMaxSize(),
+                    contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop
+                )
+            } else {
+                Icon(iconFor(item), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            ratingText(item.rating)?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = EntreBrand.TextDim)
+            }
+        }
     }
 }
 

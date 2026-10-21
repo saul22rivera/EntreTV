@@ -36,6 +36,8 @@
     <string name="home_category_empty">This category is empty</string>
     <string name="home_section_empty">There\'s no content in %1$s yet</string>
     <string name="home_back_to_all">Back to all</string>
+    <string name="home_view_list">List view</string>
+    <string name="home_view_grid">Grid view</string>
     <plurals name="home_titles_count">
         <item quantity="one">%1$d title</item>
         <item quantity="other">%1$d titles</item>

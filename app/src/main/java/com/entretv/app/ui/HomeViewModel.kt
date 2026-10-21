@@ -335,6 +335,14 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setShowClock(enabled) }
     }
 
+    /** Secciones cuyas categorías se ven en lista en lugar de cuadrícula. */
+    val listViewSections: StateFlow<Set<String>> = settings.listViewSections
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    fun setListView(section: Section, list: Boolean) {
+        viewModelScope.launch { settings.setListView(section.name, list) }
+    }
+
     private val selectedPlaylistId = MutableStateFlow<String?>(null)
     private val query = MutableStateFlow("")
     private val firstSync = MutableStateFlow(false)

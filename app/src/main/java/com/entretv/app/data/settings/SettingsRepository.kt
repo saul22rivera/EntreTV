@@ -107,6 +107,7 @@ class SettingsRepository @Inject constructor(
         private val KEY_SERVER_OVERRIDE = stringPreferencesKey("remote_server_url")
         private val KEY_REMOTE_TMDB_KEY = stringPreferencesKey("remote_tmdb_key")
         private val KEY_CONTINUE_DISMISSED = stringSetPreferencesKey("continue_dismissed")
+        private val KEY_LIST_VIEW_SECTIONS = stringSetPreferencesKey("list_view_sections")
 
         private fun lastRefreshKey(playlistId: String) = longPreferencesKey("last_refresh_$playlistId")
         private fun accountKey(playlistId: String) = stringPreferencesKey("account_info_$playlistId")
@@ -243,6 +244,19 @@ class SettingsRepository @Inject constructor(
             defaultSort = it[KEY_DEFAULT_SORT] ?: DEFAULT_SORT,
             cleanNames = it[KEY_CLEAN_NAMES] ?: true
         )
+    }
+
+    /**
+     * Secciones (nombre de [com.entretv.app.ui.Section]) cuyas categorías se ven en lista, un
+     * renglón por título; las demás, en cuadrícula de pósters.
+     */
+    val listViewSections: Flow<Set<String>> = context.settingsStore.data.map { it[KEY_LIST_VIEW_SECTIONS].orEmpty() }
+
+    suspend fun setListView(section: String, list: Boolean) {
+        context.settingsStore.edit { prefs ->
+            val current = prefs[KEY_LIST_VIEW_SECTIONS].orEmpty()
+            prefs[KEY_LIST_VIEW_SECTIONS] = if (list) current + section else current - section
+        }
     }
 
     /** SHA-256 del PIN parental; vacío = sin PIN. */

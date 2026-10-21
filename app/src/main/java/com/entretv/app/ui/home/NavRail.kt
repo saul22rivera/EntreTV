@@ -120,8 +120,8 @@ fun Section.icon(): ImageVector = when (this) {
  *
  *  - TV: la tira de íconos se expande al recibir el foco y se cierra al salir.
  *  - Tablet: tocar el ícono de menú o deslizar sobre la tira la expande.
- *  - Celular: la píldora flotante de abajo (Inicio, Buscar, secciones y Categorías) se
- *    esconde al bajar; las categorías de la sección van arriba como chips.
+ *  - Celular: la píldora flotante de abajo (Inicio, secciones y Categorías) se esconde al
+ *    bajar; las categorías de la sección van arriba como chips y en el panel de Categorías.
  */
 @Composable
 fun NavRail(
@@ -172,7 +172,6 @@ fun NavRail(
                 searchActive = searchActive,
                 visible = pillVisible && !expanded,
                 onHome = onHome,
-                onSearch = onSearch,
                 onSection = onSection,
                 onMenu = { onExpandedChange(true) },
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -184,6 +183,8 @@ fun NavRail(
                 onStrayFocus = onStrayStripFocus,
                 section = section,
                 searchActive = searchActive,
+                summaryActive = summaryActive,
+                onHome = onHome,
                 onExpand = { onExpandedChange(true) },
                 onSearch = onSearch,
                 onSection = onSection,
@@ -203,6 +204,8 @@ fun NavRail(
                 menuOnlySections = tvMenuOnlySections,
                 section = section,
                 searchActive = searchActive,
+                summaryActive = summaryActive,
+                onHome = { onExpandedChange(false); onHome() },
                 categories = categories,
                 categoryCounts = categoryCounts,
                 categoryLabels = categoryLabels,
@@ -220,6 +223,8 @@ fun NavRail(
                 onDownloads = onDownloads
             ) else ExpandedPanel(
                 width = 288.dp,
+                // En el celular las secciones ya están en la píldora: el panel es de la sección elegida.
+                showSections = !phone,
                 section = section,
                 searchActive = searchActive,
                 categories = categories,
@@ -249,6 +254,8 @@ private fun IconStrip(
     onStrayFocus: () -> Unit,
     section: Section,
     searchActive: Boolean,
+    summaryActive: Boolean,
+    onHome: () -> Unit,
     onExpand: () -> Unit,
     onSearch: () -> Unit,
     onSection: (Section) -> Unit,
@@ -294,8 +301,12 @@ private fun IconStrip(
         }
         StripIcon(Icons.Default.Search, stringResource(R.string.menu_search), selected = searchActive, modifier = expandOnFocus, onClick = onSearch)
         Spacer(Modifier.height(12.dp))
+        if (isTv) {
+            StripIcon(Icons.Default.Home, stringResource(R.string.menu_home), selected = summaryActive && !searchActive, modifier = expandOnFocus, onClick = onHome)
+            Spacer(Modifier.height(6.dp))
+        }
         Section.entries.forEach { s ->
-            StripIcon(s.icon(), s.label, selected = !searchActive && s == section, modifier = expandOnFocus) { onSection(s) }
+            StripIcon(s.icon(), s.label, selected = !searchActive && !summaryActive && s == section, modifier = expandOnFocus) { onSection(s) }
             Spacer(Modifier.height(6.dp))
         }
         Spacer(Modifier.weight(1f))
@@ -342,6 +353,7 @@ private fun StripIcon(
 @Composable
 private fun ExpandedPanel(
     width: androidx.compose.ui.unit.Dp,
+    showSections: Boolean,
     section: Section,
     searchActive: Boolean,
     categories: List<String>,
@@ -407,7 +419,7 @@ private fun ExpandedPanel(
                 modifier = if (searchActive) Modifier.focusRequester(firstFocus) else Modifier,
                 onClick = onSearch
             )
-            Section.entries.forEach { s ->
+            if (showSections) Section.entries.forEach { s ->
                 val selected = !searchActive && s == section
                 PanelItem(
                     icon = s.icon(),
@@ -420,8 +432,12 @@ private fun ExpandedPanel(
             HorizontalDivider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 8.dp))
             if (showCategories && categories.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 12.dp, bottom = 4.dp)) {
+                    if (!showSections) {
+                        Icon(section.icon(), contentDescription = null, tint = EntreBrand.Accent, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(
-                        stringResource(R.string.menu_categories_header),
+                        if (showSections) stringResource(R.string.menu_categories_header) else section.label.uppercase(),
                         color = EntreBrand.Accent,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
@@ -478,9 +494,10 @@ private fun ExpandedPanel(
 private enum class TvLevel { CATEGORIES, MENU }
 
 /**
- * Panel de TV en dos niveles para no amontonar todo: primero las categorías de la sección
- * (izquierda desde el catálogo) y, con otra izquierda, el menú principal. Elegir una sección
- * vuelve a sus categorías con el foco en "Todas". Atrás retrocede un nivel.
+ * Panel de TV en dos niveles para no amontonar todo: la izquierda desde el catálogo abre el
+ * menú principal (Buscar, Inicio, secciones, Descargas y Configuración) y la derecha vuelve
+ * siempre al contenido; sobre otra sección, la abre. OK sobre una sección (o "Categorías")
+ * abre sus categorías con el foco en "Todas"; izquierda o Atrás desde ahí vuelve al menú.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -488,6 +505,8 @@ private fun TvExpandedPanel(
     menuOnlySections: Set<Section>,
     section: Section,
     searchActive: Boolean,
+    summaryActive: Boolean,
+    onHome: () -> Unit,
     categories: List<String>,
     categoryCounts: Map<String, Int>,
     categoryLabels: Map<String, String>,
@@ -504,8 +523,8 @@ private fun TvExpandedPanel(
     onSettings: () -> Unit,
     onDownloads: () -> Unit
 ) {
-    val hasCategories = showCategories && section !in menuOnlySections
-    var level by remember { mutableStateOf(if (hasCategories) TvLevel.CATEGORIES else TvLevel.MENU) }
+    val hasCategories = showCategories && !summaryActive && section !in menuOnlySections
+    var level by remember { mutableStateOf(TvLevel.MENU) }
     var focusAll by remember { mutableStateOf(false) }
     // Mientras cambia de nivel el foco pasa por el botón de cerrar: si quedara en un elemento
     // que desaparece, el panel creería que el foco salió y se cerraría.
@@ -528,6 +547,30 @@ private fun TvExpandedPanel(
         switching = true
         runCatching { anchor.requestFocus() }
         level = to
+    }
+
+    var focusedSection by remember { mutableStateOf<Section?>(null) }
+    var homeFocused by remember { mutableStateOf(false) }
+
+    fun openSection(s: Section) {
+        onSection(s)
+        if (showCategories && s !in menuOnlySections) {
+            focusAll = true
+            go(TvLevel.CATEGORIES)
+        } else onCollapse()
+    }
+
+    /** Derecha en el menú: al contenido de lo enfocado; si es lo que ya se ve, solo cierra. */
+    fun goRight() {
+        val target = focusedSection
+        when {
+            homeFocused && (!summaryActive || searchActive) -> onHome()
+            target != null && (target != section || summaryActive || searchActive) -> {
+                onSection(target)
+                onCollapse()
+            }
+            else -> onCollapse()
+        }
     }
 
     Surface(
@@ -556,20 +599,17 @@ private fun TvExpandedPanel(
                         if (down && level == TvLevel.CATEGORIES) go(TvLevel.MENU)
                         true
                     }
-                    // Sin categorías (En vivo, búsqueda) derecha cierra el menú y el foco vuelve a
-                    // lo que se estaba viendo. Dejarlo a la búsqueda por geometría lo mandaba al
-                    // campo de búsqueda o a ningún lado.
+                    // Derecha nunca se deja a la búsqueda por geometría: mandaba el foco al campo
+                    // de búsqueda o a ningún lado. El catálogo recupera su último póster al cerrar.
                     Key.DirectionRight -> {
-                        when {
-                            level == TvLevel.MENU && hasCategories -> if (down) go(TvLevel.CATEGORIES)
-                            level == TvLevel.MENU -> if (down) onCollapse()
-                            else -> return@onPreviewKeyEvent false
+                        if (down) {
+                            if (level == TvLevel.MENU) goRight() else onCollapse()
                         }
                         true
                     }
                     Key.Back, Key.Escape -> {
                         if (down) {
-                            if (level == TvLevel.MENU && hasCategories) go(TvLevel.CATEGORIES) else onCollapse()
+                            if (level == TvLevel.CATEGORIES) go(TvLevel.MENU) else onCollapse()
                         }
                         true
                     }
@@ -601,19 +641,37 @@ private fun TvExpandedPanel(
             )
             when (level) {
                 TvLevel.MENU -> {
+                    val homeSelected = summaryActive && !searchActive
+                    PanelItem(
+                        icon = Icons.Default.Home,
+                        label = stringResource(R.string.menu_home),
+                        selected = homeSelected,
+                        modifier = (if (homeSelected) Modifier.focusRequester(levelFocus) else Modifier)
+                            .onFocusChanged { homeFocused = it.isFocused },
+                        onClick = onHome
+                    )
                     Section.entries.forEach { s ->
-                        val selected = !searchActive && s == section
+                        val selected = !searchActive && !summaryActive && s == section
                         PanelItem(
                             icon = s.icon(),
                             label = s.label,
                             selected = selected,
-                            modifier = if (selected) Modifier.focusRequester(levelFocus) else Modifier,
+                            modifier = (if (selected) Modifier.focusRequester(levelFocus) else Modifier)
+                                .onFocusChanged {
+                                    if (it.isFocused) focusedSection = s
+                                    else if (focusedSection == s) focusedSection = null
+                                },
+                            onClick = { openSection(s) }
+                        )
+                    }
+                    if (hasCategories) {
+                        PanelItem(
+                            icon = Icons.Default.Menu,
+                            label = stringResource(R.string.menu_categories),
+                            selected = false,
                             onClick = {
-                                onSection(s)
-                                if (showCategories && s !in menuOnlySections) {
-                                    focusAll = true
-                                    go(TvLevel.CATEGORIES)
-                                } else onCollapse()
+                                focusAll = false
+                                go(TvLevel.CATEGORIES)
                             }
                         )
                     }
@@ -818,7 +876,6 @@ private fun FloatingPill(
     searchActive: Boolean,
     visible: Boolean,
     onHome: () -> Unit,
-    onSearch: () -> Unit,
     onSection: (Section) -> Unit,
     onMenu: () -> Unit,
     modifier: Modifier
@@ -844,17 +901,17 @@ private fun FloatingPill(
                 alpha = 1f - hide
             }
     ) {
-        // Seis botones con ícono arriba y texto abajo: caben en celulares de 360 dp.
+        // Botones con ícono arriba y texto abajo. Buscar va en la lupa de arriba; Categorías
+        // solo dentro de una sección, porque Inicio no tiene categorías.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
         ) {
             PillItem(Icons.Default.Home, stringResource(R.string.menu_home), summaryActive && !searchActive, onHome)
-            PillItem(Icons.Default.Search, stringResource(R.string.menu_search), searchActive, onSearch)
             Section.entries.forEach { s ->
                 PillItem(s.icon(), s.label, !summaryActive && !searchActive && s == section) { onSection(s) }
             }
-            PillItem(Icons.Default.Menu, stringResource(R.string.menu_categories), false, onMenu)
+            if (!summaryActive) PillItem(Icons.Default.Menu, stringResource(R.string.menu_categories), false, onMenu)
         }
     }
 }
