@@ -132,7 +132,7 @@ fun LiveChannelList(
                         .fillMaxHeight()
                         .width(if (twoColumns) 640.dp else 360.dp)
                         .pointerInput(Unit) { detectTapGestures { } }
-                        .focusProperties { exit = { FocusRequester.Cancel } }
+                        .focusProperties { onExit = { cancelFocusChange() } }
                         .focusGroup()
                         // Atrás del control: con la salida de foco bloqueada no llegaría al BackHandler.
                         .onPreviewKeyEvent { event ->

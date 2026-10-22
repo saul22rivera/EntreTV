@@ -655,24 +655,23 @@ fun HomeScreen(
                         // Tampoco restoreFocusedChild(): pide el foco dentro del movimiento y deja las
                         // flechas sin responder. Se cancela la entrada y se pide en el frame siguiente.
                         .focusProperties {
-                            enter = {
+                            onEnter = {
                                 val target = tvNav?.lastRequester()
-                                if (catalogFocusFromCode.get()) FocusRequester.Default
-                                else if (target != null) {
+                                if (!catalogFocusFromCode.get() && target != null) {
                                     scope.launch {
                                         withFrameNanos { }
                                         focusInCatalog(target)
                                     }
-                                    FocusRequester.Cancel
-                                } else FocusRequester.Default
+                                    cancelFocusChange()
+                                }
                             }
                             // Con la columna de categorías, izquierda vuelve a la elegida y no a
                             // la que quede enfrente.
-                            exit = { direction ->
-                                if (direction == FocusDirection.Left && tvCategoryColumn) {
+                            onExit = {
+                                if (requestedFocusDirection == FocusDirection.Left && tvCategoryColumn) {
                                     tvCatsFocusRequests++
-                                    FocusRequester.Cancel
-                                } else FocusRequester.Default
+                                    cancelFocusChange()
+                                }
                             }
                         }
                         .focusGroup()

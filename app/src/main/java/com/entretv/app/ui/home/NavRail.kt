@@ -394,7 +394,7 @@ private fun ExpandedPanel(
             // La flecha izquierda no sale del panel: del otro lado está la tira de íconos, que lo
             // volvería a abrir. Se sale con derecha, Atrás o "Cerrar menú".
             .focusProperties {
-                exit = { direction -> if (direction == FocusDirection.Left) FocusRequester.Cancel else FocusRequester.Default }
+                onExit = { if (requestedFocusDirection == FocusDirection.Left) cancelFocusChange() }
             }
             .focusGroup()
     ) {
@@ -589,7 +589,7 @@ private fun TvExpandedPanel(
                 }
             }
             .focusProperties {
-                exit = { direction -> if (direction == FocusDirection.Left) FocusRequester.Cancel else FocusRequester.Default }
+                onExit = { if (requestedFocusDirection == FocusDirection.Left) cancelFocusChange() }
             }
             .focusGroup()
             .onPreviewKeyEvent { event ->

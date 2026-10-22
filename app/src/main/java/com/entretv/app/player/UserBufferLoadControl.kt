@@ -18,6 +18,8 @@ import kotlin.math.min
  *
  * El búfer además tiene techo en bytes: en 4K, 30 s pueden pasar de 150 MB y en equipos
  * con poca memoria eso provoca tirones del recolector o cierres por falta de RAM.
+ *
+ * Las descargas (archivos locales) usan los mismos valores que la red.
  */
 @OptIn(UnstableApi::class)
 class UserBufferLoadControl(
@@ -27,11 +29,16 @@ class UserBufferLoadControl(
 ) : DefaultLoadControl(
     DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE),
     /* minBufferMs = */ MIN_BUFFER_MS,
+    /* minBufferForLocalPlaybackMs = */ MIN_BUFFER_MS,
     /* maxBufferMs = */ MAX_BUFFER_MS,
+    /* maxBufferForLocalPlaybackMs = */ MAX_BUFFER_MS,
     /* bufferForPlaybackMs = */ 2_500,
+    /* bufferForPlaybackForLocalPlaybackMs = */ 2_500,
     /* bufferForPlaybackAfterRebufferMs = */ 5_000,
+    /* bufferForPlaybackAfterRebufferForLocalPlaybackMs = */ 5_000,
     targetBufferBytes,
     /* prioritizeTimeOverSizeThresholds = */ false,
+    /* prioritizeTimeOverSizeThresholdsForLocalPlayback = */ false,
     DEFAULT_BACK_BUFFER_DURATION_MS,
     DEFAULT_RETAIN_BACK_BUFFER_FROM_KEYFRAME
 ) {

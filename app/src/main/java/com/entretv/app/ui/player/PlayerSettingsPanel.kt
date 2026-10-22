@@ -167,7 +167,7 @@ fun PlayerSettingsPanel(
                 else RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
                 modifier = (if (wide) Modifier.fillMaxHeight().width(380.dp) else Modifier.fillMaxWidth().heightIn(max = 520.dp))
                     .pointerInput(Unit) { detectTapGestures { } }
-                    .focusProperties { exit = { FocusRequester.Cancel } }
+                    .focusProperties { onExit = { cancelFocusChange() } }
                     .focusGroup()
                     .onPreviewKeyEvent { event ->
                         when {

@@ -307,11 +307,10 @@ fun TvLiveScreen(
                 }
             }
             .focusProperties {
-                enter = {
-                    if (focusingFromCode.get()) FocusRequester.Default
-                    else {
+                onEnter = {
+                    if (!focusingFromCode.get()) {
                         focusZone()
-                        FocusRequester.Cancel
+                        cancelFocusChange()
                     }
                 }
             }
