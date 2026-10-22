@@ -56,6 +56,8 @@
     <string name="settings_frame_rate_auto">Automático · recomendado en TV</string>
     <string name="settings_tunneling">Modo túnel (TV)</string>
     <string name="settings_tunneling_desc">El video y el audio van directo al chip de la TV: más fluido en algunos equipos. Si notas cortes, falta de sonido o desfase, apágalo. Se aplica desde el siguiente video.</string>
+    <string name="settings_skip_intro">Botón Saltar intro</string>
+    <string name="settings_skip_intro_desc">Aparece en los primeros minutos de cada episodio. Si adelantas a mano la intro de una serie, la próxima vez salta justo hasta ahí.</string>
     <string name="settings_buffer">Búfer de arranque</string>
     <string name="settings_buffer_desc">Segundos de video que se cargan antes de empezar y después de un corte. En vivo usa la mitad para arrancar más rápido.</string>
     <string name="settings_buffer_0">0 s · arranca al instante, puede trabarse más</string>

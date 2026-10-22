@@ -37,7 +37,9 @@ data class PlayerPrefs(
     /** [SettingsRepository.FRAME_RATE_OFF] o [SettingsRepository.FRAME_RATE_AUTO]. */
     val frameRateMode: Int = SettingsRepository.FRAME_RATE_AUTO,
     /** Reproducción en túnel (solo TV). */
-    val tunneling: Boolean = false
+    val tunneling: Boolean = false,
+    /** Botón "Saltar intro" al empezar los episodios de series. */
+    val skipIntroButton: Boolean = true
 )
 
 /** Cómo se muestra el catálogo. */
@@ -118,6 +120,8 @@ class SettingsRepository @Inject constructor(
         private val KEY_REMOTE_TMDB_KEY = stringPreferencesKey("remote_tmdb_key")
         private val KEY_CONTINUE_DISMISSED = stringSetPreferencesKey("continue_dismissed")
         private val KEY_LIST_VIEW_SECTIONS = stringSetPreferencesKey("list_view_sections")
+        private val KEY_SKIP_INTRO = booleanPreferencesKey("skip_intro_button")
+        private val KEY_INTRO_ENDS = stringSetPreferencesKey("intro_ends")
 
         private fun lastRefreshKey(playlistId: String) = longPreferencesKey("last_refresh_$playlistId")
         private fun accountKey(playlistId: String) = stringPreferencesKey("account_info_$playlistId")
@@ -224,8 +228,29 @@ class SettingsRepository @Inject constructor(
             liveFormat = it[KEY_LIVE_FORMAT]?.takeIf { f -> f == LIVE_TS } ?: LIVE_HLS,
             decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO,
             frameRateMode = it[KEY_FRAME_RATE]?.takeIf { m -> m in FRAME_RATE_OFF..FRAME_RATE_AUTO } ?: defaultFrameRateMode,
-            tunneling = isTv && it[KEY_TUNNELING] == true
+            tunneling = isTv && it[KEY_TUNNELING] == true,
+            skipIntroButton = it[KEY_SKIP_INTRO] ?: true
         )
+    }
+
+    suspend fun setSkipIntroButton(enabled: Boolean) {
+        context.settingsStore.edit { it[KEY_SKIP_INTRO] = enabled }
+    }
+
+    /**
+     * Dónde termina la intro de cada serie (ms), aprendido de los saltos hacia adelante que el
+     * usuario hace al empezar un episodio; null si todavía no se sabe.
+     */
+    suspend fun introEnd(seriesKey: String): Long? =
+        context.settingsStore.data.first()[KEY_INTRO_ENDS].orEmpty()
+            .firstOrNull { it.substringBeforeLast('|') == seriesKey }
+            ?.substringAfterLast('|')?.toLongOrNull()
+
+    suspend fun setIntroEnd(seriesKey: String, endMs: Long) {
+        context.settingsStore.edit { prefs ->
+            val kept = prefs[KEY_INTRO_ENDS].orEmpty().filterNot { it.substringBeforeLast('|') == seriesKey }
+            prefs[KEY_INTRO_ENDS] = (kept + "$seriesKey|$endMs").takeLast(300).toSet()
+        }
     }
 
     private val isTv: Boolean by lazy { isTvDevice(context) }

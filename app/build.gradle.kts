@@ -186,6 +186,8 @@ dependencies {
     // Idioma de la app (setApplicationLocales) también antes de Android 13.
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.splashscreen)
+    // "Seguir viendo" y el canal de EntreTV en la pantalla de inicio de Android TV.
+    implementation(libs.androidx.tvprovider)
     implementation(libs.androidx.work.runtime)
     implementation(libs.hilt.work)
     ksp(libs.hilt.androidx.compiler)

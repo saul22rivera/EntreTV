@@ -154,6 +154,11 @@ class PlaylistRepository @Inject constructor(
         channelDao.getByPlaylist(playlistId)
     suspend fun episodeSnapshot(seriesKey: String): List<EpisodeEntity> =
         vodDao.getEpisodes(seriesKey)
+    /** Lo último que agregó el servidor (o su orden, si no informa fecha). */
+    suspend fun recentMovies(playlistId: String, limit: Int): List<VodMovieEntity> =
+        vodDao.recentMovies(playlistId, limit)
+    suspend fun recentSeries(playlistId: String, limit: Int): List<SeriesEntity> =
+        vodDao.recentSeries(playlistId, limit)
 
     // ============================ Cuenta ============================
 

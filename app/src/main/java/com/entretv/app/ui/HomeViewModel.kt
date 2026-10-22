@@ -378,6 +378,10 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setShowClock(enabled) }
     }
 
+    fun setSkipIntroButton(enabled: Boolean) {
+        viewModelScope.launch { settings.setSkipIntroButton(enabled) }
+    }
+
     /** Secciones cuyas categorías se ven en lista en lugar de cuadrícula. */
     val listViewSections: StateFlow<Set<String>> = settings.listViewSections
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())

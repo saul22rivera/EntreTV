@@ -142,6 +142,21 @@ class PlayerViewModel @Inject constructor(
     private val _nextEpisode = MutableStateFlow<EpisodeEntity?>(null)
     val nextEpisode: StateFlow<EpisodeEntity?> = _nextEpisode
 
+    /** El usuario canceló la cuenta regresiva: al terminar este episodio no pasa solo al siguiente. */
+    private val _autoNextCanceled = MutableStateFlow(false)
+    val autoNextCanceled: StateFlow<Boolean> = _autoNextCanceled
+
+    /** Fin de la intro aprendido para la serie actual; null = no se sabe y se salta [DEFAULT_INTRO_SKIP_MS]. */
+    private val _introEndMs = MutableStateFlow<Long?>(null)
+    val introEndMs: StateFlow<Long?> = _introEndMs
+
+    /** La intro de este episodio ya quedó atrás (botón usado o adelantó a mano). */
+    private val _introDone = MutableStateFlow(false)
+    val introDone: StateFlow<Boolean> = _introDone
+    /** Dónde empezó la tanda de saltos en curso; -1 sin tanda. */
+    private var introSeekFrom = -1L
+    private var introLearnJob: Job? = null
+
     /** Canales del mismo grupo que el actual (lista lateral y zapping). */
     private val _groupChannels = MutableStateFlow<List<ChannelEntity>>(emptyList())
     val groupChannels: StateFlow<List<ChannelEntity>> = _groupChannels
@@ -413,6 +428,12 @@ class PlayerViewModel @Inject constructor(
 
     private suspend fun startPlayable(p: Playable) {
         _playable.value = p
+        _autoNextCanceled.value = false
+        _introDone.value = false
+        introLearnJob?.cancel()
+        introSeekFrom = -1L
+        _introEndMs.value = (p as? Playable.Episode)?.episode?.seriesKey
+            ?.takeIf { it.isNotEmpty() }?.let { settings.introEnd(it) }
         val saved = repository.progressFor(p.contentKey)
         val resumeAt = saved?.positionMs?.takeIf { it > 30_000 && saved.durationMs > 0 && !saved.isCompleted } ?: 0L
         val url = if (p.kind == "LIVE") p.streamUrl else downloads.localUri(p.contentKey) ?: p.streamUrl
@@ -493,16 +514,56 @@ class PlayerViewModel @Inject constructor(
                 sleepNow()
                 return@launch
             }
-            if (p is Playable.Episode) {
+            if (p is Playable.Episode && !_autoNextCanceled.value) {
                 val next = _nextEpisode.value
                 if (next != null) {
-                    showNotice(
-                        uiText(R.string.player_notice_up_next, uiText(R.string.player_episode_code, next.season, next.episodeNum))
-                    )
-                    delay(2_500)
-                    if (_playable.value == p) startPlayable(p.copy(episode = next))
+                    // Con duración conocida la tarjeta ya hizo la cuenta regresiva; si no, se avisa antes.
+                    if (playerManager.durationMs.value <= 0) {
+                        showNotice(
+                            uiText(R.string.player_notice_up_next, uiText(R.string.player_episode_code, next.season, next.episodeNum))
+                        )
+                        delay(2_500)
+                    }
+                    if (_playable.value == p && !_autoNextCanceled.value) startPlayable(p.copy(episode = next))
                 }
             }
+        }
+    }
+
+    fun cancelAutoNext() {
+        _autoNextCanceled.value = true
+    }
+
+    /** Hasta el fin de la intro aprendido o, si no se sabe, [DEFAULT_INTRO_SKIP_MS] más adelante. */
+    fun skipIntro() {
+        if (_playable.value !is Playable.Episode) return
+        val position = playerManager.player.currentPosition.coerceAtLeast(0L)
+        val target = _introEndMs.value?.takeIf { it > position } ?: (position + DEFAULT_INTRO_SKIP_MS)
+        val duration = playerManager.durationMs.value
+        _introDone.value = true
+        playerManager.player.seekTo(if (duration > 0) target.coerceAtMost(duration - 1_000) else target)
+        viewModelScope.launch { _playable.value?.let { savePosition(it) } }
+    }
+
+    /**
+     * Una tanda de saltos (adelantar varias veces, corregir hacia atrás) que empieza en los
+     * primeros minutos del episodio y termina más adelante, sin pasar de [INTRO_MAX_END_MS],
+     * marca el fin de la intro de esa serie. Se toma donde quedó al dejar de saltar.
+     */
+    private fun learnIntroEnd(from: Long, to: Long) {
+        val p = _playable.value as? Playable.Episode ?: return
+        val seriesKey = p.episode.seriesKey.takeIf { it.isNotEmpty() } ?: return
+        if (introSeekFrom < 0) introSeekFrom = from
+        introLearnJob?.cancel()
+        introLearnJob = viewModelScope.launch {
+            delay(INTRO_SEEK_SETTLE_MS)
+            val start = introSeekFrom
+            introSeekFrom = -1L
+            if (_playable.value != p || start >= INTRO_WINDOW_MS || to <= start) return@launch
+            if (to < INTRO_SHOW_FROM_MS || to > INTRO_MAX_END_MS) return@launch
+            _introDone.value = true
+            _introEndMs.value = to
+            settings.setIntroEnd(seriesKey, to)
         }
     }
 
@@ -533,6 +594,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun seekTo(positionMs: Long) {
+        learnIntroEnd(playerManager.player.currentPosition.coerceAtLeast(0L), positionMs)
         playerManager.player.seekTo(positionMs)
         viewModelScope.launch { _playable.value?.let { savePosition(it) } }
     }
@@ -550,6 +612,17 @@ class PlayerViewModel @Inject constructor(
 
     companion object {
         private val DIACRITICS = Regex("\\p{Mn}+")
+
+        /** "Saltar intro" aparece desde aquí… */
+        const val INTRO_SHOW_FROM_MS = 5_000L
+        /** …hasta aquí si no se conoce el fin de la intro de la serie. */
+        const val INTRO_WINDOW_MS = 180_000L
+        /** Se oculta un poco antes del fin aprendido. */
+        const val INTRO_END_MARGIN_MS = 2_000L
+        /** Más allá de esto un salto ya no se toma como fin de la intro. */
+        private const val INTRO_MAX_END_MS = 300_000L
+        private const val DEFAULT_INTRO_SKIP_MS = 85_000L
+        private const val INTRO_SEEK_SETTLE_MS = 3_000L
 
         fun formatMs(ms: Long): String {
             val totalSec = ms / 1000

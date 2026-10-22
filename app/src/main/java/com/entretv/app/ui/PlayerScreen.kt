@@ -49,6 +49,7 @@ import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FastForward
@@ -122,6 +123,7 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.entretv.app.R
 import com.entretv.app.data.local.EpgEntity
+import com.entretv.app.data.local.EpisodeEntity
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.player.PipController
 import com.entretv.app.ui.player.ChannelBrowser
@@ -137,7 +139,8 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 
 private const val AUTO_HIDE_MS = 4_000L
-private const val NEXT_EPISODE_WINDOW_MS = 40_000L
+/** Créditos: la tarjeta "Siguiente episodio en N" cuenta lo que falta y al llegar a 0 pasa sola. */
+private const val NEXT_EPISODE_WINDOW_MS = 30_000L
 private const val DOUBLE_TAP_SEEK_MS = 10_000L
 private const val SCRUB_COMMIT_MS = 1_200L
 
@@ -173,6 +176,9 @@ fun PlayerScreen(
     val sleepMinutes by viewModel.sleepMinutes.collectAsState()
     val sleepEndsAt by viewModel.sleepEndsAt.collectAsState()
     val nextEpisode by viewModel.nextEpisode.collectAsState()
+    val autoNextCanceled by viewModel.autoNextCanceled.collectAsState()
+    val introEnd by viewModel.introEndMs.collectAsState()
+    val introDone by viewModel.introDone.collectAsState()
     val liveCategories by viewModel.liveCategories.collectAsState()
     val browseCategory by viewModel.browseCategory.collectAsState()
     val browseQuery by viewModel.browseQuery.collectAsState()
@@ -198,6 +204,7 @@ fun PlayerScreen(
     val rootFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
+    val skipIntroFocus = remember { FocusRequester() }
     val seekFocus = remember { FocusRequester() }
 
     fun showControls() {
@@ -312,17 +319,22 @@ fun PlayerScreen(
     }
 
     val remaining = duration - position
-    val showNextEpisode = nextEpisode != null && duration > 0 &&
+    val showNextEpisode = nextEpisode != null && duration > 0 && !autoNextCanceled &&
         remaining in 1..NEXT_EPISODE_WINDOW_MS && !overlayOpen && !inPip
+    val introLimit = introEnd?.let { it - PlayerViewModel.INTRO_END_MARGIN_MS } ?: PlayerViewModel.INTRO_WINDOW_MS
+    val showSkipIntro = prefs.skipIntroButton && playable is Playable.Episode && !introDone &&
+        position in PlayerViewModel.INTRO_SHOW_FROM_MS until introLimit &&
+        !showNextEpisode && !overlayOpen && !inPip && playError == null
 
     // En TV el foco va a Play al mostrar controles y vuelve a la raíz al ocultarlos.
-    LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode) {
+    LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro) {
         if (overlayOpen) return@LaunchedEffect
         delay(60)
         runCatching {
             when {
                 controlsVisible -> playFocus.requestFocus()
                 showNextEpisode && profile.isTv -> nextFocus.requestFocus()
+                showSkipIntro && profile.isTv -> skipIntroFocus.requestFocus()
                 else -> rootFocus.requestFocus()
             }
         }
@@ -554,24 +566,34 @@ fun PlayerScreen(
                         .padding(end = 24.dp, bottom = if (controlsVisible) (if (portrait) 170.dp else 110.dp) else 32.dp)
                 ) {
                     nextEpisode?.let { next ->
-                        Column(horizontalAlignment = Alignment.End) {
-                            EntreButton(
-                                text = stringResource(R.string.player_next_episode_button),
-                                icon = Icons.Default.SkipNext,
-                                primary = true,
-                                onClick = viewModel::playNextEpisode,
-                                modifier = Modifier.focusRequester(nextFocus)
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                stringResource(
-                                    R.string.player_next_episode_countdown,
-                                    next.season, next.episodeNum, (remaining / 1000).coerceAtLeast(0).toInt()
-                                ),
-                                color = Color.White.copy(alpha = 0.85f),
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
+                        NextEpisodeCard(
+                            next = next,
+                            fallbackImage = (playable as? Playable.Episode)?.seriesCover.orEmpty(),
+                            secondsLeft = ((remaining + 999) / 1000).coerceAtLeast(0).toInt(),
+                            compact = portrait,
+                            playFocus = nextFocus,
+                            onPlayNow = viewModel::playNextEpisode,
+                            onCancel = viewModel::cancelAutoNext
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = showSkipIntro,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 24.dp, bottom = if (controlsVisible) (if (portrait) 170.dp else 110.dp) else 32.dp)
+                ) {
+                    // Fondo oscuro debajo: el botón translúcido se pierde en escenas claras.
+                    Box(Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))) {
+                        EntreButton(
+                            text = stringResource(R.string.player_skip_intro),
+                            icon = Icons.Default.SkipNext,
+                            onClick = viewModel::skipIntro,
+                            modifier = Modifier.focusRequester(skipIntroFocus)
+                        )
                     }
                 }
 
@@ -627,13 +649,16 @@ fun PlayerScreen(
                         if (overlayOpen || controlsVisible || portraitLive) return@onPreviewKeyEvent false
                         when (event.key) {
                             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                                if (showNextEpisode) false else { showControls(); true }
+                                if (showNextEpisode || showSkipIntro) false else { showControls(); true }
                             }
+                            // Con la tarjeta del siguiente episodio, izquierda y derecha van entre sus botones.
                             Key.DirectionLeft -> {
+                                if (showNextEpisode) return@onPreviewKeyEvent false
                                 if (isLive) openChannels() else seekBy(-10_000)
                                 true
                             }
                             Key.DirectionRight -> {
+                                if (showNextEpisode) return@onPreviewKeyEvent false
                                 if (isLive) showControls() else seekBy(30_000)
                                 true
                             }
@@ -741,6 +766,69 @@ fun PlayerScreen(
 }
 
 /** Aviso chico arriba del video: no tapa la imagen mientras se recupera solo. */
+/** "Siguiente episodio en N" con miniatura, Reproducir ahora y Cancelar. */
+@Composable
+private fun NextEpisodeCard(
+    next: EpisodeEntity,
+    fallbackImage: String,
+    secondsLeft: Int,
+    compact: Boolean,
+    playFocus: FocusRequester,
+    onPlayNow: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Surface(color = Color.Black.copy(alpha = 0.82f), shape = RoundedCornerShape(14.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(12.dp)
+        ) {
+            if (!compact) {
+                FallbackImage(
+                    urls = listOf(next.imageUrl, fallbackImage).filter { it.isNotBlank() }.distinct(),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .width(160.dp)
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(8.dp))
+                )
+                Spacer(Modifier.width(14.dp))
+            }
+            Column(Modifier.width(if (compact) 240.dp else 300.dp)) {
+                Text(
+                    stringResource(R.string.player_up_next_in, secondsLeft),
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    stringResource(R.string.player_episode_subtitle, next.season, next.episodeNum, next.title),
+                    color = Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    EntreButton(
+                        text = stringResource(R.string.player_play_now),
+                        icon = Icons.Default.PlayArrow,
+                        primary = true,
+                        compact = true,
+                        onClick = onPlayNow,
+                        modifier = Modifier.focusRequester(playFocus)
+                    )
+                    EntreButton(
+                        text = stringResource(R.string.player_cancel),
+                        icon = Icons.Default.Close,
+                        compact = true,
+                        onClick = onCancel
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReconnectPill(offline: Boolean, attempt: Int, modifier: Modifier = Modifier) {
     Surface(color = Color.Black.copy(alpha = 0.72f), shape = RoundedCornerShape(50), modifier = modifier) {

@@ -1,6 +1,7 @@
 package com.entretv.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -21,6 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.entretv.app.player.PipController
+import com.entretv.app.tv.TvDeepLink
 import com.entretv.app.ui.AppStartup
 import com.entretv.app.ui.BrowseItem
 import com.entretv.app.ui.DetailsScreen
@@ -44,6 +46,9 @@ class MainActivity : AppCompatActivity() {
     /** True mientras el usuario está en la pantalla de reproducción. */
     private var inPlayer by mutableStateOf(false)
 
+    /** Tarjeta elegida en el inicio de la TV; se abre apenas hay sesión. */
+    private var pendingLink by mutableStateOf<TvDeepLink?>(null)
+
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
@@ -58,6 +63,7 @@ class MainActivity : AppCompatActivity() {
             provider.view.animate().alpha(0f).setDuration(250L).withEndAction { provider.remove() }.start()
         }
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) pendingLink = TvDeepLink.parse(intent)
         if (Build.VERSION.SDK_INT >= 33) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -70,7 +76,11 @@ class MainActivity : AppCompatActivity() {
                     Session.LOADING -> Unit
                     Session.LOGGED_OUT -> {
                         inPlayer = false
-                        LaunchedEffect(Unit) { AppStartup.markReady() }
+                        // Sin sesión la tarjeta del inicio solo abre la app.
+                        LaunchedEffect(pendingLink) {
+                            pendingLink = null
+                            AppStartup.markReady()
+                        }
                         LoginScreen()
                     }
                     Session.LOGGED_IN -> AppNavHost()
@@ -83,6 +93,18 @@ class MainActivity : AppCompatActivity() {
     @Composable
     private fun AppNavHost() {
         val navController = rememberNavController()
+        val link = pendingLink
+        LaunchedEffect(link) {
+            if (link == null) return@LaunchedEffect
+            pendingLink = null
+            AppStartup.markReady()
+            val route: Any = if (link.play) PlayerRoute(link.id, link.kind) else DetailsRoute(link.id, link.kind)
+            // Inicio queda debajo: Atrás vuelve ahí y no a lo que estaba abierto antes.
+            navController.navigate(route) {
+                popUpTo<HomeRoute>()
+                launchSingleTop = true
+            }
+        }
         NavHost(navController = navController, startDestination = HomeRoute) {
             composable<HomeRoute> {
                 inPlayer = false
@@ -135,6 +157,11 @@ class MainActivity : AppCompatActivity() {
                 PlayerScreen(onBack = { navController.popBackStack() })
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        TvDeepLink.parse(intent)?.let { pendingLink = it }
     }
 
     override fun onUserLeaveHint() {

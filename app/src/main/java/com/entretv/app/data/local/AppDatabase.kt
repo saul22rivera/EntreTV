@@ -80,6 +80,12 @@ interface VodDao {
     @Query("SELECT * FROM series WHERE playlistId = :playlistId")
     suspend fun getSeriesList(playlistId: String): List<SeriesEntity>
 
+    @Query("SELECT * FROM vod_movies WHERE playlistId = :playlistId ORDER BY added DESC, position LIMIT :limit")
+    suspend fun recentMovies(playlistId: String, limit: Int): List<VodMovieEntity>
+
+    @Query("SELECT * FROM series WHERE playlistId = :playlistId ORDER BY added DESC, position LIMIT :limit")
+    suspend fun recentSeries(playlistId: String, limit: Int): List<SeriesEntity>
+
     @Query("SELECT id FROM vod_movies WHERE playlistId = :playlistId AND categoryName IN (:categories)")
     suspend fun movieIdsIn(playlistId: String, categories: List<String>): List<String>
 

@@ -114,6 +114,7 @@ fun SettingsPanel(
     isTv: Boolean,
     onFrameRateModeChange: (Int) -> Unit,
     onTunnelingChange: (Boolean) -> Unit,
+    onSkipIntroChange: (Boolean) -> Unit,
     refreshMode: Int,
     onRefreshModeChange: (Int) -> Unit,
     lastRefreshLabel: String,
@@ -217,6 +218,13 @@ fun SettingsPanel(
                     onChange = onTunnelingChange
                 )
             }
+            Spacer(Modifier.height(6.dp))
+            SwitchLine(
+                title = stringResource(R.string.settings_skip_intro),
+                subtitle = stringResource(R.string.settings_skip_intro_desc),
+                checked = playerPrefs.skipIntroButton,
+                onChange = onSkipIntroChange
+            )
             Spacer(Modifier.height(10.dp))
             SettingLabel(
                 stringResource(R.string.settings_buffer),

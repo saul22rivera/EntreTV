@@ -1054,6 +1054,7 @@ fun HomeScreen(
             isTv = profile.isTv,
             onFrameRateModeChange = viewModel::setFrameRateMode,
             onTunnelingChange = viewModel::setTunneling,
+            onSkipIntroChange = viewModel::setSkipIntroButton,
             refreshMode = refreshMode,
             onRefreshModeChange = viewModel::setRefreshMode,
             lastRefreshLabel = lastUpdateLabel(lastRefreshAt),

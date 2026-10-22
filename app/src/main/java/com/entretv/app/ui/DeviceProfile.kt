@@ -50,7 +50,8 @@ private var lowRamCached: Boolean? = null
 
 /**
  * Equipo con poca memoria (TV box baratos, Fire TV Stick): el sistema lo marca así, el heap
- * normal de una app es de 192 MB o menos, o tiene menos de ~2,5 GB de RAM. Ahí las imágenes
+ * normal de una app es de menos de 192 MB (128 o 160; con 192 hay equipos capaces, como la
+ * Shield), o tiene menos de ~2,5 GB de RAM. Ahí las imágenes
  * van en RGB_565, el foco no anima y la caché y el búfer de video son más chicos.
  * Se calcula una vez por proceso.
  */
@@ -65,7 +66,7 @@ private fun detectLowRam(context: Context): Boolean {
         }
     }
     val am = context.getSystemService(ActivityManager::class.java) ?: return false
-    if (am.isLowRamDevice || am.memoryClass <= LOW_RAM_HEAP_MB) return true
+    if (am.isLowRamDevice || am.memoryClass < LOW_RAM_HEAP_MB) return true
     val info = ActivityManager.MemoryInfo().also(am::getMemoryInfo)
     return info.totalMem in 1 until LOW_RAM_TOTAL_BYTES
 }

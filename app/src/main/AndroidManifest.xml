@@ -45,6 +45,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Android TV: el launcher pide el canal y "Seguir viendo" al instalar la app. -->
+        <receiver
+            android:name=".tv.TvHomeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.tv.action.INITIALIZE_PROGRAMS" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".player.PlaybackService"
             android:exported="true"

@@ -47,8 +47,9 @@
     <string name="player_seek_hint">◀ ▶ mover · OK ir aquí</string>
     <string name="player_play">Reproducir</string>
     <string name="player_pause">Pausar</string>
-    <string name="player_next_episode_button">Siguiente capítulo</string>
-    <string name="player_next_episode_countdown">T%1$d:E%2$d · en %3$d s</string>
+    <string name="player_up_next_in">Siguiente episodio en %1$d</string>
+    <string name="player_play_now">Reproducir ahora</string>
+    <string name="player_skip_intro">Saltar intro</string>
     <string name="player_offline">Sin conexión · se reanuda al volver la red</string>
     <string name="player_reconnecting">Reconectando…</string>
     <string name="player_reconnecting_attempt">Reconectando… (intento %1$d)</string>

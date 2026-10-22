@@ -56,6 +56,8 @@
     <string name="settings_frame_rate_auto">Automatic · recommended on TV</string>
     <string name="settings_tunneling">Tunneled mode (TV)</string>
     <string name="settings_tunneling_desc">Video and audio go straight to the TV chip: smoother on some devices. If you notice stutter, no sound or lip-sync issues, turn it off. Applies from the next video.</string>
+    <string name="settings_skip_intro">Skip intro button</string>
+    <string name="settings_skip_intro_desc">Shows up in the first minutes of each episode. If you fast-forward through a series intro yourself, next time it jumps right there.</string>
     <string name="settings_buffer">Startup buffer</string>
     <string name="settings_buffer_desc">Seconds of video loaded before playback starts and after an interruption. Live TV uses half to start faster.</string>
     <string name="settings_buffer_0">0 s · starts instantly, may stutter more</string>

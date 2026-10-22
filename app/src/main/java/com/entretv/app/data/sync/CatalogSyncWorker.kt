@@ -10,6 +10,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.entretv.app.data.repo.PlaylistRepository
+import com.entretv.app.tv.TvHomePublisher
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.util.Calendar
@@ -18,18 +19,23 @@ import java.util.concurrent.TimeUnit
 /**
  * Actualiza el catálogo poco después del corte de la mañana (y del de la noche), con la app
  * cerrada: al abrirla ya está al día y no hace falta bajar nada. Usa la misma regla que al
- * entrar, así que si ya se actualizó después del corte no vuelve a bajar.
+ * entrar, así que si ya se actualizó después del corte no vuelve a bajar. En Android TV
+ * después renueva el canal de EntreTV del inicio (una vez por día como mucho).
  */
 @HiltWorker
 class CatalogSyncWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
-    private val repository: PlaylistRepository
+    private val repository: PlaylistRepository,
+    private val tvHome: TvHomePublisher
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result =
         repository.refreshAll(force = false).fold(
-            onSuccess = { Result.success() },
+            onSuccess = {
+                tvHome.refreshChannel(force = false)
+                Result.success()
+            },
             onFailure = { if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else Result.success() }
         )
 

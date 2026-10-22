@@ -11,17 +11,24 @@ import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.sync.CatalogSyncWorker
+import com.entretv.app.tv.TvHomePublisher
 import com.entretv.app.ui.AppLanguage
 import com.entretv.app.ui.isLowRamDevice
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import kotlin.concurrent.thread
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 @HiltAndroidApp
 class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var downloads: DownloadRepository
+    @Inject lateinit var tvHome: dagger.Lazy<TvHomePublisher>
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
@@ -31,7 +38,10 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
         AppLanguage.init(this)
         downloads.resumePending()
         // WorkManager abre su base al primer uso: fuera del hilo principal para no demorar el arranque.
-        thread(name = "catalog-sync-schedule") { CatalogSyncWorker.schedule(this) }
+        thread(name = "catalog-sync-schedule") {
+            CatalogSyncWorker.schedule(this)
+            if (TvHomePublisher.isSupported(this)) tvHome.get().start(appScope)
+        }
     }
 
     // Las imágenes se decodifican al tamaño en pantalla (AsyncImage toma el del layout).
