@@ -2,6 +2,7 @@ package com.entretv.app.data.repo
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import android.util.LruCache
 import androidx.annotation.StringRes
 import androidx.room.withTransaction
@@ -57,6 +58,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -316,7 +318,7 @@ class PlaylistRepository @Inject constructor(
             refreshLock.withLock {
                 playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force) }
             }
-        }
+        }.onFailure { logSyncFailure("refresh", it) }
     }
 
     suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<UiText>> = withContext(syncDispatcher) {
@@ -325,7 +327,7 @@ class PlaylistRepository @Inject constructor(
                 val p = playlistDao.get(playlistId) ?: error("Playlist no encontrada")
                 refreshIfDue(p, force)
             }
-        }
+        }.onFailure { logSyncFailure("refresh", it) }
     }
 
     /** True si la lista nunca se descargó completa (primer inicio de sesión). */
@@ -340,35 +342,46 @@ class PlaylistRepository @Inject constructor(
                 val account = async { refreshAccountInfo(p) }
                 refreshPlaylistInternal(p, force).also { account.await() }
             }
-            if (failed.size < 3) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
-            return failed
+            // Una sección que falló y quedó vacía se vuelve a pedir al entrar, sin esperar al próximo corte.
+            val emptyAfterFailure = failed.any { sectionCount(p.id, it.section) == 0 }
+            if (failed.size < 3 && !emptyAfterFailure) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
+            return failed.map { sectionFailed(it.section, it.error!!) }
         } finally {
             _syncing.value = false
         }
     }
 
-    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<UiText> = coroutineScope {
+    /** @return secciones que no se pudieron actualizar. */
+    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<SectionResult> = coroutineScope {
         when (p.type) {
-            "M3U" -> listOfNotNull(
-                runSection(R.string.home_refresh_channels) {
+            "M3U" -> listOf(
+                prepareSection(SECTION_LIVE) {
                     val body = withRetry { xtreamApi.fetchText(p.url).string() }
-                    if (!force && unchanged(p.id, "m3u", textPrint(body), "") && channelDao.count(p.id) > 0) return@runSection
+                    if (!force && unchanged(p.id, "m3u", textPrint(body), "") && channelDao.count(p.id) > 0) return@prepareSection null
                     val channels = M3uParser.parse(p.id, body)
-                    if (channels.isNotEmpty()) {
-                        database.withTransaction {
+                    if (channels.isEmpty()) return@prepareSection null
+                    PendingSave(
+                        save = {
                             channelDao.deleteByPlaylist(p.id)
                             channelDao.upsertAll(channels)
                             saveCategories(p.id, SECTION_LIVE, channels.map { it.groupTitle })
-                        }
-                        remember(p.id, "m3u", textPrint(body), "")
+                        },
+                        saved = { remember(p.id, "m3u", textPrint(body), "") }
+                    )
+                }
+            ).let { saveSections(it) }
+            else -> {
+                suspend fun prepare(section: String) = prepareSection(section) {
+                    when (section) {
+                        SECTION_LIVE -> prepareLive(p, force)
+                        SECTION_MOVIES -> prepareMovies(p, force)
+                        else -> prepareSeries(p, force)
                     }
                 }
-            )
-            else -> {
-                val live = async { prepareSection(R.string.home_refresh_channels) { prepareLive(p, force) } }
-                val movies = async { prepareSection(R.string.section_movies) { prepareMovies(p, force) } }
-                val series = async { prepareSection(R.string.section_series) { prepareSeries(p, force) } }
-                saveSections(listOf(live.await(), movies.await(), series.await()))
+                val first = listOf(SECTION_LIVE, SECTION_MOVIES, SECTION_SERIES).map { async { prepare(it) } }.awaitAll()
+                // Si una lista llegó cortada en todos los intentos, una vuelta más ya sin las otras descargas.
+                val results = first.map { if (it.error is SerializationException) prepare(it.section) else it }
+                saveSections(results)
             }
         }
     }
@@ -376,34 +389,44 @@ class PlaylistRepository @Inject constructor(
     /** Sección ya bajada y leída: [save] la escribe en la base y [saved] anota su huella. */
     private class PendingSave(val save: suspend () -> Unit, val saved: () -> Unit)
 
-    private class SectionResult(@StringRes val label: Int, val pending: PendingSave?, val failure: UiText?)
+    private class SectionResult(val section: String, val pending: PendingSave?, val error: Exception?)
 
-    private suspend fun prepareSection(@StringRes label: Int, block: suspend () -> PendingSave?): SectionResult =
+    private suspend fun prepareSection(section: String, block: suspend () -> PendingSave?): SectionResult =
         try {
-            SectionResult(label, block(), null)
+            SectionResult(section, block(), null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            SectionResult(label, null, sectionFailed(label, e))
+            logSyncFailure(section, e)
+            SectionResult(section, null, e)
         }
 
     /**
      * Guarda juntas las secciones que cambiaron, en una transacción: Room avisa una sola vez y
      * la pantalla se arma de nuevo una vez al final, sin pasar por una lista vacía.
+     *
+     * @return secciones que no se pudieron bajar o guardar.
      */
-    private suspend fun saveSections(results: List<SectionResult>): List<UiText> {
-        val failures = results.mapNotNull { it.failure }
+    private suspend fun saveSections(results: List<SectionResult>): List<SectionResult> {
+        val failed = results.filter { it.error != null }
         val pending = results.filter { it.pending != null }
-        if (pending.isEmpty()) return failures
+        if (pending.isEmpty()) return failed
         return try {
             database.withTransaction { pending.forEach { it.pending!!.save() } }
             pending.forEach { it.pending!!.saved() }
-            failures
+            failed
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            failures + pending.map { sectionFailed(it.label, e) }
+            logSyncFailure("save", e)
+            failed + pending.map { SectionResult(it.section, null, e) }
         }
+    }
+
+    private suspend fun sectionCount(playlistId: String, section: String): Int = when (section) {
+        SECTION_LIVE -> channelDao.count(playlistId)
+        SECTION_MOVIES -> vodDao.countMovies(playlistId)
+        else -> vodDao.countSeries(playlistId)
     }
 
     private suspend fun prepareLive(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
@@ -582,6 +605,7 @@ class PlaylistRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            logSyncFailure(action, e)
             null
         }
 
@@ -604,18 +628,22 @@ class PlaylistRepository @Inject constructor(
     private fun Throwable.isRetryable(): Boolean =
         this is IOException || this is SerializationException || (this is HttpException && code() >= 500)
 
-    private suspend fun runSection(@StringRes label: Int, block: suspend () -> Unit): UiText? =
-        try {
-            block()
-            null
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            sectionFailed(label, e)
+    private fun sectionFailed(section: String, e: Exception): UiText {
+        val label = when (section) {
+            SECTION_MOVIES -> R.string.section_movies
+            SECTION_SERIES -> R.string.section_series
+            else -> R.string.home_refresh_channels
         }
+        return uiText(R.string.home_refresh_section_failed, uiText(label), e.friendlyReason())
+    }
 
-    private fun sectionFailed(@StringRes label: Int, e: Exception): UiText =
-        uiText(R.string.home_refresh_section_failed, uiText(label), e.friendlyReason())
+    /** Solo la clase y el mensaje: las URL de la cuenta llevan usuario y contraseña. */
+    private fun logSyncFailure(what: String, e: Throwable) {
+        if (e is CancellationException) return
+        Log.w(TAG, "$what: ${e.javaClass.simpleName}: ${e.message.orEmpty().lineSequence().first().redactUrls()}")
+    }
+
+    private fun String.redactUrls(): String = replace(URL_PATTERN, "<url>")
 
     private fun Throwable.friendlyReason(): UiText = when (this) {
         is SerializationException -> uiText(R.string.home_refresh_reason_cut)
@@ -825,6 +853,8 @@ class PlaylistRepository @Inject constructor(
         const val SECTION_MOVIES = "MOVIES"
         const val SECTION_SERIES = "SERIES"
         private const val MAX_ATTEMPTS = 4
+        private const val TAG = "CatalogSync"
+        private val URL_PATTERN = Regex("""\w+://\S+""")
         private val CATEGORY_LIST = ListSerializer(XtreamCategory.serializer())
 
         /** El proveedor publica lo nuevo temprano: después de esta hora vale la pena volver a bajar. */
