@@ -111,6 +111,9 @@ fun SettingsPanel(
     onSubtitlesByDefaultChange: (Boolean) -> Unit,
     onLiveFormatChange: (String) -> Unit,
     onDecoderChange: (Int) -> Unit,
+    isTv: Boolean,
+    onFrameRateModeChange: (Int) -> Unit,
+    onTunnelingChange: (Boolean) -> Unit,
     refreshMode: Int,
     onRefreshModeChange: (Int) -> Unit,
     lastRefreshLabel: String,
@@ -196,6 +199,23 @@ fun SettingsPanel(
                 SettingsRepository.DECODER_SOFTWARE to R.string.settings_decoder_software
             ).forEach { (mode, label) ->
                 RadioLine(stringResource(label), playerPrefs.decoder == mode) { onDecoderChange(mode) }
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingLabel(stringResource(R.string.settings_frame_rate), stringResource(R.string.settings_frame_rate_desc))
+            listOf(
+                SettingsRepository.FRAME_RATE_OFF to R.string.settings_frame_rate_off,
+                SettingsRepository.FRAME_RATE_AUTO to R.string.settings_frame_rate_auto
+            ).forEach { (mode, label) ->
+                RadioLine(stringResource(label), playerPrefs.frameRateMode == mode) { onFrameRateModeChange(mode) }
+            }
+            if (isTv) {
+                Spacer(Modifier.height(6.dp))
+                SwitchLine(
+                    title = stringResource(R.string.settings_tunneling),
+                    subtitle = stringResource(R.string.settings_tunneling_desc),
+                    checked = playerPrefs.tunneling,
+                    onChange = onTunnelingChange
+                )
             }
             Spacer(Modifier.height(10.dp))
             SettingLabel(

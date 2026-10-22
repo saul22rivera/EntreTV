@@ -362,6 +362,14 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setDecoder(mode) }
     }
 
+    fun setFrameRateMode(mode: Int) {
+        viewModelScope.launch { settings.setFrameRateMode(mode) }
+    }
+
+    fun setTunneling(enabled: Boolean) {
+        viewModelScope.launch { settings.setTunneling(enabled) }
+    }
+
     fun setShowClock(enabled: Boolean) {
         viewModelScope.launch { settings.setShowClock(enabled) }
     }

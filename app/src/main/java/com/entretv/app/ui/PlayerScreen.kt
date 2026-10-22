@@ -127,6 +127,7 @@ import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.player.PipController
 import com.entretv.app.ui.player.ChannelBrowser
 import com.entretv.app.ui.player.ChannelBrowserState
+import com.entretv.app.ui.player.FrameRateMatchEffect
 import com.entretv.app.ui.player.LiveChannelList
 import com.entretv.app.ui.player.PlayerSettingsPanel
 import com.entretv.app.ui.player.resizeLabelRes
@@ -178,6 +179,7 @@ fun PlayerScreen(
     val browseQuery by viewModel.browseQuery.collectAsState()
     val browseChannels by viewModel.browseChannels.collectAsState()
     val inPip by PipController.active.collectAsState()
+    val currentKey by manager.currentKey.collectAsState()
 
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     var panelOpen by rememberSaveable { mutableStateOf(false) }
@@ -262,6 +264,15 @@ fun PlayerScreen(
         val ok = activity?.let { PipController.enter(it) } == true
         if (!ok) feedback = Feedback(Icons.Default.PictureInPictureAlt, context.getString(R.string.player_pip_unsupported), durationMs = 1_800)
     }
+
+    // En vivo no: zapear entre canales de 50 y 60 Hz dejaría la TV en negro en cada cambio.
+    FrameRateMatchEffect(
+        player = manager.player,
+        activity = activity,
+        enabled = profile.isTv && playable != null && !isLive &&
+            prefs.frameRateMode == SettingsRepository.FRAME_RATE_AUTO,
+        contentKey = currentKey
+    )
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {

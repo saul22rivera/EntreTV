@@ -1,5 +1,7 @@
 package com.entretv.app.ui
 
+import android.app.UiModeManager
+import android.content.Context
 import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -25,6 +27,10 @@ data class DeviceProfile(
     /** Celular, aunque esté acostado: acostado usa las medidas de tablet por el ancho. */
     val isPhone: Boolean = false
 )
+
+/** Mismo criterio que [rememberDeviceProfile], para quien no está en Compose. */
+fun isTvDevice(context: Context): Boolean =
+    context.getSystemService(UiModeManager::class.java)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
 
 @Composable
 fun rememberDeviceProfile(): DeviceProfile {

@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.entretv.app.BuildConfig
+import com.entretv.app.ui.isTvDevice
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -32,7 +33,11 @@ data class PlayerPrefs(
     /** Formato de los canales en vivo de Xtream: [SettingsRepository.LIVE_HLS] o [SettingsRepository.LIVE_TS]. */
     val liveFormat: String = SettingsRepository.LIVE_HLS,
     /** [SettingsRepository.DECODER_AUTO], [SettingsRepository.DECODER_HARDWARE] o [SettingsRepository.DECODER_SOFTWARE]. */
-    val decoder: Int = SettingsRepository.DECODER_AUTO
+    val decoder: Int = SettingsRepository.DECODER_AUTO,
+    /** [SettingsRepository.FRAME_RATE_OFF] o [SettingsRepository.FRAME_RATE_AUTO]. */
+    val frameRateMode: Int = SettingsRepository.FRAME_RATE_AUTO,
+    /** Reproducción en túnel (solo TV). */
+    val tunneling: Boolean = false
 )
 
 /** Cómo se muestra el catálogo. */
@@ -85,6 +90,9 @@ class SettingsRepository @Inject constructor(
         const val DECODER_HARDWARE = 1
         const val DECODER_SOFTWARE = 2
 
+        const val FRAME_RATE_OFF = 0
+        const val FRAME_RATE_AUTO = 1
+
         /** Actualización del catálogo al entrar a la app. */
         const val REFRESH_ALWAYS = 0
         const val REFRESH_DAILY = 1
@@ -97,6 +105,8 @@ class SettingsRepository @Inject constructor(
         private val KEY_SUBTITLES_DEFAULT = booleanPreferencesKey("subtitles_by_default")
         private val KEY_LIVE_FORMAT = stringPreferencesKey("live_format")
         private val KEY_DECODER = intPreferencesKey("decoder_mode")
+        private val KEY_FRAME_RATE = intPreferencesKey("frame_rate_mode")
+        private val KEY_TUNNELING = booleanPreferencesKey("tunneling")
         private val KEY_SHOW_CLOCK = booleanPreferencesKey("show_clock")
         private val KEY_SUBTITLE_SIZE = intPreferencesKey("subtitle_size")
         private val KEY_RESIZE_MODE = intPreferencesKey("resize_mode")
@@ -212,8 +222,23 @@ class SettingsRepository @Inject constructor(
             subtitleSize = it[KEY_SUBTITLE_SIZE] ?: SUBTITLE_NORMAL,
             resizeMode = it[KEY_RESIZE_MODE] ?: RESIZE_FIT,
             liveFormat = it[KEY_LIVE_FORMAT]?.takeIf { f -> f == LIVE_TS } ?: LIVE_HLS,
-            decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO
+            decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO,
+            frameRateMode = it[KEY_FRAME_RATE]?.takeIf { m -> m in FRAME_RATE_OFF..FRAME_RATE_AUTO } ?: defaultFrameRateMode,
+            tunneling = isTv && it[KEY_TUNNELING] == true
         )
+    }
+
+    private val isTv: Boolean by lazy { isTvDevice(context) }
+
+    // En TV la película pide su frecuencia; en celulares no se toca la pantalla.
+    private val defaultFrameRateMode: Int get() = if (isTv) FRAME_RATE_AUTO else FRAME_RATE_OFF
+
+    suspend fun setFrameRateMode(mode: Int) {
+        context.settingsStore.edit { it[KEY_FRAME_RATE] = mode }
+    }
+
+    suspend fun setTunneling(enabled: Boolean) {
+        context.settingsStore.edit { it[KEY_TUNNELING] = enabled }
     }
 
     /** Fecha y hora pequeña arriba en Inicio y en el reproductor. */

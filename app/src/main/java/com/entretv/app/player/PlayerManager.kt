@@ -21,8 +21,10 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -43,10 +45,13 @@ import com.entretv.app.R
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.ui.UiText
+import com.entretv.app.ui.isTvDevice
 import com.entretv.app.ui.uiText
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -94,6 +99,8 @@ class PlayerManager @Inject constructor(
         private const val STABLE_MS = 20_000L
         private const val LIVE_MIN_SPEED = 0.97f
         private const val LIVE_MAX_SPEED = 1.03f
+        /** ~3 s de una película 1080p típica: alcanza para la cabecera y el primer cuadro. */
+        private const val PRELOAD_BYTES = 2L * 1024 * 1024
         private val XTREAM_LIVE = Regex("/live/[^/]+/[^/]+/\\d+\\.(m3u8|ts)$", RegexOption.IGNORE_CASE)
     }
 
@@ -146,7 +153,7 @@ class PlayerManager @Inject constructor(
         DefaultDataSource.Factory(context, OkHttpDataSource.Factory(streamClient).setUserAgent(USER_AGENT))
     }
 
-    private val vodDataFactory: DataSource.Factory by lazy {
+    private val vodDataFactory: CacheDataSource.Factory by lazy {
         CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(httpFactory)
@@ -154,6 +161,16 @@ class PlayerManager @Inject constructor(
     }
 
     private val errorPolicy = DefaultLoadErrorHandlingPolicy(LOAD_RETRIES)
+
+    private val preloadExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "EntrePreload").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }
+    }
+    @Volatile
+    private var preloadWriter: CacheWriter? = null
+    private var preloadTask: Future<*>? = null
 
     private val liveSourceFactory by lazy {
         DefaultMediaSourceFactory(httpFactory).setLoadErrorHandlingPolicy(errorPolicy)
@@ -227,8 +244,12 @@ class PlayerManager @Inject constructor(
     /** Se dispara cuando un contenido VOD termina (para auto-next de episodios). */
     var onEnded: (() -> Unit)? = null
 
+    // También lo lee el búfer desde el hilo de reproducción.
+    @Volatile
     private var currentIsLive = false
     private var currentItem: MediaItem? = null
+    private lateinit var trackSelector: DefaultTrackSelector
+    private val isTv: Boolean by lazy { isTvDevice(context) }
     private var currentUrl: String = ""
     private var reconnectAttempts = 0
     private var reconnectPending = false
@@ -262,9 +283,9 @@ class PlayerManager @Inject constructor(
     }
 
     private fun buildPlayer(): ExoPlayer {
-        val loadControl = UserBufferLoadControl(targetBufferBytes(), { startBufferMs }, { maxBufferMs })
+        val loadControl = UserBufferLoadControl(targetBufferBytes(), { startBufferMs }, { maxBufferMs }, { currentIsLive })
 
-        val trackSelector = DefaultTrackSelector(context).apply {
+        trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
                 .setAllowVideoMixedMimeTypeAdaptiveness(true)
                 .setAllowVideoMixedDecoderSupportAdaptiveness(true)
@@ -369,6 +390,22 @@ class PlayerManager @Inject constructor(
             builder.setPreferredTextLanguages()
         }
         player.trackSelectionParameters = builder.build()
+    }
+
+    /**
+     * Frecuencia y modo túnel de Configuración. En "Automático" Media3 ajusta la superficie solo
+     * si el cambio no se nota; el cambio de modo de la TV lo pide la pantalla del reproductor.
+     */
+    private fun applyVideoOutput() {
+        val p = prefs
+        player.setVideoChangeFrameRateStrategy(
+            if (p.frameRateMode == SettingsRepository.FRAME_RATE_AUTO) C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+            else C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+        )
+        val tunnel = isTv && p.tunneling
+        if (trackSelector.parameters.tunnelingEnabled != tunnel) {
+            trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(tunnel))
+        }
     }
 
     /**
@@ -623,6 +660,7 @@ class PlayerManager @Inject constructor(
             player.playWhenReady = true
             return
         }
+        cancelPreload()
         cancelRecovery()
         reconnectAttempts = 0
         _reconnectAttempt.value = 0
@@ -660,6 +698,7 @@ class PlayerManager @Inject constructor(
         currentItem = item
 
         applyPreferences()
+        applyVideoOutput()
         player.setPlaybackSpeed(1f)
         if (isLive) player.setMediaSource(sourceFor(item, url))
         else player.setMediaSource(sourceFor(item, url), startPositionMs.coerceAtLeast(0L))
@@ -667,6 +706,38 @@ class PlayerManager @Inject constructor(
         player.playWhenReady = true
         mainHandler.removeCallbacks(watchdog)
         mainHandler.postDelayed(watchdog, WATCHDOG_TICK_MS)
+    }
+
+    // ============================ Precarga ============================
+
+    /**
+     * Desde la ficha: baja a la caché de video los primeros [PRELOAD_BYTES] de la película o
+     * episodio (unos segundos) y deja la conexión abierta, así "Reproducir" arranca antes.
+     * No se precarga si algo está sonando (muchos proveedores permiten una sola conexión),
+     * con datos móviles o en equipos con poca memoria. Nunca canales en vivo.
+     */
+    fun preload(url: String) {
+        if (currentItem != null || !url.startsWith("http", ignoreCase = true)) return
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        if (cm == null || cm.activeNetwork == null || cm.isActiveNetworkMetered) return
+        if (context.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true) return
+        cancelPreload()
+        val spec = DataSpec.Builder().setUri(url).setPosition(0).setLength(PRELOAD_BYTES).build()
+        preloadTask = preloadExecutor.submit(Runnable {
+            // La caché se abre aquí y no en el hilo principal.
+            val writer = CacheWriter(vodDataFactory.createDataSource(), spec, null, null)
+            preloadWriter = writer
+            if (Thread.currentThread().isInterrupted) return@Runnable
+            runCatching { writer.cache() }
+        })
+    }
+
+    /** Corta la precarga: al reproducir (libera la conexión) o al salir de la ficha. */
+    fun cancelPreload() {
+        preloadWriter?.cancel()
+        preloadWriter = null
+        preloadTask?.cancel(true)
+        preloadTask = null
     }
 
     fun stop() {
@@ -682,6 +753,8 @@ class PlayerManager @Inject constructor(
     }
 
     fun release() {
+        cancelPreload()
+        preloadExecutor.shutdownNow()
         cancelRecovery()
         mainHandler.removeCallbacks(watchdog)
         runCatching {

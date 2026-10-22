@@ -19,13 +19,17 @@ import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.repo.SeriesResume
 import com.entretv.app.data.repo.SeriesResumeRule
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.player.PlayerManager
 import com.entretv.app.ui.navigation.DetailsRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -46,7 +50,8 @@ class DetailsViewModel @Inject constructor(
     private val repository: PlaylistRepository,
     private val settings: SettingsRepository,
     private val downloads: DownloadRepository,
-    private val metadata: MetadataRepository
+    private val metadata: MetadataRepository,
+    private val playerManager: PlayerManager
 ) : ViewModel() {
 
     private val route: DetailsRoute = savedStateHandle.toRoute()
@@ -106,8 +111,34 @@ class DetailsViewModel @Inject constructor(
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    private var prewarmJob: Job? = null
+
     init {
         viewModelScope.launch { load() }
+        prewarmJob = viewModelScope.launch { prewarm() }
+    }
+
+    /** Tras un momento en la ficha se precarga lo que abre el botón principal. */
+    private suspend fun prewarm() {
+        delay(PREWARM_DELAY_MS)
+        val (key, url) = if (isSeries) {
+            resumeTarget.filterNotNull().first().episode.let { it.id to it.streamUrl }
+        } else {
+            _movie.filterNotNull().first().let { it.id to it.streamUrl }
+        }
+        if (url.isBlank() || downloads.localUri(key) != null) return
+        playerManager.preload(url)
+    }
+
+    /** Al salir de la ficha (o abrir el reproductor) no se sigue bajando nada. */
+    fun cancelPrewarm() {
+        prewarmJob?.cancel()
+        playerManager.cancelPreload()
+    }
+
+    override fun onCleared() {
+        cancelPrewarm()
+        super.onCleared()
     }
 
     /**
@@ -271,5 +302,7 @@ class DetailsViewModel @Inject constructor(
         }
     }
 }
+
+private const val PREWARM_DELAY_MS = 1_000L
 
 fun EpisodeEntity.code(): UiText = uiText(R.string.details_episode_code, season, episodeNum)
