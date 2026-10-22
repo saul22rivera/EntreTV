@@ -358,6 +358,22 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setSubtitlesByDefault(enabled) }
     }
 
+    fun setSubtitleSize(size: Int) {
+        viewModelScope.launch { settings.setSubtitleSize(size) }
+    }
+
+    fun setSubtitleColor(color: Int) {
+        viewModelScope.launch { settings.setSubtitleColor(color) }
+    }
+
+    fun setSubtitleBackground(background: Int) {
+        viewModelScope.launch { settings.setSubtitleBackground(background) }
+    }
+
+    fun setSubtitlePosition(position: Int) {
+        viewModelScope.launch { settings.setSubtitlePosition(position) }
+    }
+
     fun setLiveFormat(format: String) {
         viewModelScope.launch { settings.setLiveFormat(format) }
     }

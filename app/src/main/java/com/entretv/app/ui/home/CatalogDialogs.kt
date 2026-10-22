@@ -89,6 +89,11 @@ import com.entretv.app.ui.CategoryInfo
 import com.entretv.app.ui.Section
 import com.entretv.app.ui.SortOrder
 import com.entretv.app.ui.label
+import com.entretv.app.ui.player.SUBTITLE_BACKGROUND_OPTIONS
+import com.entretv.app.ui.player.SUBTITLE_COLOR_OPTIONS
+import com.entretv.app.ui.player.SUBTITLE_POSITION_OPTIONS
+import com.entretv.app.ui.player.SUBTITLE_SIZE_OPTIONS
+import com.entretv.app.ui.player.SubtitlePreview
 import com.entretv.app.ui.theme.EntreBrand
 
 // ============================ Configuración ============================
@@ -109,6 +114,10 @@ fun SettingsPanel(
     playerPrefs: PlayerPrefs,
     onContentLanguageChange: (String) -> Unit,
     onSubtitlesByDefaultChange: (Boolean) -> Unit,
+    onSubtitleSizeChange: (Int) -> Unit,
+    onSubtitleColorChange: (Int) -> Unit,
+    onSubtitleBackgroundChange: (Int) -> Unit,
+    onSubtitlePositionChange: (Int) -> Unit,
     onLiveFormatChange: (String) -> Unit,
     onDecoderChange: (Int) -> Unit,
     isTv: Boolean,
@@ -170,6 +179,32 @@ fun SettingsPanel(
                 checked = playerPrefs.subtitlesByDefault,
                 onChange = onSubtitlesByDefaultChange
             )
+
+            Divider()
+            SectionTitle(stringResource(R.string.settings_section_subtitles))
+            Text(
+                stringResource(R.string.settings_subtitle_style_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = EntreBrand.TextDim,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            SubtitlePreview(playerPrefs, Modifier.padding(bottom = 8.dp))
+            SettingLabel(stringResource(R.string.player_subtitle_text_size), "")
+            SUBTITLE_SIZE_OPTIONS.forEach { (value, label) ->
+                RadioLine(stringResource(label), playerPrefs.subtitleSize == value) { onSubtitleSizeChange(value) }
+            }
+            SettingLabel(stringResource(R.string.subtitle_color), "")
+            SUBTITLE_COLOR_OPTIONS.forEach { (value, label) ->
+                RadioLine(stringResource(label), playerPrefs.subtitleColor == value) { onSubtitleColorChange(value) }
+            }
+            SettingLabel(stringResource(R.string.subtitle_background), "")
+            SUBTITLE_BACKGROUND_OPTIONS.forEach { (value, label) ->
+                RadioLine(stringResource(label), playerPrefs.subtitleBackground == value) { onSubtitleBackgroundChange(value) }
+            }
+            SettingLabel(stringResource(R.string.subtitle_position), "")
+            SUBTITLE_POSITION_OPTIONS.forEach { (value, label) ->
+                RadioLine(stringResource(label), playerPrefs.subtitlePosition == value) { onSubtitlePositionChange(value) }
+            }
 
             Divider()
             SectionTitle(stringResource(R.string.settings_section_display))
@@ -794,7 +829,7 @@ private fun SectionTitle(text: String) {
 @Composable
 private fun SettingLabel(title: String, subtitle: String) {
     Text(title, style = MaterialTheme.typography.titleSmall)
-    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = EntreBrand.TextDim)
+    if (subtitle.isNotEmpty()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = EntreBrand.TextDim)
     Spacer(Modifier.height(4.dp))
 }
 

@@ -36,6 +36,9 @@
     <string name="settings_subtitles_on">Se activan en %1$s si el video los trae.</string>
     <string name="settings_subtitles_off">Los videos arrancan sin subtítulos; los activas tú desde el reproductor.</string>
 
+    <string name="settings_section_subtitles">Subtítulos</string>
+    <string name="settings_subtitle_style_desc">Tamaño, color y fondo del texto. También se cambia desde el reproductor y se ve al instante.</string>
+
     <string name="settings_section_display">Pantalla</string>
     <string name="settings_clock">Fecha y hora</string>
     <string name="settings_clock_desc">Un reloj pequeño arriba a la derecha en Inicio y en el reproductor.</string>

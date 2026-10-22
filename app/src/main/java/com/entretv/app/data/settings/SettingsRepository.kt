@@ -29,6 +29,10 @@ data class PlayerPrefs(
     /** Con subtítulos al iniciar, se activan en [contentLanguage]; si no, arranca sin subtítulos. */
     val subtitlesByDefault: Boolean = false,
     val subtitleSize: Int = SettingsRepository.SUBTITLE_NORMAL,
+    val subtitleColor: Int = SettingsRepository.SUBTITLE_COLOR_WHITE,
+    val subtitleBackground: Int = SettingsRepository.SUBTITLE_BG_SEMI,
+    /** Qué tan arriba del borde inferior van los subtítulos. */
+    val subtitlePosition: Int = SettingsRepository.SUBTITLE_POS_LOW,
     val resizeMode: Int = SettingsRepository.RESIZE_FIT,
     /** Formato de los canales en vivo de Xtream: [SettingsRepository.LIVE_HLS] o [SettingsRepository.LIVE_TS]. */
     val liveFormat: String = SettingsRepository.LIVE_HLS,
@@ -77,6 +81,19 @@ class SettingsRepository @Inject constructor(
         const val SUBTITLE_SMALL = 0
         const val SUBTITLE_NORMAL = 1
         const val SUBTITLE_LARGE = 2
+        const val SUBTITLE_XLARGE = 3
+
+        const val SUBTITLE_COLOR_WHITE = 0
+        const val SUBTITLE_COLOR_YELLOW = 1
+
+        const val SUBTITLE_BG_NONE = 0
+        const val SUBTITLE_BG_SHADOW = 1
+        const val SUBTITLE_BG_SEMI = 2
+        const val SUBTITLE_BG_BLACK = 3
+
+        const val SUBTITLE_POS_LOW = 0
+        const val SUBTITLE_POS_MID = 1
+        const val SUBTITLE_POS_HIGH = 2
 
         const val RESIZE_FIT = 0
         const val RESIZE_ZOOM = 1
@@ -111,6 +128,9 @@ class SettingsRepository @Inject constructor(
         private val KEY_TUNNELING = booleanPreferencesKey("tunneling")
         private val KEY_SHOW_CLOCK = booleanPreferencesKey("show_clock")
         private val KEY_SUBTITLE_SIZE = intPreferencesKey("subtitle_size")
+        private val KEY_SUBTITLE_COLOR = intPreferencesKey("subtitle_color")
+        private val KEY_SUBTITLE_BACKGROUND = intPreferencesKey("subtitle_background")
+        private val KEY_SUBTITLE_POSITION = intPreferencesKey("subtitle_position")
         private val KEY_RESIZE_MODE = intPreferencesKey("resize_mode")
         private val KEY_DEFAULT_SORT = stringPreferencesKey("default_sort")
         private val KEY_CLEAN_NAMES = booleanPreferencesKey("clean_names")
@@ -223,7 +243,10 @@ class SettingsRepository @Inject constructor(
         PlayerPrefs(
             contentLanguage = it[KEY_CONTENT_LANGUAGE]?.takeIf { lang -> lang in CONTENT_LANGUAGES } ?: DEFAULT_CONTENT_LANGUAGE,
             subtitlesByDefault = it[KEY_SUBTITLES_DEFAULT] ?: false,
-            subtitleSize = it[KEY_SUBTITLE_SIZE] ?: SUBTITLE_NORMAL,
+            subtitleSize = it[KEY_SUBTITLE_SIZE]?.takeIf { s -> s in SUBTITLE_SMALL..SUBTITLE_XLARGE } ?: SUBTITLE_NORMAL,
+            subtitleColor = it[KEY_SUBTITLE_COLOR]?.takeIf { c -> c in SUBTITLE_COLOR_WHITE..SUBTITLE_COLOR_YELLOW } ?: SUBTITLE_COLOR_WHITE,
+            subtitleBackground = it[KEY_SUBTITLE_BACKGROUND]?.takeIf { b -> b in SUBTITLE_BG_NONE..SUBTITLE_BG_BLACK } ?: SUBTITLE_BG_SEMI,
+            subtitlePosition = it[KEY_SUBTITLE_POSITION]?.takeIf { p -> p in SUBTITLE_POS_LOW..SUBTITLE_POS_HIGH } ?: SUBTITLE_POS_LOW,
             resizeMode = it[KEY_RESIZE_MODE] ?: RESIZE_FIT,
             liveFormat = it[KEY_LIVE_FORMAT]?.takeIf { f -> f == LIVE_TS } ?: LIVE_HLS,
             decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO,
@@ -322,6 +345,18 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setSubtitleSize(size: Int) {
         context.settingsStore.edit { it[KEY_SUBTITLE_SIZE] = size }
+    }
+
+    suspend fun setSubtitleColor(color: Int) {
+        context.settingsStore.edit { it[KEY_SUBTITLE_COLOR] = color }
+    }
+
+    suspend fun setSubtitleBackground(background: Int) {
+        context.settingsStore.edit { it[KEY_SUBTITLE_BACKGROUND] = background }
+    }
+
+    suspend fun setSubtitlePosition(position: Int) {
+        context.settingsStore.edit { it[KEY_SUBTITLE_POSITION] = position }
     }
 
     suspend fun setResizeMode(mode: Int) {

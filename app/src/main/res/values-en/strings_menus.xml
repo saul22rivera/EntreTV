@@ -36,6 +36,9 @@
     <string name="settings_subtitles_on">Turned on in %1$s when the video has them.</string>
     <string name="settings_subtitles_off">Videos start without subtitles; you can turn them on from the player.</string>
 
+    <string name="settings_section_subtitles">Subtitles</string>
+    <string name="settings_subtitle_style_desc">Text size, color and background. You can also change it from the player and see it right away.</string>
+
     <string name="settings_section_display">Display</string>
     <string name="settings_clock">Date and time</string>
     <string name="settings_clock_desc">A small clock at the top right on Home and in the player.</string>

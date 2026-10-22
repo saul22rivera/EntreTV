@@ -94,6 +94,9 @@ interface PlayerSettingsActions {
     /** null = calidad automática. */
     fun selectQuality(option: TrackOption?)
     fun setSubtitleSize(size: Int)
+    fun setSubtitleColor(color: Int)
+    fun setSubtitleBackground(background: Int)
+    fun setSubtitlePosition(position: Int)
     fun setResizeMode(mode: Int)
     fun setSpeed(speed: Float)
     /** 0 = apagado, -1 = al terminar el contenido. */
@@ -367,21 +370,12 @@ private fun PageContent(
                     }
                 }
                 if (subtitles.isEmpty()) item { PanelHint(stringResource(R.string.player_subtitles_none_hint)) }
-                item { PanelSection(stringResource(R.string.player_subtitle_text_size)) }
-                listOf(
-                    SettingsRepository.SUBTITLE_SMALL to R.string.player_subtitle_small,
-                    SettingsRepository.SUBTITLE_NORMAL to R.string.player_subtitle_normal,
-                    SettingsRepository.SUBTITLE_LARGE to R.string.player_subtitle_large
-                ).forEach { (size, label) ->
-                    item {
-                        PanelRow(
-                            title = stringResource(label),
-                            selected = prefs.subtitleSize == size,
-                            onClick = { actions.setSubtitleSize(size) }
-                        )
-                    }
-                }
                 item { PanelHint(stringResource(R.string.player_subtitles_hint)) }
+                styleOptions(R.string.player_subtitle_text_size, SUBTITLE_SIZE_OPTIONS, prefs.subtitleSize, actions::setSubtitleSize)
+                styleOptions(R.string.subtitle_color, SUBTITLE_COLOR_OPTIONS, prefs.subtitleColor, actions::setSubtitleColor)
+                styleOptions(R.string.subtitle_background, SUBTITLE_BACKGROUND_OPTIONS, prefs.subtitleBackground, actions::setSubtitleBackground)
+                styleOptions(R.string.subtitle_position, SUBTITLE_POSITION_OPTIONS, prefs.subtitlePosition, actions::setSubtitlePosition)
+                item { PanelHint(stringResource(R.string.player_subtitle_style_hint)) }
             }
 
             Page.QUALITY -> {
@@ -493,6 +487,25 @@ private fun sleepLabel(minutes: Int, endsAt: Long): String = when {
     else -> {
         val left = (((endsAt - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0L) + 1).toInt()
         pluralStringResource(R.plurals.player_minutes_left, left, left)
+    }
+}
+
+/** Estilo de los subtítulos: se guarda en Configuración y se ve al instante. */
+private fun LazyListScope.styleOptions(
+    @StringRes title: Int,
+    options: List<Pair<Int, Int>>,
+    current: Int,
+    onSelect: (Int) -> Unit
+) {
+    item { PanelSection(stringResource(title)) }
+    options.forEach { (value, label) ->
+        item {
+            PanelRow(
+                title = stringResource(label),
+                selected = current == value,
+                onClick = { onSelect(value) }
+            )
+        }
     }
 }
 

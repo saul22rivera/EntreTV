@@ -212,6 +212,18 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch { settings.setSubtitleSize(size) }
     }
 
+    override fun setSubtitleColor(color: Int) {
+        viewModelScope.launch { settings.setSubtitleColor(color) }
+    }
+
+    override fun setSubtitleBackground(background: Int) {
+        viewModelScope.launch { settings.setSubtitleBackground(background) }
+    }
+
+    override fun setSubtitlePosition(position: Int) {
+        viewModelScope.launch { settings.setSubtitlePosition(position) }
+    }
+
     override fun setResizeMode(mode: Int) {
         viewModelScope.launch { settings.setResizeMode(mode) }
     }

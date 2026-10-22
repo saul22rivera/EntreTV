@@ -118,9 +118,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
-import androidx.media3.ui.SubtitleView
 import com.entretv.app.R
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.local.EpisodeEntity
@@ -131,6 +129,7 @@ import com.entretv.app.ui.player.ChannelBrowserState
 import com.entretv.app.ui.player.FrameRateMatchEffect
 import com.entretv.app.ui.player.LiveChannelList
 import com.entretv.app.ui.player.PlayerSettingsPanel
+import com.entretv.app.ui.player.applyUserStyle
 import com.entretv.app.ui.player.resizeLabelRes
 import com.entretv.app.ui.theme.EntreBrand
 import java.text.SimpleDateFormat
@@ -369,17 +368,6 @@ fun PlayerScreen(
                     PlayerView(ctx).apply {
                         useController = false
                         player = manager.player
-                        subtitleView?.setStyle(
-                            CaptionStyleCompat(
-                                android.graphics.Color.WHITE,
-                                0x99000000.toInt(),
-                                android.graphics.Color.TRANSPARENT,
-                                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                                android.graphics.Color.BLACK,
-                                null
-                            )
-                        )
-                        subtitleView?.setApplyEmbeddedFontSizes(false)
                     }
                 },
                 update = { view ->
@@ -389,12 +377,7 @@ fun PlayerScreen(
                         SettingsRepository.RESIZE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
-                    val scale = when (prefs.subtitleSize) {
-                        SettingsRepository.SUBTITLE_SMALL -> 0.8f
-                        SettingsRepository.SUBTITLE_LARGE -> 1.4f
-                        else -> 1f
-                    }
-                    view.subtitleView?.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * scale)
+                    view.subtitleView?.applyUserStyle(prefs)
                 },
                 modifier = Modifier.fillMaxSize()
             )
