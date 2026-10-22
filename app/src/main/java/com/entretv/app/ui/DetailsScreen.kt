@@ -2,6 +2,7 @@ package com.entretv.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -27,7 +28,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -52,9 +55,14 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,12 +73,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
@@ -100,7 +110,7 @@ import java.text.NumberFormat
 import java.util.Locale
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun DetailsScreen(
     onBack: () -> Unit,
@@ -163,14 +173,30 @@ fun DetailsScreen(
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         Box(Modifier.fillMaxSize()) {
+            val listState = rememberLazyListState()
+            val heroPx = with(LocalDensity.current) { heroHeight.toPx() }
+            // TV: la portada queda fija de fondo; al bajar a la sinopsis solo se atenúa.
+            if (profile.isTv) {
+                val scrolled by remember {
+                    derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 120 }
+                }
+                val scrim by animateFloatAsState(if (scrolled) 0.55f else 0f, label = "detailsScrim")
+                TvBackdrop(backdrop, scrim)
+            }
+            // En TV Compose lleva lo enfocado a un tercio de la pantalla y la portada se iba hacia
+            // arriba; aquí solo se desplaza lo necesario para que se vea lo enfocado.
+            CompositionLocalProvider(
+                LocalBringIntoViewSpec provides if (profile.isTv) MinimalBringIntoView else LocalBringIntoViewSpec.current
+            ) {
             LazyColumn(
+                state = listState,
                 contentPadding = PaddingValues(bottom = padding.calculateBottomPadding() + 32.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 item(key = "hero") {
                     DetailsHero(
                         title = title,
-                        backdrop = backdrop,
+                        backdrop = if (profile.isTv) "" else backdrop,
                         details = details,
                         category = category,
                         height = heroHeight,
@@ -187,6 +213,12 @@ fun DetailsScreen(
                             .widthIn(max = 820.dp)
                     ) {
                         FlowRow(
+                            // Volver a los botones regresa al inicio: la portada se ve completa.
+                            modifier = Modifier.onFocusChanged {
+                                if (profile.isTv && it.hasFocus && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)) {
+                                    scope.launch { listState.scrollToTop(heroPx) }
+                                }
+                            },
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
@@ -298,7 +330,7 @@ fun DetailsScreen(
                             )
                         }
                         val plot = details?.plot.orEmpty()
-                        val plotStyle = if (profile.isTv) MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal, lineHeight = 32.sp)
+                        val plotStyle = if (profile.isTv) MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp, fontWeight = FontWeight.Normal, lineHeight = 27.sp)
                         else MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp)
                         when {
                             plot.isNotEmpty() -> Text(
@@ -434,6 +466,7 @@ fun DetailsScreen(
                         }
                     }
                 }
+            }
             }
 
             IconButton(
@@ -663,6 +696,64 @@ private fun CastCard(member: CastMember, size: Dp) {
 private fun PlaybackProgressEntity?.isResumable(): Boolean =
     this != null && positionMs > 30_000 && durationMs > 0 && !isCompleted
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private object MinimalBringIntoView : BringIntoViewSpec
+
+/**
+ * Regresa al inicio (portada completa) con prioridad sobre el desplazamiento que el foco lanza
+ * para mostrar el botón; si no, ese desplazamiento cancela este y la vista queda a medias.
+ * Solo el hero (alto fijo [heroPx]) puede quedar arriba de los botones.
+ */
+private suspend fun LazyListState.scrollToTop(heroPx: Float) {
+    val distance = firstVisibleItemScrollOffset + if (firstVisibleItemIndex > 0) heroPx else 0f
+    scroll(MutatePriority.PreventUserInput) {
+        var done = 0f
+        animate(0f, distance) { value, _ ->
+            scrollBy(done - value)
+            done = value
+        }
+        if (firstVisibleItemIndex == 0) scrollBy(-firstVisibleItemScrollOffset.toFloat())
+    }
+}
+
+/** Portada de TV a pantalla completa detrás del contenido; [scrim] la oscurece al bajar. */
+@Composable
+private fun TvBackdrop(backdrop: String, scrim: Float) {
+    Box(Modifier.fillMaxSize()) {
+        if (backdrop.isNotEmpty()) {
+            AsyncImage(
+                model = backdrop,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.35f),
+                        0.4f to Color.Transparent,
+                        0.75f to EntreBrand.Ink.copy(alpha = 0.85f),
+                        1f to EntreBrand.Ink
+                    )
+                )
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.horizontalGradient(
+                        0f to EntreBrand.Ink.copy(alpha = 0.9f),
+                        0.6f to Color.Transparent
+                    )
+                )
+        )
+        if (scrim > 0f) Box(Modifier.fillMaxSize().background(EntreBrand.Ink.copy(alpha = scrim)))
+    }
+}
+
 @Composable
 private fun DetailsHero(
     title: String,
@@ -678,7 +769,7 @@ private fun DetailsHero(
         Modifier
             .fillMaxWidth()
             .height(height)
-            .background(EntreBrand.Panel)
+            .then(if (isTv) Modifier else Modifier.background(EntreBrand.Panel))
     ) {
         if (backdrop.isNotEmpty()) {
             AsyncImage(
@@ -688,7 +779,7 @@ private fun DetailsHero(
                 modifier = Modifier.fillMaxSize()
             )
         }
-        Box(
+        if (!isTv) Box(
             Modifier
                 .fillMaxSize()
                 .background(
@@ -699,7 +790,7 @@ private fun DetailsHero(
                     )
                 )
         )
-        if (wide) {
+        if (wide && !isTv) {
             Box(
                 Modifier
                     .fillMaxSize()

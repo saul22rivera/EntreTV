@@ -525,7 +525,12 @@ fun HomeScreen(
                     onLogo = if (profile.compactRail) ::goHome else null,
                     headerFocus = headerFocus,
                     showClock = showClock,
-                    lastUpdate = lastUpdateLabel(lastRefreshAt)
+                    lastUpdate = lastUpdateLabel(lastRefreshAt),
+                    sortOptions = if (profile.isTv && content.grid && !contentStale && content.rows.sumOf { it.items.size } > 1) {
+                        content.sortOptions
+                    } else emptyList(),
+                    sort = ui.sort,
+                    onSort = viewModel::selectSort
                 )
 
                 if (profile.isPhone && !showSummary && !searchOpen && !contentStale) {
@@ -766,6 +771,9 @@ fun HomeScreen(
                             },
                             showBack = ui.category != null && !tvCategoryColumn,
                             onBack = { viewModel.selectCategory(null) },
+                            // TV: sin título ni chips; el orden va en el botón de la cabecera.
+                            showTitle = !profile.isTv || !tvCategoryColumn,
+                            showSortChips = !profile.isTv,
                             stateKey = "${ui.section}|${ui.category}|${ui.query.trim()}",
                             sort = ui.sort,
                             onSort = viewModel::selectSort,
@@ -777,7 +785,8 @@ fun HomeScreen(
                             onFocusItem = { focusedItem = it },
                             modifier = catalogModifier,
                             listView = if (profile.isTv) null else gridSection.name in listViewSections,
-                            onListViewChange = { viewModel.setListView(gridSection, it) }
+                            onListViewChange = { viewModel.setListView(gridSection, it) },
+                            upToHeader = if (tvCategoryColumn) (if (searchOpen) searchFocus else headerFocus) else null
                         )
                         else -> CatalogRows(
                             profile = profile,
@@ -1427,6 +1436,8 @@ private fun CatalogGrid(
     emptyText: String,
     showBack: Boolean,
     onBack: () -> Unit,
+    showTitle: Boolean,
+    showSortChips: Boolean,
     stateKey: String,
     sort: SortOrder?,
     onSort: (SortOrder) -> Unit,
@@ -1439,12 +1450,17 @@ private fun CatalogGrid(
     modifier: Modifier,
     /** Vista en lista (un renglón por título); null = solo cuadrícula, sin botón para cambiarla. */
     listView: Boolean? = null,
-    onListViewChange: (Boolean) -> Unit = {}
+    onListViewChange: (Boolean) -> Unit = {},
+    /** TV: arriba desde la primera fila va aquí (la cabecera); si no, la búsqueda de foco acaba en la tira del menú. */
+    upToHeader: FocusRequester? = null
 ) {
     val gridState = rememberSaveable(stateKey, sort, saver = LazyGridState.Saver) { LazyGridState() }
     val total = content.rows.sumOf { it.items.size }
     val multiSection = content.rows.count { it.items.isNotEmpty() } > 1
     val list = listView == true
+    val sortChips = showSortChips && content.sortOptions.size > 1 && total > 1
+    // Cada encabezado ocupa un renglón entero: la primera fila de pósters va después de ellos.
+    val firstItemLine = listOf(showTitle, sortChips, multiSection).count { it }
     LazyVerticalGrid(
         columns = if (list) GridCells.Fixed(1) else GridCells.Adaptive(minSize = profile.posterWidth),
         state = gridState,
@@ -1453,7 +1469,7 @@ private fun CatalogGrid(
         horizontalArrangement = Arrangement.spacedBy(profile.itemGap),
         verticalArrangement = Arrangement.spacedBy(if (list) 2.dp else profile.itemGap)
     ) {
-        item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
+        if (showTitle) item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
                 if (showBack) {
                     // Arriba de "Volver" solo queda la tira del menú: el foco rebotaba y la cuadrícula
@@ -1487,7 +1503,7 @@ private fun CatalogGrid(
                 }
             }
         }
-        if (content.sortOptions.size > 1 && total > 1) {
+        if (sortChips) {
             item(key = "sort", span = { GridItemSpan(maxLineSpan) }) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, tint = EntreBrand.TextDim, modifier = Modifier.size(18.dp))
@@ -1539,7 +1555,15 @@ private fun CatalogGrid(
             ) { index ->
                 val item = row.items[index]
                 val memoryKey = "grid|${row.title}|${item.key}"
+                val gridKey = "${row.title}:${item.key}"
                 val itemModifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, "grid:${row.title}", index)
+                    .then(
+                        if (upToHeader == null) Modifier
+                        else Modifier.focusProperties {
+                            val line = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == gridKey }?.row
+                            up = if (line == firstItemLine) upToHeader else FocusRequester.Default
+                        }
+                    )
                 val onFocused = {
                     focusMemory.onFocused(memoryKey)
                     onFocusItem(item)
@@ -1664,9 +1688,14 @@ private fun HomeHeader(
     /** Lupa: a ella sube el foco desde la primera fila en TV. */
     headerFocus: FocusRequester = remember { FocusRequester() },
     showClock: Boolean = false,
-    lastUpdate: String = ""
+    lastUpdate: String = "",
+    /** TV: órdenes de la cuadrícula visible; vacío = sin botón de ordenar. */
+    sortOptions: List<SortOrder> = emptyList(),
+    sort: SortOrder? = null,
+    onSort: (SortOrder) -> Unit = {}
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var sortOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -1684,12 +1713,6 @@ private fun HomeHeader(
         }
         Spacer(Modifier.weight(1f))
         if (showClock) SmallClock(Modifier.padding(end = 8.dp), showDate = !profile.compactRail)
-        IconButton(onClick = onToggleSearch, modifier = Modifier.focusRequester(headerFocus)) {
-            Icon(
-                if (searchOpen) Icons.Default.Close else Icons.Default.Search,
-                contentDescription = stringResource(if (searchOpen) R.string.home_search_close else R.string.home_search)
-            )
-        }
         // En el celular no entra junto a los botones: va dentro del menú de tres puntos.
         if (!profile.compactRail && lastUpdate.isNotEmpty()) {
             Text(
@@ -1697,8 +1720,32 @@ private fun HomeHeader(
                 style = MaterialTheme.typography.labelMedium,
                 color = EntreBrand.TextDim,
                 maxLines = 1,
-                modifier = Modifier.padding(start = 8.dp)
+                modifier = Modifier.padding(end = 8.dp)
             )
+        }
+        IconButton(onClick = onToggleSearch, modifier = Modifier.focusRequester(headerFocus)) {
+            Icon(
+                if (searchOpen) Icons.Default.Close else Icons.Default.Search,
+                contentDescription = stringResource(if (searchOpen) R.string.home_search_close else R.string.home_search)
+            )
+        }
+        if (sortOptions.size > 1) {
+            Box {
+                IconButton(onClick = { sortOpen = true }) {
+                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = stringResource(R.string.home_sort))
+                }
+                DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                    sortOptions.forEach { order ->
+                        DropdownMenuItem(
+                            text = { Text(order.label) },
+                            leadingIcon = if (sort == order) {
+                                { Icon(Icons.Default.Check, contentDescription = null) }
+                            } else null,
+                            onClick = { sortOpen = false; onSort(order) }
+                        )
+                    }
+                }
+            }
         }
         // En el celular actualizar va solo en el menú de tres puntos; aquí queda el indicador mientras actualiza.
         if (!profile.compactRail) {

@@ -50,6 +50,7 @@
     <!-- Cabecera -->
     <string name="home_home">Home</string>
     <string name="home_refresh">Refresh</string>
+    <string name="home_sort">Sort</string>
     <string name="home_last_update">Updated %1$s</string>
     <string name="home_never_updated">Not updated yet</string>
     <string name="home_today_at">today %1$s</string>
