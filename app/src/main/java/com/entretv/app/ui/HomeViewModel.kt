@@ -1,5 +1,6 @@
 package com.entretv.app.ui
 
+import android.content.Context
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -29,6 +30,7 @@ import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -289,12 +291,14 @@ private data class ContinueInput(
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @ApplicationContext context: Context,
     private val repository: PlaylistRepository,
     private val settings: SettingsRepository,
     private val parental: ParentalControl,
     private val downloads: DownloadRepository,
     private val metadata: MetadataRepository
 ) : ViewModel() {
+    private val lowRam = isLowRamDevice(context)
 
     val downloadWifiOnly: StateFlow<Boolean> = settings.downloadWifiOnly
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -584,8 +588,10 @@ class HomeViewModel @Inject constructor(
     private fun <T> Flow<Pair<String, List<T>>>.of(pid: String): Flow<List<T>> =
         filter { it.first == pid }.map { it.second }
 
+    // Cada entrada de "Todas" o de una búsqueda envuelve miles de títulos.
     private val builtCache = object : LinkedHashMap<CatalogFilter, BuiltContent>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CatalogFilter, BuiltContent>?) = size > 12
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CatalogFilter, BuiltContent>?) =
+            size > if (lowRam) 4 else 12
     }
 
     val favoriteKeySet: StateFlow<Set<String>> = favoriteKeys.map { it.toSet() }

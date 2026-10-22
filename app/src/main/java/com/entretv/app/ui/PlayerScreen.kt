@@ -10,7 +10,6 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -1234,7 +1233,7 @@ private fun ControlIcon(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.12f else 1f, label = "controlScale")
+    val scale by animateFocusScale(focused, 1.12f, "controlScale")
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier

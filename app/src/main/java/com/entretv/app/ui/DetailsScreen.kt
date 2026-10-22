@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -101,6 +103,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.entretv.app.R
 import com.entretv.app.data.local.DownloadEntity
 import com.entretv.app.data.local.DownloadStatus
@@ -193,7 +197,11 @@ fun DetailsScreen(
                 val scrolled by remember {
                     derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 120 }
                 }
-                val scrim by animateFloatAsState(if (scrolled) 0.55f else 0f, label = "detailsScrim")
+                val scrim by animateFloatAsState(
+                    if (scrolled) 0.55f else 0f,
+                    animationSpec = if (profile.lowRam) snap() else spring(),
+                    label = "detailsScrim"
+                )
                 TvBackdrop(backdrop, scrim)
             }
             // En TV Compose lleva lo enfocado a un tercio de la pantalla y la portada se iba hacia
@@ -729,13 +737,35 @@ private suspend fun LazyListState.scrollToTop(heroPx: Float) {
     }
 }
 
+/**
+ * Portada de fondo, a lo ancho de la pantalla y de alto [height] (null: pantalla completa).
+ * Normalmente Coil la decodifica al tamaño del layout; con poca memoria a 3/4 de eso, que
+ * atenuada detrás del texto no se nota. INEXACT: una imagen más chica no se agranda.
+ */
+@Composable
+private fun backdropModel(url: String, height: Dp?): Any {
+    val context = LocalContext.current
+    if (!isLowRamDevice(context)) return url
+    val config = LocalConfiguration.current
+    val density = LocalDensity.current
+    return remember(url, config.screenWidthDp, config.screenHeightDp, height) {
+        val width = with(density) { config.screenWidthDp.dp.roundToPx() }
+        val tall = with(density) { (height ?: config.screenHeightDp.dp).roundToPx() }
+        ImageRequest.Builder(context)
+            .data(url)
+            .size(width * 3 / 4, tall * 3 / 4)
+            .precision(Precision.INEXACT)
+            .build()
+    }
+}
+
 /** Portada de TV a pantalla completa detrás del contenido; [scrim] la oscurece al bajar. */
 @Composable
 private fun TvBackdrop(backdrop: String, scrim: Float) {
     Box(Modifier.fillMaxSize()) {
         if (backdrop.isNotEmpty()) {
             AsyncImage(
-                model = backdrop,
+                model = backdropModel(backdrop, height = null),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -786,7 +816,7 @@ private fun DetailsHero(
     ) {
         if (backdrop.isNotEmpty()) {
             AsyncImage(
-                model = backdrop,
+                model = backdropModel(backdrop, height),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -893,7 +923,7 @@ private fun EpisodeRow(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.02f else 1f, label = "episodeScale")
+    val scale by animateFocusScale(focused, 1.02f, "episodeScale")
     val shape = RoundedCornerShape(12.dp)
     val fraction = progress?.let { if (it.isCompleted) 1f else if (it.durationMs > 0) it.positionMs.toFloat() / it.durationMs else 0f }
     val watched = progress != null && (progress.isCompleted || progress.positionMs >= SeriesResumeRule.MIN_WATCH_MS)

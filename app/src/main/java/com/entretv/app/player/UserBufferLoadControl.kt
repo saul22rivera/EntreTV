@@ -20,7 +20,8 @@ import kotlin.math.min
  *    guarda el doble y se mantiene lleno; en vivo el borde del directo lo limita igual.
  *
  * El búfer además tiene techo en bytes: en 4K, 30 s pueden pasar de 150 MB y en equipos
- * con poca memoria eso provoca tirones del recolector o cierres por falta de RAM.
+ * con poca memoria eso provoca tirones del recolector o cierres por falta de RAM. En esos
+ * equipos ([lowRam]) VOD no guarda el doble y el máximo no pasa de 50 s.
  *
  * Las descargas (archivos locales) usan los mismos valores que la red.
  */
@@ -28,6 +29,7 @@ import kotlin.math.min
 class UserBufferLoadControl private constructor(
     private val bufferAllocator: DefaultAllocator,
     private val targetBufferBytes: Int,
+    private val lowRam: Boolean,
     private val startBufferMs: () -> Int,
     private val maxBufferMs: () -> Int,
     private val isLive: () -> Boolean
@@ -49,14 +51,16 @@ class UserBufferLoadControl private constructor(
 ) {
     constructor(
         targetBufferBytes: Int,
+        lowRam: Boolean,
         startBufferMs: () -> Int,
         maxBufferMs: () -> Int,
         isLive: () -> Boolean
-    ) : this(DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE), targetBufferBytes, startBufferMs, maxBufferMs, isLive)
+    ) : this(DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE), targetBufferBytes, lowRam, startBufferMs, maxBufferMs, isLive)
 
     private companion object {
         const val MIN_BUFFER_MS = 15_000
         const val MAX_USER_BUFFER_MS = 60_000
+        const val LOW_RAM_MAX_BUFFER_MS = 50_000
         const val MAX_BUFFER_MS = 2 * MAX_USER_BUFFER_MS
 
         // Con 0 s, tras un trabón se exige 1 s para no entrar en un ciclo de cortes.
@@ -87,12 +91,12 @@ class UserBufferLoadControl private constructor(
         val bufferedUs = Util.getPlayoutDurationForMediaDuration(
             parameters.bufferedDurationUs, parameters.playbackSpeed
         )
-        val userCapMs = maxBufferMs().coerceIn(MIN_BUFFER_MS, MAX_USER_BUFFER_MS)
+        val userCapMs = maxBufferMs().coerceIn(MIN_BUFFER_MS, if (lowRam) LOW_RAM_MAX_BUFFER_MS else MAX_USER_BUFFER_MS)
         if (isLive()) {
             if (bufferedUs >= userCapMs * 1_000L) return false
             return super.shouldContinueLoading(parameters)
         }
-        if (bufferedUs >= userCapMs * 2_000L) return false
+        if (bufferedUs >= userCapMs * (if (lowRam) 1_000L else 2_000L)) return false
         if (bufferedUs < MIN_BUFFER_MS * 1_000L) return super.shouldContinueLoading(parameters)
         // Entre 15 s y el tope sigue cargando mientras la memoria alcance: el búfer no baja a 15 s
         // antes de volver a pedir datos.

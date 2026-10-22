@@ -1,6 +1,5 @@
 package com.entretv.app.player
 
-import android.app.ActivityManager
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -45,6 +44,7 @@ import com.entretv.app.R
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.ui.UiText
+import com.entretv.app.ui.isLowRamDevice
 import com.entretv.app.ui.isTvDevice
 import com.entretv.app.ui.uiText
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -85,6 +85,7 @@ class PlayerManager @Inject constructor(
         // Algunos proveedores atan la línea al user agent: no cambiarlo sin avisar.
         const val USER_AGENT = "EntreTV/1.0 (Android)"
         private const val CACHE_BYTES = 256L * 1024 * 1024
+        private const val LOW_RAM_CACHE_BYTES = 96L * 1024 * 1024
         private const val LOAD_RETRIES = 6
         private const val MAX_VOD_RECONNECTS = 8
         private const val MAX_RECONNECT_DELAY_MS = 15_000L
@@ -123,10 +124,13 @@ class PlayerManager @Inject constructor(
         scope.launch { settings.playerPrefs.collect { prefs = it } }
     }
 
+    private val lowRam: Boolean by lazy { isLowRamDevice(context) }
+
     private val cache: SimpleCache by lazy {
         SimpleCache(
             File(context.cacheDir, "entre_media"),
-            LeastRecentlyUsedCacheEvictor(CACHE_BYTES),
+            // Los equipos con poca memoria suelen traer poco almacenamiento.
+            LeastRecentlyUsedCacheEvictor(if (lowRam) LOW_RAM_CACHE_BYTES else CACHE_BYTES),
             StandaloneDatabaseProvider(context)
         )
     }
@@ -283,7 +287,7 @@ class PlayerManager @Inject constructor(
     }
 
     private fun buildPlayer(): ExoPlayer {
-        val loadControl = UserBufferLoadControl(targetBufferBytes(), { startBufferMs }, { maxBufferMs }, { currentIsLive })
+        val loadControl = UserBufferLoadControl(targetBufferBytes(), lowRam, { startBufferMs }, { maxBufferMs }, { currentIsLive })
 
         trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -475,12 +479,14 @@ class PlayerManager @Inject constructor(
         )
     }
 
-    /** Techo del búfer según la memoria de la app: ~30 s de 4K en un equipo medio. */
+    /**
+     * Techo del búfer según el heap real de la app (el búfer vive ahí): ~30 s de 4K en un
+     * equipo medio.
+     */
     private fun targetBufferBytes(): Int {
-        val am = context.getSystemService(ActivityManager::class.java)
-        val heapMb = am?.largeMemoryClass ?: 128
+        val heapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
         val mb = when {
-            am?.isLowRamDevice == true || heapMb <= 128 -> 48
+            lowRam || heapMb <= 128 -> 48
             heapMb <= 256 -> 96
             else -> 160
         }
@@ -720,7 +726,7 @@ class PlayerManager @Inject constructor(
         if (currentItem != null || !url.startsWith("http", ignoreCase = true)) return
         val cm = context.getSystemService(ConnectivityManager::class.java)
         if (cm == null || cm.activeNetwork == null || cm.isActiveNetworkMetered) return
-        if (context.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true) return
+        if (lowRam) return
         cancelPreload()
         val spec = DataSpec.Builder().setUri(url).setPosition(0).setLength(PRELOAD_BYTES).build()
         preloadTask = preloadExecutor.submit(Runnable {

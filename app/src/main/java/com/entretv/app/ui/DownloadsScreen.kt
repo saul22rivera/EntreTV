@@ -1,7 +1,6 @@
 package com.entretv.app.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
@@ -336,7 +335,7 @@ private fun DownloadRow(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.02f else 1f, label = "downloadScale")
+    val scale by animateFocusScale(focused, 1.02f, "downloadScale")
     val shape = RoundedCornerShape(12.dp)
     val background = when {
         focused -> Color.White.copy(alpha = 0.10f)

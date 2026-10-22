@@ -1,6 +1,5 @@
 package com.entretv.app.ui
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -88,7 +87,7 @@ fun EntreButton(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "entreButton")
+    val scale by animateFocusScale(focused, 1.06f, "entreButton")
     val shape = RoundedCornerShape(10.dp)
     val background = when {
         primary -> Color.White

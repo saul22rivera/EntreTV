@@ -1,5 +1,6 @@
 package com.entretv.app
 
+import android.app.ActivityManager
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
@@ -11,6 +12,7 @@ import coil.request.CachePolicy
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.sync.CatalogSyncWorker
 import com.entretv.app.ui.AppLanguage
+import com.entretv.app.ui.isLowRamDevice
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import kotlin.concurrent.thread
@@ -32,11 +34,23 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
         thread(name = "catalog-sync-schedule") { CatalogSyncWorker.schedule(this) }
     }
 
-    override fun newImageLoader(): ImageLoader =
-        ImageLoader.Builder(this)
+    // Las imágenes se decodifican al tamaño en pantalla (AsyncImage toma el del layout).
+    // Con poca memoria: JPEG en RGB_565 (la mitad de bytes; exige bitmaps de software,
+    // los de hardware siempre son ARGB_8888), sin fundido y caché en memoria del 10 % del heap
+    // normal: con largeHeap, maxSizePercent se calcularía sobre largeMemoryClass.
+    override fun newImageLoader(): ImageLoader {
+        val lowRam = isLowRamDevice(this)
+        return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.15)
+                    .apply {
+                        if (lowRam) {
+                            val heapMb = getSystemService(ActivityManager::class.java)?.memoryClass ?: 128
+                            maxSizeBytes(heapMb * 1024 * 1024 / 10)
+                        } else {
+                            maxSizePercent(0.15)
+                        }
+                    }
                     .build()
             }
             .diskCache {
@@ -48,6 +62,8 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
             .respectCacheHeaders(false)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
-            .crossfade(true)
+            .crossfade(!lowRam)
+            .apply { if (lowRam) allowHardware(false).allowRgb565(true) }
             .build()
+    }
 }

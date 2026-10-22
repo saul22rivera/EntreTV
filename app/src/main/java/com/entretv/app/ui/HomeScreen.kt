@@ -4,7 +4,6 @@ import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
@@ -1853,7 +1852,7 @@ private fun ContinueCard(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "continueScale")
+    val scale by animateFocusScale(focused, 1.05f, "continueScale")
     LaunchedEffect(focused) { if (focused) onFocused() }
 
     Card(
@@ -2017,7 +2016,7 @@ private fun rememberTvRowState(tvNav: TvCatalogNav?, navKey: String): LazyListSt
 private fun SeeAllCard(profile: DeviceProfile, live: Boolean, onClick: () -> Unit, modifier: Modifier) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "seeAllScale")
+    val scale by animateFocusScale(focused, 1.08f, "seeAllScale")
     val shape = RoundedCornerShape(12.dp)
     Box(
         contentAlignment = Alignment.Center,
@@ -2111,7 +2110,7 @@ private fun PosterCard(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "posterScale")
+    val scale by animateFocusScale(focused, 1.08f, "posterScale")
     LaunchedEffect(focused) { if (focused) onFocused() }
     val isLive = item is BrowseItem.Live
     val shape = RoundedCornerShape(12.dp)

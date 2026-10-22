@@ -357,7 +357,9 @@ class PlaylistRepository @Inject constructor(
             "M3U" -> listOf(
                 prepareSection(SECTION_LIVE) {
                     val body = withRetry { xtreamApi.fetchText(p.url).string() }
-                    if (!force && unchanged(p.id, "m3u", textPrint(body), "") && channelDao.count(p.id) > 0) return@prepareSection null
+                    // Solo la huella: la lista entera puede pesar decenas de MB y no debe seguir viva hasta guardar.
+                    val print = textPrint(body)
+                    if (!force && unchanged(p.id, "m3u", print, "") && channelDao.count(p.id) > 0) return@prepareSection null
                     val channels = M3uParser.parse(p.id, body)
                     if (channels.isEmpty()) return@prepareSection null
                     PendingSave(
@@ -366,7 +368,7 @@ class PlaylistRepository @Inject constructor(
                             channelDao.upsertAll(channels)
                             saveCategories(p.id, SECTION_LIVE, channels.map { it.groupTitle })
                         },
-                        saved = { remember(p.id, "m3u", textPrint(body), "") }
+                        saved = { remember(p.id, "m3u", print, "") }
                     )
                 }
             ).let { saveSections(it) }
