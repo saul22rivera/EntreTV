@@ -60,6 +60,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -115,6 +118,10 @@ class PlaylistRepository @Inject constructor(
 
     /** Bajar y leer el catálogo (canales, películas y series a la vez) sin quitarle CPU al video. */
     private val syncDispatcher = backgroundExecutor("catalog-sync", 3).asCoroutineDispatcher()
+
+    private val _syncing = MutableStateFlow(false)
+    /** True mientras se baja el catálogo: al entrar, a mano o en la actualización programada. */
+    val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
 
     val playlists: Flow<List<PlaylistEntity>> = playlistDao.observeAll()
 
@@ -298,7 +305,8 @@ class PlaylistRepository @Inject constructor(
 
     /**
      * Actualización al entrar: lo guardado se ve al instante y esto corre en segundo plano.
-     * Sin [force] se respeta la frecuencia de Configuración (por defecto, una vez al día).
+     * Sin [force] se respeta la frecuencia de Configuración (por defecto, una vez al día
+     * después de las 9:00; ver [refreshDue]).
      * Cada sección (canales, películas, series) es independiente: si una falla se conserva lo guardado.
      *
      * @return secciones que no se pudieron actualizar, con el motivo.
@@ -326,12 +334,17 @@ class PlaylistRepository @Inject constructor(
     private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean): List<UiText> {
         val last = settings.lastRefreshAt(p.id)
         if (!force && !refreshDue(last, settings.refreshMode.first())) return emptyList()
-        val failed = coroutineScope {
-            val account = async { refreshAccountInfo(p) }
-            refreshPlaylistInternal(p, force).also { account.await() }
+        _syncing.value = true
+        try {
+            val failed = coroutineScope {
+                val account = async { refreshAccountInfo(p) }
+                refreshPlaylistInternal(p, force).also { account.await() }
+            }
+            if (failed.size < 3) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
+            return failed
+        } finally {
+            _syncing.value = false
         }
-        if (failed.size < 3) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
-        return failed
     }
 
     private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<UiText> = coroutineScope {
@@ -352,21 +365,54 @@ class PlaylistRepository @Inject constructor(
                 }
             )
             else -> {
-                val live = async { runSection(R.string.home_refresh_channels) { syncLive(p, force) } }
-                val movies = async { runSection(R.string.section_movies) { syncMovies(p, force) } }
-                val series = async { runSection(R.string.section_series) { syncSeries(p, force) } }
-                listOfNotNull(live.await(), movies.await(), series.await())
+                val live = async { prepareSection(R.string.home_refresh_channels) { prepareLive(p, force) } }
+                val movies = async { prepareSection(R.string.section_movies) { prepareMovies(p, force) } }
+                val series = async { prepareSection(R.string.section_series) { prepareSeries(p, force) } }
+                saveSections(listOf(live.await(), movies.await(), series.await()))
             }
         }
     }
 
-    private suspend fun syncLive(p: PlaylistEntity, force: Boolean) = coroutineScope {
+    /** Sección ya bajada y leída: [save] la escribe en la base y [saved] anota su huella. */
+    private class PendingSave(val save: suspend () -> Unit, val saved: () -> Unit)
+
+    private class SectionResult(@StringRes val label: Int, val pending: PendingSave?, val failure: UiText?)
+
+    private suspend fun prepareSection(@StringRes label: Int, block: suspend () -> PendingSave?): SectionResult =
+        try {
+            SectionResult(label, block(), null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            SectionResult(label, null, sectionFailed(label, e))
+        }
+
+    /**
+     * Guarda juntas las secciones que cambiaron, en una transacción: Room avisa una sola vez y
+     * la pantalla se arma de nuevo una vez al final, sin pasar por una lista vacía.
+     */
+    private suspend fun saveSections(results: List<SectionResult>): List<UiText> {
+        val failures = results.mapNotNull { it.failure }
+        val pending = results.filter { it.pending != null }
+        if (pending.isEmpty()) return failures
+        return try {
+            database.withTransaction { pending.forEach { it.pending!!.save() } }
+            pending.forEach { it.pending!!.saved() }
+            failures
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failures + pending.map { sectionFailed(it.label, e) }
+        }
+    }
+
+    private suspend fun prepareLive(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_live_categories", CATEGORY_LIST) }
         val streams = fetchAction(p, "get_live_streams", ListSerializer(XtreamStream.serializer()))
         val cats = catsJob.await()
-        if (streams.value.isEmpty()) return@coroutineScope
+        if (streams.value.isEmpty()) return@coroutineScope null
         if (!force && cats != null && unchanged(p.id, "live", streams.print, cats.print) && channelDao.count(p.id) > 0) {
-            return@coroutineScope
+            return@coroutineScope null
         }
         // Si las categorías no llegaron, cada canal conserva el grupo que ya tenía.
         val previous = if (cats == null) {
@@ -389,22 +435,20 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_LIVE, cats?.value) + channels.map { it.groupTitle }
-        // En una transacción: la pantalla ve un solo cambio y no una lista vacía por un instante.
-        database.withTransaction {
+        pendingSave(p.id, "live", streams.print, cats?.print) {
             channelDao.deleteByPlaylist(p.id)
             channelDao.upsertAll(channels)
             saveCategories(p.id, SECTION_LIVE, order)
         }
-        if (cats != null) remember(p.id, "live", streams.print, cats.print)
     }
 
-    private suspend fun syncMovies(p: PlaylistEntity, force: Boolean) = coroutineScope {
+    private suspend fun prepareMovies(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_vod_categories", CATEGORY_LIST) }
         val streams = fetchAction(p, "get_vod_streams", ListSerializer(XtreamVodStream.serializer()))
         val cats = catsJob.await()
-        if (streams.value.isEmpty()) return@coroutineScope
+        if (streams.value.isEmpty()) return@coroutineScope null
         if (!force && cats != null && unchanged(p.id, "movies", streams.print, cats.print) && vodDao.countMovies(p.id) > 0) {
-            return@coroutineScope
+            return@coroutineScope null
         }
         val previous = if (cats == null) {
             vodDao.getMovies(p.id).associate { it.movieId to it.categoryName }
@@ -430,21 +474,20 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_MOVIES, cats?.value) + movies.map { it.categoryName }
-        database.withTransaction {
+        pendingSave(p.id, "movies", streams.print, cats?.print) {
             vodDao.deleteMoviesByPlaylist(p.id)
             vodDao.upsertMovies(movies)
             saveCategories(p.id, SECTION_MOVIES, order)
         }
-        if (cats != null) remember(p.id, "movies", streams.print, cats.print)
     }
 
-    private suspend fun syncSeries(p: PlaylistEntity, force: Boolean) = coroutineScope {
+    private suspend fun prepareSeries(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_series_categories", CATEGORY_LIST) }
         val list = fetchAction(p, "get_series", ListSerializer(XtreamSeries.serializer()))
         val cats = catsJob.await()
-        if (list.value.isEmpty()) return@coroutineScope
+        if (list.value.isEmpty()) return@coroutineScope null
         if (!force && cats != null && unchanged(p.id, "series", list.print, cats.print) && vodDao.countSeries(p.id) > 0) {
-            return@coroutineScope
+            return@coroutineScope null
         }
         val previous = if (cats == null) {
             vodDao.getSeriesList(p.id).associate { it.seriesId to it.categoryName }
@@ -468,13 +511,24 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_SERIES, cats?.value) + series.map { it.categoryName }
-        database.withTransaction {
+        pendingSave(p.id, "series", list.print, cats?.print) {
             vodDao.deleteSeriesByPlaylist(p.id)
             vodDao.upsertSeries(series)
             saveCategories(p.id, SECTION_SERIES, order)
         }
-        if (cats != null) remember(p.id, "series", list.print, cats.print)
     }
+
+    /**
+     * Solo recibe las huellas (no la respuesta): lo bajado del servidor se libera mientras las
+     * otras secciones terminan. Sin categorías no se anota la huella y se vuelve a intentar.
+     */
+    private fun pendingSave(
+        playlistId: String,
+        section: String,
+        print: String,
+        catsPrint: String?,
+        save: suspend () -> Unit
+    ) = PendingSave(save) { if (catsPrint != null) remember(playlistId, section, print, catsPrint) }
 
     private fun fingerprint(main: String, extra: String): String = "$main|$extra"
 
@@ -557,8 +611,11 @@ class PlaylistRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            uiText(R.string.home_refresh_section_failed, uiText(label), e.friendlyReason())
+            sectionFailed(label, e)
         }
+
+    private fun sectionFailed(@StringRes label: Int, e: Exception): UiText =
+        uiText(R.string.home_refresh_section_failed, uiText(label), e.friendlyReason())
 
     private fun Throwable.friendlyReason(): UiText = when (this) {
         is SerializationException -> uiText(R.string.home_refresh_reason_cut)
@@ -770,21 +827,36 @@ class PlaylistRepository @Inject constructor(
         private const val MAX_ATTEMPTS = 4
         private val CATEGORY_LIST = ListSerializer(XtreamCategory.serializer())
 
+        /** El proveedor publica lo nuevo temprano: después de esta hora vale la pena volver a bajar. */
+        const val DAILY_CUTOFF_HOUR = 9
+        private const val EVENING_CUTOFF_HOUR = 21
+
         /**
-         * Toca actualizar al entrar según [mode]: siempre, si la última fue otro día, o si fue
-         * en la otra mitad del día (antes y después de las 12).
+         * Toca actualizar según [mode]: siempre, o si la última fue antes del corte más reciente
+         * (las 9:00 de hoy o de ayer; con dos veces al día, también las 21:00).
          */
         fun refreshDue(last: Long, mode: Int, now: Long = System.currentTimeMillis()): Boolean {
             if (last <= 0L || mode == SettingsRepository.REFRESH_ALWAYS) return true
-            val then = Calendar.getInstance().apply { timeInMillis = last }
-            val today = Calendar.getInstance().apply { timeInMillis = now }
-            val sameDay = then.get(Calendar.YEAR) == today.get(Calendar.YEAR) &&
-                then.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)
-            return when (mode) {
-                SettingsRepository.REFRESH_TWICE_DAILY ->
-                    !sameDay || then.get(Calendar.AM_PM) != today.get(Calendar.AM_PM)
-                else -> !sameDay
+            return last < lastCutoff(mode, now)
+        }
+
+        private fun lastCutoff(mode: Int, now: Long): Long {
+            val hours = if (mode == SettingsRepository.REFRESH_TWICE_DAILY) {
+                listOf(EVENING_CUTOFF_HOUR, DAILY_CUTOFF_HOUR)
+            } else listOf(DAILY_CUTOFF_HOUR)
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = now
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
             }
+            for (hour in hours) {
+                cal.set(Calendar.HOUR_OF_DAY, hour)
+                if (cal.timeInMillis <= now) return cal.timeInMillis
+            }
+            cal.add(Calendar.DAY_OF_YEAR, -1)
+            cal.set(Calendar.HOUR_OF_DAY, hours.first())
+            return cal.timeInMillis
         }
     }
 }

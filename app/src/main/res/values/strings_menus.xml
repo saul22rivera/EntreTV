@@ -67,8 +67,8 @@
     <string name="settings_refresh">Actualizar el catálogo al entrar</string>
     <string name="settings_refresh_desc">Bajar la lista completa tarda y puede trabar el video mientras tanto.</string>
     <string name="settings_refresh_always">Cada vez que entras</string>
-    <string name="settings_refresh_daily">Una vez al día (la primera vez que entras)</string>
-    <string name="settings_refresh_twice">Dos veces al día (mañana y tarde)</string>
+    <string name="settings_refresh_daily">Una vez al día (la primera vez que entras después de las 9:00)</string>
+    <string name="settings_refresh_twice">Dos veces al día (después de las 9:00 y de las 21:00)</string>
     <string name="settings_refresh_now">Actualizar ahora</string>
     <string name="settings_default_sort">Orden por defecto</string>
     <string name="settings_default_sort_desc">“Original” respeta el orden en que lo manda tu proveedor.</string>

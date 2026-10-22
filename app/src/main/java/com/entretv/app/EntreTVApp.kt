@@ -9,9 +9,11 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import com.entretv.app.data.download.DownloadRepository
+import com.entretv.app.data.sync.CatalogSyncWorker
 import com.entretv.app.ui.AppLanguage
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
+import kotlin.concurrent.thread
 
 @HiltAndroidApp
 class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
@@ -26,6 +28,8 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
         super.onCreate()
         AppLanguage.init(this)
         downloads.resumePending()
+        // WorkManager abre su base al primer uso: fuera del hilo principal para no demorar el arranque.
+        thread(name = "catalog-sync-schedule") { CatalogSyncWorker.schedule(this) }
     }
 
     override fun newImageLoader(): ImageLoader =

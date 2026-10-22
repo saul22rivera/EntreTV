@@ -31,11 +31,13 @@ import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -389,8 +391,9 @@ class HomeViewModel @Inject constructor(
             .distinctUntilChanged()
 
     val uiState: StateFlow<HomeUiState> = combine(
-        repository.playlists, selectedPlaylistId, query, firstSync, refreshing, message, section, category, effectiveSort,
-        summary
+        repository.playlists, selectedPlaylistId, query, firstSync,
+        combine(refreshing, repository.syncing) { manual, any -> manual || any },
+        message, section, category, effectiveSort, summary
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         HomeUiState(
@@ -779,7 +782,7 @@ class HomeViewModel @Inject constructor(
     private fun sortItems(items: List<BrowseItem>, order: SortOrder): List<BrowseItem> = when (order) {
         SortOrder.ORIGINAL -> items
         SortOrder.RECENT -> items.sortedByDescending { it.added }
-        SortOrder.AZ -> items.sortedBy { normalize(it.title) }
+        SortOrder.AZ -> items.sortedBy { normalizedTitle(it.title) }
         SortOrder.RATING -> items.sortedByDescending { it.rating }
     }
 
@@ -1000,29 +1003,49 @@ class HomeViewModel @Inject constructor(
 
     // ============================ Búsqueda ============================
 
+    /** Nombres de una tabla ya normalizados, en el mismo orden; sirven mientras Room no mande otra lista. */
+    private class SearchNames(val source: List<*>, val names: Array<String>)
+
+    private val channelNames = AtomicReference<SearchNames?>()
+    private val movieNames = AtomicReference<SearchNames?>()
+    private val seriesNames = AtomicReference<SearchNames?>()
+
+    /** Se normaliza cada nombre una vez por catálogo y no en cada tecla de la búsqueda. */
+    private fun <T> searchNames(ref: AtomicReference<SearchNames?>, items: List<T>, name: (T) -> String): Array<String> {
+        ref.get()?.takeIf { it.source === items }?.let { return it.names }
+        val names = Array(items.size) { normalize(name(items[it])) }
+        ref.set(SearchNames(items, names))
+        return names
+    }
+
+    private fun <T> List<T>.matching(names: Array<String>, tokens: List<String>): List<T> =
+        filterIndexed { i, _ -> val n = names[i]; tokens.all { n.contains(it) } }
+
     private fun searchAll(r: RawCatalog, o: CatalogOptions, order: SortOrder): SectionContent {
         val tokens = normalize(r.filter.query).split(' ').filter { it.isNotBlank() }
         val first = tokens.firstOrNull().orEmpty()
-        fun matches(name: String): Boolean {
-            val n = normalize(name)
-            return tokens.all { n.contains(it) }
-        }
         // Con el orden original, primero los que empiezan con lo buscado.
         fun ranked(items: List<BrowseItem>, o2: SortOrder): List<BrowseItem> =
-            if (o2 == SortOrder.ORIGINAL) items.sortedBy { if (normalize(it.title).startsWith(first)) 0 else 1 }
+            if (o2 == SortOrder.ORIGINAL) items.sortedBy { if (normalizedTitle(it.title).startsWith(first)) 0 else 1 }
             else sortItems(items, o2)
         val c = o.cleanNames
         val movies = ranked(
-            visibleBySection(r.movies.filter { matches(it.name) }, PlaylistRepository.SECTION_MOVIES, o, ::movieGroup) { it.id }
-                .map { BrowseItem.Movie(it, clean(it.name, c)) }, order
+            visibleBySection(
+                r.movies.matching(searchNames(movieNames, r.movies) { it.name }, tokens),
+                PlaylistRepository.SECTION_MOVIES, o, ::movieGroup
+            ) { it.id }.map { BrowseItem.Movie(it, clean(it.name, c)) }, order
         )
         val series = ranked(
-            visibleBySection(r.series.filter { matches(it.name) }, PlaylistRepository.SECTION_SERIES, o, ::seriesGroup) { it.id }
-                .map { BrowseItem.Show(it, clean(it.name, c)) }, order
+            visibleBySection(
+                r.series.matching(searchNames(seriesNames, r.series) { it.name }, tokens),
+                PlaylistRepository.SECTION_SERIES, o, ::seriesGroup
+            ) { it.id }.map { BrowseItem.Show(it, clean(it.name, c)) }, order
         )
         val channels = ranked(
-            visibleBySection(r.channels.filter { matches(it.name) }, PlaylistRepository.SECTION_LIVE, o, ::liveGroup) { it.id }
-                .map { BrowseItem.Live(it, clean(it.name, c)) }, orderFor(PlaylistRepository.SECTION_LIVE, order)
+            visibleBySection(
+                r.channels.matching(searchNames(channelNames, r.channels) { it.name }, tokens),
+                PlaylistRepository.SECTION_LIVE, o, ::liveGroup
+            ) { it.id }.map { BrowseItem.Live(it, clean(it.name, c)) }, orderFor(PlaylistRepository.SECTION_LIVE, order)
         )
         val groups = listOf(
             ContentRow(SEARCH_MOVIES, movies, uiText(R.string.home_search_movies_count, movies.size)),
@@ -1044,6 +1067,11 @@ class HomeViewModel @Inject constructor(
         if (lower.all { it.code < 128 }) return lower
         return accents.replace(Normalizer.normalize(lower, Normalizer.Form.NFD), "")
     }
+
+    private val titleCache = ConcurrentHashMap<String, String>()
+
+    /** Para ordenar títulos ya limpios (A-Z, búsqueda): se repiten en cada armado. */
+    private fun normalizedTitle(title: String): String = titleCache.getOrPut(title) { normalize(title) }
 
     // ============================ Organizar categorías ============================
 
@@ -1249,6 +1277,8 @@ class HomeViewModel @Inject constructor(
                 val series = seriesTable.of(pid).first()
                 movies.forEach { matchKey(it.name) }
                 series.forEach { matchKey(it.name) }
+                searchNames(movieNames, movies) { it.name }
+                searchNames(seriesNames, series) { it.name }
                 // La primera entrada a Películas o Series ya encuentra sus filas armadas.
                 val keys = favoriteKeys.first()
                 val o = options.first { it.playlistId == pid }
@@ -1265,13 +1295,13 @@ class HomeViewModel @Inject constructor(
             }
         }
         // Selecciona la primera cuenta y, al entrar, actualiza en segundo plano con lo
-        // guardado ya visible. Si se actualizó hace poco no vuelve a bajar todo.
+        // guardado ya visible, solo si toca según la frecuencia de Configuración.
         viewModelScope.launch {
             repository.playlists.collect { list ->
                 val selected = selectedPlaylistId.value
                 if ((selected == null || list.none { it.id == selected }) && list.isNotEmpty()) {
                     selectedPlaylistId.value = list.first().id
-                    refreshAll(manual = false)
+                    refreshIfDue()
                 }
             }
         }
@@ -1289,7 +1319,18 @@ class HomeViewModel @Inject constructor(
     fun selectPlaylist(id: String) {
         selectedPlaylistId.value = id
         category.value = null
-        refreshAll(manual = false)
+        refreshIfDue()
+    }
+
+    private var autoRefresh: Job? = null
+
+    /**
+     * Al entrar o al volver a la app: baja el catálogo solo si pasó el corte de la mañana (o
+     * lo pide Configuración). Lo guardado sigue a la vista mientras tanto.
+     */
+    fun refreshIfDue() {
+        if (selectedPlaylistId.value == null || autoRefresh?.isActive == true) return
+        autoRefresh = refreshAll(manual = false)
     }
 
     /** Elegir una sección (también la misma) lleva a su inicio. */
@@ -1385,10 +1426,10 @@ class HomeViewModel @Inject constructor(
     fun consumeMessage() { message.value = null }
 
     /**
-     * Actualiza el catálogo. Al entrar es silenciosa y respeta el intervalo mínimo; a mano
-     * ([manual]) siempre baja todo y muestra el indicador.
+     * Actualiza el catálogo. Al entrar es silenciosa y respeta la frecuencia de Configuración
+     * (solo el indicador pequeño si de verdad baja algo); a mano ([manual]) siempre baja todo.
      */
-    fun refreshAll(manual: Boolean = true) {
+    fun refreshAll(manual: Boolean = true): Job =
         viewModelScope.launch {
             if (manual) refreshing.value = true
             val pid = selectedPlaylistId.value
@@ -1407,7 +1448,6 @@ class HomeViewModel @Inject constructor(
             refreshing.value = false
             firstSync.value = false
         }
-    }
 
     fun episodesFor(seriesKey: String) = repository.episodes(seriesKey)
 

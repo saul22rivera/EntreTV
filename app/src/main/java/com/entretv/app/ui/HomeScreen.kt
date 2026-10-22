@@ -159,6 +159,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.entretv.app.R
@@ -224,6 +225,8 @@ fun HomeScreen(
     val hiddenItems by viewModel.hiddenItems.collectAsState()
     val organizeList by viewModel.organizeList.collectAsState()
     val organizingSection by viewModel.organizingSection.collectAsState()
+    // Si la app quedó abierta desde ayer, al volver a ella después de las 9:00 también se actualiza.
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refreshIfDue() }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var showAccount by rememberSaveable { mutableStateOf(false) }

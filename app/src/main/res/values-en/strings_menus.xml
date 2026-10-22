@@ -67,8 +67,8 @@
     <string name="settings_refresh">Refresh the catalog on open</string>
     <string name="settings_refresh_desc">Downloading the full list takes a while and can make video stutter meanwhile.</string>
     <string name="settings_refresh_always">Every time you open the app</string>
-    <string name="settings_refresh_daily">Once a day (the first time you open it)</string>
-    <string name="settings_refresh_twice">Twice a day (morning and afternoon)</string>
+    <string name="settings_refresh_daily">Once a day (the first time you open it after 9:00 AM)</string>
+    <string name="settings_refresh_twice">Twice a day (after 9:00 AM and after 9:00 PM)</string>
     <string name="settings_refresh_now">Refresh now</string>
     <string name="settings_default_sort">Default order</string>
     <string name="settings_default_sort_desc">“Original” keeps the order your provider sends.</string>
