@@ -43,6 +43,8 @@
     <string name="player_next_episode">Episodio siguiente</string>
     <string name="player_rewind_10">Atrasar 10 segundos</string>
     <string name="player_forward_30">Adelantar 30 segundos</string>
+    <string name="player_seek_bar">Barra de progreso</string>
+    <string name="player_seek_hint">◀ ▶ mover · OK ir aquí</string>
     <string name="player_play">Reproducir</string>
     <string name="player_pause">Pausar</string>
     <string name="player_next_episode_button">Siguiente capítulo</string>

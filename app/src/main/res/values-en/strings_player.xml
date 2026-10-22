@@ -43,6 +43,8 @@
     <string name="player_next_episode">Next episode</string>
     <string name="player_rewind_10">Rewind 10 seconds</string>
     <string name="player_forward_30">Forward 30 seconds</string>
+    <string name="player_seek_bar">Progress bar</string>
+    <string name="player_seek_hint">◀ ▶ move · OK jump here</string>
     <string name="player_play">Play</string>
     <string name="player_pause">Pause</string>
     <string name="player_next_episode_button">Next episode</string>

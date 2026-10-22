@@ -6,6 +6,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.entretv.app.R
+import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.local.CategoryPrefEntity
 import com.entretv.app.data.local.ChannelEntity
@@ -42,14 +43,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** Elemento navegable del catálogo estilo Netflix. [title] llega ya limpio si el ajuste está activo. */
@@ -103,6 +109,9 @@ enum class SortOrder(@StringRes val labelRes: Int) {
 
 val SortOrder.label: String
     @Composable get() = stringResource(labelRes)
+
+/** Un hilo de prioridad baja para preparar el catálogo: el video conserva la CPU. */
+private val warmDispatcher by lazy { backgroundExecutor("catalog-warm", 1).asCoroutineDispatcher() }
 
 const val MY_LIST_ROW = "Mi lista"
 /** "Todas": todo el contenido de la sección en cuadrícula (null es el inicio de la sección). */
@@ -234,6 +243,20 @@ private data class RawCatalog(
     val favoriteKeys: List<String> = emptyList()
 )
 
+/** Vista ya armada y con qué datos se armó; las listas se comparan por identidad. */
+private class BuiltContent(
+    val raw: RawCatalog,
+    val options: CatalogOptions,
+    val order: SortOrder,
+    val trending: Trending,
+    val content: SectionContent
+) {
+    fun matches(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): Boolean =
+        raw.channels === r.channels && raw.movies === r.movies && raw.series === r.series &&
+            raw.favoriteKeys == r.favoriteKeys && this.order == order && trending === t &&
+            (options === o || options == o)
+}
+
 /** Lo que el usuario decidió sobre el catálogo. */
 private data class CatalogOptions(
     val playlistId: String? = null,
@@ -357,6 +380,7 @@ class HomeViewModel @Inject constructor(
 
     private val effectiveSort: Flow<SortOrder> =
         combine(sort, settings.catalogPrefs) { s, p -> s ?: SortOrder.fromName(p.defaultSort) }
+            .distinctUntilChanged()
 
     val uiState: StateFlow<HomeUiState> = combine(
         repository.playlists, selectedPlaylistId, query, firstSync, refreshing, message, section, category, effectiveSort,
@@ -527,6 +551,25 @@ class HomeViewModel @Inject constructor(
     }
 
     private val favoriteKeys = repository.favorites.map { list -> list.map { it.contentKey } }
+        .shareIn(viewModelScope, SharingStarted.Lazily, replay = 1)
+
+    // Cada tabla se lee una vez y queda en memoria: cambiar de sección o de categoría no vuelve a
+    // consultar la base; Room manda la lista nueva solo cuando el catálogo cambia.
+    private fun <T> catalogTable(source: (String) -> Flow<List<T>>): Flow<Pair<String, List<T>>> =
+        selectedPlaylistId.filterNotNull()
+            .flatMapLatest { pid -> source(pid).map { pid to it } }
+            .shareIn(viewModelScope, SharingStarted.Lazily, replay = 1)
+
+    private val channelTable = catalogTable(repository::channels)
+    private val movieTable = catalogTable(repository::movies)
+    private val seriesTable = catalogTable(repository::series)
+
+    private fun <T> Flow<Pair<String, List<T>>>.of(pid: String): Flow<List<T>> =
+        filter { it.first == pid }.map { it.second }
+
+    private val builtCache = object : LinkedHashMap<CatalogFilter, BuiltContent>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CatalogFilter, BuiltContent>?) = size > 12
+    }
 
     val favoriteKeySet: StateFlow<Set<String>> = favoriteKeys.map { it.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
@@ -542,27 +585,30 @@ class HomeViewModel @Inject constructor(
                 val pid = f.playlistId ?: return@flatMapLatest flowOf(RawCatalog(f))
                 when {
                     f.query.isNotEmpty() -> combine(
-                        repository.channels(pid), repository.movies(pid), repository.series(pid)
+                        channelTable.of(pid), movieTable.of(pid), seriesTable.of(pid)
                     ) { channels, movies, series -> RawCatalog(f, channels, movies, series) }
 
-                    f.section == Section.LIVE -> combine(repository.channels(pid), favoriteKeys) { list, keys ->
+                    f.section == Section.LIVE -> combine(channelTable.of(pid), favoriteKeys) { list, keys ->
                         RawCatalog(f, channels = list, favoriteKeys = keys)
                     }
-                    f.section == Section.MOVIES -> combine(repository.movies(pid), favoriteKeys) { list, keys ->
+                    f.section == Section.MOVIES -> combine(movieTable.of(pid), favoriteKeys) { list, keys ->
                         RawCatalog(f, movies = list, favoriteKeys = keys)
                     }
-                    else -> combine(repository.series(pid), favoriteKeys) { list, keys ->
+                    else -> combine(seriesTable.of(pid), favoriteKeys) { list, keys ->
                         RawCatalog(f, series = list, favoriteKeys = keys)
                     }
                 }
             }
             .let { raw ->
                 combine(raw, options, effectiveSort, trending) { r, o, order, t ->
-                    build(r, o, order, t).copy(
+                    val cached = synchronized(builtCache) { builtCache[r.filter] }?.takeIf { it.matches(r, o, order, t) }
+                    cached?.content ?: build(r, o, order, t).copy(
                         playlistId = r.filter.playlistId,
                         section = r.filter.section,
                         category = r.filter.category
-                    )
+                    ).also { built ->
+                        synchronized(builtCache) { builtCache[r.filter] = BuiltContent(r, o, order, t, built) }
+                    }
                 }
             }
             .flowOn(Dispatchers.Default)
@@ -626,7 +672,7 @@ class HomeViewModel @Inject constructor(
         .flatMapLatest { pid ->
             if (pid == null) flowOf(SummaryContent(ready = true))
             else combine(
-                repository.channels(pid), repository.movies(pid), repository.series(pid), options
+                channelTable.of(pid), movieTable.of(pid), seriesTable.of(pid), options
             ) { channels, movies, series, o -> buildSummary(pid, channels, movies, series, o) }
         }
         .flowOn(Dispatchers.Default)
@@ -865,13 +911,34 @@ class HomeViewModel @Inject constructor(
     // ============================ Top 10 ============================
 
     private val matchCache = ConcurrentHashMap<String, String>()
-    private val nonAlnum = Regex("[^a-z0-9]+")
-    private val yearSuffix = Regex("[(\\[\\-]\\s*(19|20)\\d{2}\\s*[)\\]]?\\s*$")
 
     /** Clave para cruzar títulos: sin prefijos, año, acentos ni signos. */
     private fun matchKey(title: String): String = matchCache.getOrPut(title) {
-        val cleaned = yearSuffix.replace(TitleCleaner.clean(title), "")
-        nonAlnum.replace(normalize(cleaned), "")
+        val n = normalize(withoutYearSuffix(clean(title, true)))
+        buildString(n.length) { for (ch in n) if (ch in 'a'..'z' || ch in '0'..'9') append(ch) }
+    }
+
+    /** Quita "(2021)", "[2021]" o "- 2021" del final, sin el costo de una expresión regular. */
+    private fun withoutYearSuffix(text: String): String {
+        fun isSpace(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r'
+        var i = text.length - 1
+        while (i >= 0 && isSpace(text[i])) i--
+        if (i >= 0 && (text[i] == ')' || text[i] == ']')) i--
+        while (i >= 0 && isSpace(text[i])) i--
+        if (i < 3) return text
+        val y = text.substring(i - 3, i + 1)
+        if (!y.all { it in '0'..'9' } || !(y.startsWith("19") || y.startsWith("20"))) return text
+        i -= 4
+        while (i >= 0 && isSpace(text[i])) i--
+        if (i < 0 || text[i] !in "([-") return text
+        return text.substring(0, i)
+    }
+
+    /** Nombre tal como llega del servidor: su versión limpia ya quedó en caché al armar la sección. */
+    private fun BrowseItem.rawName(): String = when (this) {
+        is BrowseItem.Movie -> movie.name
+        is BrowseItem.Show -> series.name
+        is BrowseItem.Live -> channel.name
     }
 
     private fun BrowseItem.tmdbId(): String = when (this) {
@@ -898,7 +965,7 @@ class HomeViewModel @Inject constructor(
             val byTitle = HashMap<String, MutableList<BrowseItem>>()
             all.forEach { item ->
                 item.tmdbId().takeIf { it.isNotEmpty() }?.let { byTmdb.putIfAbsent(it, item) }
-                val key = matchKey(item.title)
+                val key = matchKey(item.rawName())
                 if (key.length >= 2) byTitle.getOrPut(key) { mutableListOf() }.add(item)
             }
             for (t in trending) {
@@ -966,8 +1033,11 @@ class HomeViewModel @Inject constructor(
 
     private val accents = Regex("\\p{Mn}+")
 
-    private fun normalize(text: String): String =
-        accents.replace(Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD), "")
+    private fun normalize(text: String): String {
+        val lower = text.lowercase()
+        if (lower.all { it.code < 128 }) return lower
+        return accents.replace(Normalizer.normalize(lower, Normalizer.Form.NFD), "")
+    }
 
     // ============================ Organizar categorías ============================
 
@@ -1165,6 +1235,28 @@ class HomeViewModel @Inject constructor(
                 }
             }
             AppStartup.markReady()
+            // Mientras se ve la primera sección, deja listos los nombres limpios de Películas y
+            // Series con prioridad baja: con miles de títulos, entrar ya no espera esa cuenta.
+            val pid = selectedPlaylistId.first { it != null } ?: return@launch
+            withContext(warmDispatcher) {
+                val movies = movieTable.of(pid).first()
+                val series = seriesTable.of(pid).first()
+                movies.forEach { matchKey(it.name) }
+                series.forEach { matchKey(it.name) }
+                // La primera entrada a Películas o Series ya encuentra sus filas armadas.
+                val keys = favoriteKeys.first()
+                val o = options.first { it.playlistId == pid }
+                val order = effectiveSort.first()
+                val t = trending.value
+                listOf(
+                    RawCatalog(CatalogFilter(pid, Section.MOVIES, null, ""), movies = movies, favoriteKeys = keys),
+                    RawCatalog(CatalogFilter(pid, Section.SERIES, null, ""), series = series, favoriteKeys = keys)
+                ).forEach { r ->
+                    if (synchronized(builtCache) { builtCache[r.filter] } != null) return@forEach
+                    val built = build(r, o, order, t).copy(playlistId = pid, section = r.filter.section, category = null)
+                    synchronized(builtCache) { builtCache.putIfAbsent(r.filter, BuiltContent(r, o, order, t, built)) }
+                }
+            }
         }
         // Selecciona la primera cuenta y, al entrar, actualiza en segundo plano con lo
         // guardado ya visible. Si se actualizó hace poco no vuelve a bajar todo.

@@ -74,6 +74,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromStream
+import okio.Buffer
+import okio.ForwardingSource
+import okio.HashingSource
+import okio.buffer
 import retrofit2.HttpException
 
 /** Error de inicio de sesión con un mensaje listo para mostrar en el idioma de la app. */
@@ -334,7 +339,7 @@ class PlaylistRepository @Inject constructor(
             "M3U" -> listOfNotNull(
                 runSection(R.string.home_refresh_channels) {
                     val body = withRetry { xtreamApi.fetchText(p.url).string() }
-                    if (!force && unchanged(p.id, "m3u", body, "") && channelDao.count(p.id) > 0) return@runSection
+                    if (!force && unchanged(p.id, "m3u", textPrint(body), "") && channelDao.count(p.id) > 0) return@runSection
                     val channels = M3uParser.parse(p.id, body)
                     if (channels.isNotEmpty()) {
                         database.withTransaction {
@@ -342,7 +347,7 @@ class PlaylistRepository @Inject constructor(
                             channelDao.upsertAll(channels)
                             saveCategories(p.id, SECTION_LIVE, channels.map { it.groupTitle })
                         }
-                        remember(p.id, "m3u", body, "")
+                        remember(p.id, "m3u", textPrint(body), "")
                     }
                 }
             )
@@ -360,7 +365,7 @@ class PlaylistRepository @Inject constructor(
         val streams = fetchAction(p, "get_live_streams", ListSerializer(XtreamStream.serializer()))
         val cats = catsJob.await()
         if (streams.value.isEmpty()) return@coroutineScope
-        if (!force && cats != null && unchanged(p.id, "live", streams.text, cats.text) && channelDao.count(p.id) > 0) {
+        if (!force && cats != null && unchanged(p.id, "live", streams.print, cats.print) && channelDao.count(p.id) > 0) {
             return@coroutineScope
         }
         // Si las categorías no llegaron, cada canal conserva el grupo que ya tenía.
@@ -390,7 +395,7 @@ class PlaylistRepository @Inject constructor(
             channelDao.upsertAll(channels)
             saveCategories(p.id, SECTION_LIVE, order)
         }
-        if (cats != null) remember(p.id, "live", streams.text, cats.text)
+        if (cats != null) remember(p.id, "live", streams.print, cats.print)
     }
 
     private suspend fun syncMovies(p: PlaylistEntity, force: Boolean) = coroutineScope {
@@ -398,7 +403,7 @@ class PlaylistRepository @Inject constructor(
         val streams = fetchAction(p, "get_vod_streams", ListSerializer(XtreamVodStream.serializer()))
         val cats = catsJob.await()
         if (streams.value.isEmpty()) return@coroutineScope
-        if (!force && cats != null && unchanged(p.id, "movies", streams.text, cats.text) && vodDao.countMovies(p.id) > 0) {
+        if (!force && cats != null && unchanged(p.id, "movies", streams.print, cats.print) && vodDao.countMovies(p.id) > 0) {
             return@coroutineScope
         }
         val previous = if (cats == null) {
@@ -430,7 +435,7 @@ class PlaylistRepository @Inject constructor(
             vodDao.upsertMovies(movies)
             saveCategories(p.id, SECTION_MOVIES, order)
         }
-        if (cats != null) remember(p.id, "movies", streams.text, cats.text)
+        if (cats != null) remember(p.id, "movies", streams.print, cats.print)
     }
 
     private suspend fun syncSeries(p: PlaylistEntity, force: Boolean) = coroutineScope {
@@ -438,7 +443,7 @@ class PlaylistRepository @Inject constructor(
         val list = fetchAction(p, "get_series", ListSerializer(XtreamSeries.serializer()))
         val cats = catsJob.await()
         if (list.value.isEmpty()) return@coroutineScope
-        if (!force && cats != null && unchanged(p.id, "series", list.text, cats.text) && vodDao.countSeries(p.id) > 0) {
+        if (!force && cats != null && unchanged(p.id, "series", list.print, cats.print) && vodDao.countSeries(p.id) > 0) {
             return@coroutineScope
         }
         val previous = if (cats == null) {
@@ -468,11 +473,12 @@ class PlaylistRepository @Inject constructor(
             vodDao.upsertSeries(series)
             saveCategories(p.id, SECTION_SERIES, order)
         }
-        if (cats != null) remember(p.id, "series", list.text, cats.text)
+        if (cats != null) remember(p.id, "series", list.print, cats.print)
     }
 
-    private fun fingerprint(main: String, extra: String): String =
-        "${main.length}:${main.hashCode()}:${extra.length}:${extra.hashCode()}"
+    private fun fingerprint(main: String, extra: String): String = "$main|$extra"
+
+    private fun textPrint(text: String): String = "${text.length}:${text.hashCode()}"
 
     private fun unchanged(playlistId: String, section: String, main: String, extra: String): Boolean =
         syncPrefs.getString("$playlistId:$section", null) == fingerprint(main, extra)
@@ -493,15 +499,27 @@ class PlaylistRepository @Inject constructor(
         )
     }
 
-    private class Fetched<T>(val text: String, val value: T)
+    /** [print] resume la respuesta (bytes y MD5) para saber si cambió sin guardarla entera. */
+    private class Fetched<T>(val print: String, val value: T)
 
-    /** Descarga una acción de player_api.php y la decodifica; reintenta si llega cortada. */
+    /**
+     * Descarga una acción de player_api.php y la decodifica mientras llega: con listas de
+     * decenas de MB no se arma el texto completo en memoria. Reintenta si llega cortada.
+     */
     private suspend fun <T> fetchAction(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T> =
         withRetry {
-            val text = requestSlots.withPermit {
-                xtreamApi.action(apiUrl(p.url), p.username, p.password, action).string()
+            requestSlots.withPermit {
+                xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
+                    val hashing = HashingSource.md5(body.source())
+                    var count = 0L
+                    val counting = object : ForwardingSource(hashing) {
+                        override fun read(sink: Buffer, byteCount: Long): Long =
+                            super.read(sink, byteCount).also { if (it > 0) count += it }
+                    }
+                    val value = json.decodeFromStream(serializer, counting.buffer().inputStream())
+                    Fetched("$count:${hashing.hash.hex()}", value)
+                }
             }
-            Fetched(text, json.decodeFromString(serializer, text))
         }
 
     private suspend fun <T> fetchOrNull(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T>? =

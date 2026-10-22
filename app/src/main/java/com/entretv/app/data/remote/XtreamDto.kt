@@ -82,14 +82,34 @@ fun JsonElement?.asRating(): Float =
 fun JsonElement?.asField(): String =
     (this as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it != "null" && it != "0" }.orEmpty()
 
-private val yearRegex = Regex("(19|20)\\d{2}")
-
 /** Año de un campo crudo ("2021", "2021-05-03"); 0 si no hay. */
-fun JsonElement?.asYear(): Int = yearRegex.find(asField())?.value?.toIntOrNull() ?: 0
+fun JsonElement?.asYear(): Int {
+    val s = asField()
+    for (i in 0..s.length - 4) {
+        if (isYearAt(s, i)) return s.substring(i, i + 4).toInt()
+    }
+    return 0
+}
+
+/** "19xx" o "20xx" en esa posición. Se recorre a mano: son miles de títulos por actualización. */
+private fun isYearAt(s: String, i: Int): Boolean =
+    ((s[i] == '1' && s[i + 1] == '9') || (s[i] == '2' && s[i + 1] == '0')) && s[i + 2] in '0'..'9' && s[i + 3] in '0'..'9'
+
+private fun isRegexSpace(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r'
 
 /** Año que muchos paneles pegan al nombre: "Película (2021)" o "Película - 2021". */
-fun yearFromName(name: String): Int =
-    Regex("[(\\[-]\\s*((?:19|20)\\d{2})\\s*[)\\]]?\\s*$").find(name.trim())?.groupValues?.get(1)?.toIntOrNull() ?: 0
+fun yearFromName(name: String): Int {
+    val s = name.trim()
+    var i = s.length - 1
+    while (i >= 0 && isRegexSpace(s[i])) i--
+    if (i >= 0 && (s[i] == ')' || s[i] == ']')) i--
+    while (i >= 0 && isRegexSpace(s[i])) i--
+    if (i < 3 || !isYearAt(s, i - 3)) return 0
+    val year = s.substring(i - 3, i + 1).toInt()
+    i -= 4
+    while (i >= 0 && isRegexSpace(s[i])) i--
+    return if (i >= 0 && s[i] in "([-") year else 0
+}
 
 @Serializable
 data class XtreamEpgResponse(

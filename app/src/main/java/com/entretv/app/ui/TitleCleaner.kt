@@ -34,24 +34,38 @@ object TitleCleaner {
         var previous: String
         do {
             previous = text
-            text = decorations.replace(text, "")
-            leadingBracket.find(text)?.let { m ->
+            if (text.isNotEmpty() && (text[0].isWhitespace() || text[0] in DECORATIONS)) text = decorations.replace(text, "")
+            if (text.startsWith('[') || text.startsWith('(')) leadingBracket.find(text)?.let { m ->
                 if (!year.matches(m.groupValues[1].trim())) text = text.substring(m.range.last + 1)
             }
-            pipePrefix.find(text)?.let { m -> text = text.substring(m.range.last + 1) }
-            wordPrefix.find(text)?.let { m ->
+            if (text.indexOf('|') >= 0) pipePrefix.find(text)?.let { m -> text = text.substring(m.range.last + 1) }
+            if (text.indexOf(':') >= 0 || text.indexOf('-') >= 0 || text.indexOf('–') >= 0) wordPrefix.find(text)?.let { m ->
                 val token = m.groupValues[1]
                 val isCountry = token.length == 2 && token.all { it.isLetter() } && token !in TITLE_WORDS
                 if (isCountry || token in KNOWN_PREFIXES) text = text.substring(m.range.last + 1)
             }
         } while (text != previous && text.isNotEmpty())
 
-        text = qualityTag.replace(text, "")
-        text = squareTag.replace(text, "")
-        text = trailingQuality.replace(text, "")
-        text = trailingSeparators.replace(text, "")
-        text = spaces.replace(text, " ").trim()
+        // Cada expresión corre solo si el texto puede coincidir: son miles de títulos por sección.
+        if (text.indexOf('[') >= 0 || text.indexOf('(') >= 0) text = qualityTag.replace(text, "")
+        if (text.indexOf('[') >= 0) text = squareTag.replace(text, "")
+        if (text.isNotEmpty() && text.last().isLetterOrDigit() && text.any { it.isWhitespace() }) {
+            text = trailingQuality.replace(text, "")
+        }
+        if (text.isNotEmpty() && (text.last().isWhitespace() || text.last() in SEPARATORS)) {
+            text = trailingSeparators.replace(text, "")
+        }
+        if (hasDoubleSpace(text)) text = spaces.replace(text, " ")
+        text = text.trim()
         return text.ifEmpty { raw.trim() }
+    }
+
+    private const val SEPARATORS = "|┃│-–—:"
+    private const val DECORATIONS = "|┃│▎▌★☆•·*=~-–—:"
+
+    private fun hasDoubleSpace(text: String): Boolean {
+        for (i in 1 until text.length) if (text[i].isWhitespace() && text[i - 1].isWhitespace()) return true
+        return false
     }
 
     fun clean(raw: String, enabled: Boolean): String = if (enabled) clean(raw) else raw

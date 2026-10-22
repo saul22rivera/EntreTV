@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import okhttp3.ResponseBody
 import retrofit2.http.GET
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 import retrofit2.http.Url
 
 interface XtreamApi {
@@ -104,6 +105,7 @@ interface XtreamApi {
 
     /** Respuesta cruda de cualquier acción; el repositorio la decodifica y reintenta si llega cortada. */
     @GET
+    @Streaming
     suspend fun action(
         @Url baseUrl: String,
         @Query("username") username: String,

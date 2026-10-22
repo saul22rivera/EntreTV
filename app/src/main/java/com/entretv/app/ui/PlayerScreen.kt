@@ -80,13 +80,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -136,6 +139,7 @@ import kotlinx.coroutines.delay
 private const val AUTO_HIDE_MS = 4_000L
 private const val NEXT_EPISODE_WINDOW_MS = 40_000L
 private const val DOUBLE_TAP_SEEK_MS = 10_000L
+private const val SCRUB_COMMIT_MS = 1_200L
 
 /** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen, formato de imagen. */
 private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null, val durationMs: Long = 900)
@@ -193,6 +197,7 @@ fun PlayerScreen(
     val rootFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
+    val seekFocus = remember { FocusRequester() }
 
     fun showControls() {
         controlsVisible = true
@@ -447,6 +452,10 @@ fun PlayerScreen(
                         )
 
                         val small = portraitLive
+                        val hasSeekBar = profile.isTv && !isLive && duration > 0
+                        val downToSeek = Modifier.focusProperties {
+                            if (hasSeekBar) down = seekFocus
+                        }
                         Row(
                             modifier = Modifier.align(Alignment.Center),
                             horizontalArrangement = Arrangement.spacedBy(if (profile.isTv) 28.dp else if (small) 14.dp else 20.dp),
@@ -460,7 +469,7 @@ fun PlayerScreen(
                                 ) { viewModel.zap(-1); interaction++ }
                             }
                             if (!isLive) {
-                                ControlIcon(Icons.Default.Replay10, stringResource(R.string.player_rewind_10), 40.dp) { seekBy(-10_000); interaction++ }
+                                ControlIcon(Icons.Default.Replay10, stringResource(R.string.player_rewind_10), 40.dp, modifier = downToSeek) { seekBy(-10_000); interaction++ }
                             }
                             if (buffering) {
                                 Box(Modifier.size(if (small) 64.dp else 84.dp), contentAlignment = Alignment.Center) {
@@ -475,12 +484,12 @@ fun PlayerScreen(
                                     stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
                                     size = if (small) 44.dp else 60.dp,
                                     emphasized = true,
-                                    modifier = Modifier.focusRequester(playFocus),
+                                    modifier = Modifier.focusRequester(playFocus).then(downToSeek),
                                     onClick = ::togglePlay
                                 )
                             }
                             if (!isLive) {
-                                ControlIcon(Icons.Default.Forward30, stringResource(R.string.player_forward_30), 40.dp) { seekBy(30_000); interaction++ }
+                                ControlIcon(Icons.Default.Forward30, stringResource(R.string.player_forward_30), 40.dp, modifier = downToSeek) { seekBy(30_000); interaction++ }
                             }
                             if (playable?.kind != "MOVIE") {
                                 ControlIcon(
@@ -511,8 +520,14 @@ fun PlayerScreen(
                                     duration = duration,
                                     speed = speed,
                                     epg = epg,
-                                    onSeekChange = { dragging = true; position = it; interaction++ },
-                                    onSeekDone = { dragging = false; viewModel.seekTo(position) },
+                                    tv = profile.isTv,
+                                    seekFocus = seekFocus,
+                                    onSeekChange = {
+                                        dragging = true; position = it; interaction++
+                                    },
+                                    onSeekDone = {
+                                        dragging = false; viewModel.seekTo(position)
+                                    },
                                     modifier = if (portrait) Modifier.navigationBarsPadding() else Modifier
                                 )
                             }
@@ -1043,6 +1058,8 @@ private fun BottomBar(
     duration: Long,
     speed: Float,
     epg: List<EpgEntity>,
+    tv: Boolean,
+    seekFocus: FocusRequester,
     onSeekChange: (Long) -> Unit,
     onSeekDone: () -> Unit,
     modifier: Modifier = Modifier
@@ -1054,20 +1071,91 @@ private fun BottomBar(
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         if (!isLive && duration > 0) {
-            Slider(
-                value = position.toFloat().coerceIn(0f, duration.toFloat()),
-                valueRange = 0f..duration.toFloat(),
-                onValueChange = { onSeekChange(it.toLong()) },
-                onValueChangeFinished = onSeekDone,
-                colors = SliderDefaults.colors(
-                    thumbColor = EntreBrand.Accent,
-                    activeTrackColor = EntreBrand.Accent,
-                    inactiveTrackColor = Color.White.copy(alpha = 0.25f)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+            val barSource = remember { MutableInteractionSource() }
+            val barFocused by barSource.collectIsFocusedAsState()
+            var scrubbing by remember { mutableStateOf(false) }
+            var target by remember { mutableLongStateOf(0L) }
+            var moves by remember { mutableIntStateOf(0) }
+            val commit by rememberUpdatedState(onSeekDone)
+
+            fun finishScrub() {
+                if (!scrubbing) return
+                scrubbing = false
+                commit()
+            }
+
+            // Mantener pulsado avanza cada vez más rápido; al soltar, el salto se aplica solo.
+            LaunchedEffect(moves) {
+                if (!scrubbing) return@LaunchedEffect
+                delay(SCRUB_COMMIT_MS)
+                finishScrub()
+            }
+
+            val barModifier = if (!tv) Modifier else Modifier
+                .focusRequester(seekFocus)
+                .onFocusChanged { if (!it.isFocused) finishScrub() }
+                .onPreviewKeyEvent { event ->
+                    when (event.key) {
+                        Key.DirectionLeft, Key.DirectionRight -> {
+                            if (event.type == KeyEventType.KeyDown) {
+                                if (!scrubbing) {
+                                    target = position
+                                    scrubbing = true
+                                }
+                                val repeat = event.nativeKeyEvent.repeatCount
+                                val step = when {
+                                    repeat < 5 -> 10_000L
+                                    repeat < 15 -> 30_000L
+                                    else -> maxOf(60_000L, duration / 50)
+                                }
+                                target = (target + if (event.key == Key.DirectionLeft) -step else step).coerceIn(0L, duration)
+                                onSeekChange(target)
+                                moves++
+                            }
+                            true
+                        }
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                            if (event.type == KeyEventType.KeyDown) finishScrub()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+                .focusable(interactionSource = barSource)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (barFocused) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+                .padding(horizontal = 8.dp)
+
+            Box(barModifier) {
+                Slider(
+                    value = position.toFloat().coerceIn(0f, duration.toFloat()),
+                    valueRange = 0f..duration.toFloat(),
+                    onValueChange = { onSeekChange(it.toLong()) },
+                    onValueChangeFinished = onSeekDone,
+                    colors = SliderDefaults.colors(
+                        thumbColor = if (barFocused) Color.White else EntreBrand.Accent,
+                        activeTrackColor = EntreBrand.Accent,
+                        inactiveTrackColor = Color.White.copy(alpha = if (barFocused) 0.4f else 0.25f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                        .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
+                )
+            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(PlayerViewModel.formatMs(position), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    PlayerViewModel.formatMs(position),
+                    color = if (scrubbing) EntreBrand.Accent else Color.White,
+                    style = if (barFocused) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium,
+                    fontWeight = if (scrubbing) FontWeight.Bold else null
+                )
+                if (barFocused) {
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        stringResource(R.string.player_seek_hint),
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 if (speed != 1f) {
                     Text(
