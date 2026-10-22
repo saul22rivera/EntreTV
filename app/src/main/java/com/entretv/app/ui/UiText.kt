@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.annotation.PluralsRes
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.platform.LocalContext
 
 /**
@@ -12,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
  * abierta (y el contexto de la aplicación no siempre está en ese idioma antes de Android 13).
  * Los argumentos pueden ser otros [UiText].
  */
+@Immutable
 sealed interface UiText {
     data class Res(@StringRes val id: Int, val args: List<Any> = emptyList()) : UiText
     data class Plural(@PluralsRes val id: Int, val count: Int, val args: List<Any> = emptyList()) : UiText

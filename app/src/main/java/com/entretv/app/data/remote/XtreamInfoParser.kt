@@ -1,5 +1,6 @@
 package com.entretv.app.data.remote
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -20,6 +21,7 @@ data class CastMember(
  * clave de TMDB, lo que se completa desde allí. Se guarda como JSON para verla sin conexión.
  */
 @Serializable
+@Immutable
 data class ContentDetails(
     val plot: String = "",
     val genre: String = "",

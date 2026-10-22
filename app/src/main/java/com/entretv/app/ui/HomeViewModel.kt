@@ -2,6 +2,7 @@ package com.entretv.app.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -89,6 +90,7 @@ sealed interface BrowseItem {
 }
 
 /** Una fila horizontal estilo Netflix. [title] es la categoría tal cual; [label] lo que se muestra. */
+@Immutable
 data class ContentRow(val title: String, val items: List<BrowseItem>, val label: UiText = UiText.Raw(title))
 
 enum class Section(@StringRes val labelRes: Int) {
@@ -145,6 +147,7 @@ private const val SUMMARY_ROW_SIZE = 20
 private const val EVENTS_ROW_SIZE = 40
 
 /** Resumen al abrir la app en el celular: lo último agregado y los eventos de hoy. */
+@Immutable
 data class SummaryContent(
     val playlistId: String? = null,
     val rows: List<ContentRow> = emptyList(),
@@ -172,6 +175,7 @@ data class CategoryInfo(
  * Lo que muestra la sección activa. Con [grid] las filas se pintan como bloques de
  * cuadrícula completos (categoría elegida con "Ver todo").
  */
+@Immutable
 data class SectionContent(
     val categories: List<String> = emptyList(),
     val categoryCounts: Map<String, Int> = emptyMap(),
@@ -195,6 +199,7 @@ data class SectionContent(
 )
 
 /** Tarjeta de "Seguir viendo": una por película o por serie. */
+@Immutable
 data class ContinueItem(
     /** Película o serie (playlistId:id). */
     val key: String,
@@ -210,6 +215,7 @@ data class ContinueItem(
     val updatedAt: Long
 )
 
+@Immutable
 data class HomeUiState(
     val playlists: List<PlaylistEntity> = emptyList(),
     val selectedPlaylistId: String? = null,

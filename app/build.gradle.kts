@@ -93,6 +93,17 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // Igual que release (R8, sin depuración) pero con el paquete y la firma de depuración:
+        // se instala encima de la app de pruebas del emulador sin perder la sesión iniciada, y
+        // ahí se genera el perfil de arranque y se miden arranque y fluidez (:baselineprofile).
+        create("benchmark") {
+            initWith(getByName("release"))
+            proguardFiles("benchmark-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".debug"
+            matchingFallbacks += listOf("release")
+            buildConfigField("String", "UPDATE_URL", "\"\"")
+        }
     }
 
     applicationVariants.all {
@@ -162,6 +173,14 @@ kotlin {
     }
 }
 
+// Informes de estabilidad de Compose: ./gradlew :app:assembleRelease -PcomposeReports
+composeCompiler {
+    if (project.hasProperty("composeReports")) {
+        reportsDestination = layout.buildDirectory.dir("compose_reports")
+        metricsDestination = layout.buildDirectory.dir("compose_metrics")
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     // Idioma de la app (setApplicationLocales) también antes de Android 13.
@@ -210,5 +229,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
+    // Aplica el perfil de arranque al instalar el APK desde GitHub (sin Play Store).
+    implementation(libs.androidx.profileinstaller)
 }
 

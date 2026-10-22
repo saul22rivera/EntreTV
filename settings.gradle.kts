@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "EntreTV"
 include(":app")
+include(":baselineprofile")

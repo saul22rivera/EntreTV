@@ -4,6 +4,7 @@ package com.entretv.app.ui.player
 
 import android.content.Context
 import androidx.annotation.OptIn
+import androidx.compose.runtime.Immutable
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
@@ -13,6 +14,7 @@ import com.entretv.app.R
 import java.util.Locale
 
 /** Una pista elegible en el panel ("Español · 5.1 · Dolby Digital"). */
+@Immutable
 data class TrackOption(
     val group: Tracks.Group,
     val index: Int,

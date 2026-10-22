@@ -1,5 +1,6 @@
 package com.entretv.app.ui
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.entretv.app.data.local.ChannelEntity
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 
 /** Guía del canal enfocado: lo que está ahora y lo que sigue. */
+@Immutable
 data class LiveGuide(
     val channelId: String? = null,
     val programs: List<EpgEntity> = emptyList(),
@@ -32,6 +34,7 @@ data class LiveGuide(
 )
 
 /** Canales de la lista agrupados por categoría (clave sin limpiar), con el nombre ya limpio. */
+@Immutable
 data class LiveChannels(
     val byGroup: Map<String, List<ChannelEntity>> = emptyMap(),
     val byId: Map<String, ChannelEntity> = emptyMap()
