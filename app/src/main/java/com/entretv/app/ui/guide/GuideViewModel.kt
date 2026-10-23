@@ -140,6 +140,7 @@ class GuideViewModel @Inject constructor(
         val all = repository.channelSnapshot(playlistId)
         val hidden = repository.hiddenKeys()
         val locked = parental.locked.first()
+        val kids = parental.kids.value
         val prefs = repository.categoryPrefsSnapshot(playlistId)
             .filter { it.section == PlaylistRepository.SECTION_LIVE }
             .associateBy { it.name }
@@ -149,7 +150,7 @@ class GuideViewModel @Inject constructor(
         withContext(Dispatchers.Default) {
             val excluded = HashMap<String, Boolean>()
             val visible = all.filter { ch ->
-                ch.id !in hidden && !excluded.getOrPut(ch.groupTitle) {
+                ch.id !in hidden && !(kids && ParentalControl.looksAdult(ch.name)) && !excluded.getOrPut(ch.groupTitle) {
                     val pref = prefs[ch.groupTitle]
                     pref?.hidden == true || (locked && ParentalControl.isAdult(ch.groupTitle, pref))
                 }

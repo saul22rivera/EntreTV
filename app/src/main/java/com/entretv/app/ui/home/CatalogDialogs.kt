@@ -105,6 +105,13 @@ fun SettingsPanel(
     accountInfo: AccountInfo?,
     onEditAccount: () -> Unit,
     onLogout: () -> Unit,
+    /** null = sin perfiles (no se muestra la sección). */
+    profileName: String?,
+    multipleProfiles: Boolean,
+    askProfileOnStart: Boolean,
+    onSwitchProfile: () -> Unit,
+    onManageProfiles: () -> Unit,
+    onAskProfileOnStartChange: (Boolean) -> Unit,
     appVersion: String,
     onCheckUpdates: () -> Unit,
     appLanguage: String,
@@ -155,6 +162,25 @@ fun SettingsPanel(
             AccountCard(accountName, accountUser, accountInfo)
             ActionLine(stringResource(R.string.settings_switch_user), stringResource(R.string.settings_switch_user_desc), onEditAccount)
             ActionLine(stringResource(R.string.settings_logout), stringResource(R.string.settings_logout_desc), onLogout)
+
+            if (profileName != null) {
+                Divider()
+                SectionTitle(stringResource(R.string.settings_section_profiles))
+                ActionLine(
+                    stringResource(R.string.settings_switch_profile),
+                    stringResource(R.string.settings_switch_profile_desc, profileName),
+                    onSwitchProfile
+                )
+                ActionLine(stringResource(R.string.settings_manage_profiles), stringResource(R.string.settings_manage_profiles_desc), onManageProfiles)
+                if (multipleProfiles) {
+                    SwitchLine(
+                        title = stringResource(R.string.settings_ask_profile),
+                        subtitle = stringResource(R.string.settings_ask_profile_desc),
+                        checked = askProfileOnStart,
+                        onChange = onAskProfileOnStartChange
+                    )
+                }
+            }
 
             Divider()
             SectionTitle(stringResource(R.string.settings_section_language))
@@ -870,7 +896,7 @@ private fun RadioLine(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SwitchLine(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SwitchLine(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     val source = remember { MutableInteractionSource() }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -896,7 +922,7 @@ private fun SwitchLine(title: String, subtitle: String, checked: Boolean, onChan
 }
 
 @Composable
-private fun ActionLine(title: String, subtitle: String?, onClick: () -> Unit) {
+internal fun ActionLine(title: String, subtitle: String?, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     Row(
         verticalAlignment = Alignment.CenterVertically,

@@ -75,8 +75,8 @@ class TvHomePublisher @Inject constructor(
             delay(START_DELAY_MS)
             combine(
                 repository.continueWatching, settings.continueDismissed,
-                repository.hiddenItems, parental.pinSet
-            ) { _, _, _, _ -> }
+                repository.hiddenItems, parental.pinSet, parental.kids
+            ) { _, _, _, _, _ -> }
                 .debounce(WATCH_NEXT_DEBOUNCE_MS)
                 .collect { publishWatchNext() }
         }
@@ -128,12 +128,16 @@ class TvHomePublisher @Inject constructor(
         val guard = ImageGuard(repository.playlists.first())
         val cleanNames = settings.catalogPrefs.first().cleanNames
         val dismissed = settings.continueDismissed.first()
-        // La pantalla de inicio la ve cualquiera: con PIN puesto, nada de adultos aunque esté desbloqueado.
-        val adult = if (parental.pinSet.first()) {
-            progress.map { it.playlistId }.distinct().flatMapTo(HashSet()) { adultContentKeys(it) }
+        // La pantalla de inicio la ve cualquiera: con PIN puesto o un perfil de niños, nada de
+        // adultos aunque esté desbloqueado.
+        val kids = parental.kids.value
+        val adult = if (kids || parental.pinSet.first()) {
+            progress.map { it.playlistId }.distinct().flatMapTo(HashSet()) { repository.adultContentKeys(it) }
         } else emptySet()
         val excluded = repository.hiddenKeys() + adult
-        val visible = progress.filter { it.contentKey.substringBefore('#') !in excluded }
+        val visible = progress.filter {
+            it.contentKey.substringBefore('#') !in excluded && !(kids && ParentalControl.looksAdult(it.title))
+        }
 
         val movies = visible.filter { it.kind == "MOVIE" && !it.isCompleted }
             .mapNotNull { movieEntry(it, cleanNames, guard) }
@@ -283,12 +287,16 @@ class TvHomePublisher @Inject constructor(
             return pref?.hidden != true && !ParentalControl.isAdult(category, pref)
         }
         val movies = repository.recentMovies(pid, CHANNEL_CANDIDATES)
-            .filter { it.id !in hidden && allowed(PlaylistRepository.SECTION_MOVIES, it.categoryName) }
+            .filter {
+                it.id !in hidden && allowed(PlaylistRepository.SECTION_MOVIES, it.categoryName) && !ParentalControl.looksAdult(it.name)
+            }
             .mapNotNull { m ->
                 guard.safe(m.icon)?.let { ChannelItem(m.id, "MOVIE", TitleCleaner.clean(m.name, cleanNames), it, "") }
             }
         val series = repository.recentSeries(pid, CHANNEL_CANDIDATES)
-            .filter { it.id !in hidden && allowed(PlaylistRepository.SECTION_SERIES, it.categoryName) }
+            .filter {
+                it.id !in hidden && allowed(PlaylistRepository.SECTION_SERIES, it.categoryName) && !ParentalControl.looksAdult(it.name)
+            }
             .mapNotNull { s ->
                 guard.safe(s.cover)?.let { ChannelItem(s.id, "SERIES", TitleCleaner.clean(s.name, cleanNames), it, s.plot) }
             }
@@ -371,19 +379,6 @@ class TvHomePublisher @Inject constructor(
     }.getOrNull()
 
     // ============================ Auxiliares ============================
-
-    private suspend fun adultContentKeys(playlistId: String): Set<String> {
-        val prefs = repository.categoryPrefsSnapshot(playlistId)
-        val byName = prefs.associateBy { it.section to it.name }
-        suspend fun adultIn(section: String): List<String> {
-            val names = repository.categoriesSnapshot(playlistId, section).map { it.name } +
-                prefs.filter { it.section == section && it.adult == true }.map { it.name }
-            return names.distinct().filter { ParentalControl.isAdult(it, byName[section to it]) }
-        }
-        return repository.contentKeysIn(
-            playlistId, adultIn(PlaylistRepository.SECTION_MOVIES), adultIn(PlaylistRepository.SECTION_SERIES)
-        )
-    }
 
     private fun <T> query(uri: Uri, projection: Array<String>, read: (Cursor) -> T): List<T> =
         resolver.query(uri, projection, null, null, null)?.use { cursor ->

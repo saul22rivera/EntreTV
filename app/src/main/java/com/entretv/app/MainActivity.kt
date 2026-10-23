@@ -10,11 +10,16 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -40,6 +45,11 @@ import com.entretv.app.ui.navigation.DownloadsRoute
 import com.entretv.app.ui.navigation.GuideRoute
 import com.entretv.app.ui.navigation.HomeRoute
 import com.entretv.app.ui.navigation.PlayerRoute
+import com.entretv.app.ui.profile.ProfileActions
+import com.entretv.app.ui.profile.ProfileMenu
+import com.entretv.app.ui.profile.ProfileViewModel
+import com.entretv.app.ui.profile.ProfilesHost
+import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreTVTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -86,7 +96,19 @@ class MainActivity : AppCompatActivity() {
                         }
                         LoginScreen()
                     }
-                    Session.LOGGED_IN -> AppNavHost()
+                    Session.LOGGED_IN -> {
+                        val profiles: ProfileViewModel = hiltViewModel()
+                        val profileUi by profiles.ui.collectAsStateWithLifecycle()
+                        // Al abrir con varios perfiles (o con PIN) Inicio espera a que se elija:
+                        // no carga nada ni abre la tarjeta del inicio de la TV antes de tiempo.
+                        if (profileUi.startup) {
+                            LaunchedEffect(Unit) { AppStartup.markReady() }
+                            Box(Modifier.fillMaxSize().background(EntreBrand.Ink))
+                        } else {
+                            AppNavHost(profiles)
+                        }
+                        ProfilesHost(profiles, onExitApp = ::finish)
+                    }
                 }
                 UpdateHost(suppressed = inPlayer)
             }
@@ -94,13 +116,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Composable
-    private fun AppNavHost() {
+    private fun AppNavHost(profiles: ProfileViewModel) {
         val navController = rememberNavController()
         val link = pendingLink
         LaunchedEffect(link) {
             if (link == null) return@LaunchedEffect
             pendingLink = null
             AppStartup.markReady()
+            if (!profiles.allowLink(link)) return@LaunchedEffect
             val route: Any = if (link.play) PlayerRoute(link.id, link.kind) else DetailsRoute(link.id, link.kind)
             // Inicio queda debajo: Atrás vuelve ahí y no a lo que estaba abierto antes.
             navController.navigate(route) {
@@ -108,10 +131,25 @@ class MainActivity : AppCompatActivity() {
                 launchSingleTop = true
             }
         }
+        val profileName by profiles.activeName.collectAsStateWithLifecycle()
+        val profileAvatar by profiles.activeAvatar.collectAsStateWithLifecycle()
+        val multipleProfiles by profiles.multiple.collectAsStateWithLifecycle()
+        val askProfileOnStart by profiles.askOnStart.collectAsStateWithLifecycle()
+        val profileMenu = ProfileMenu(profileName, profileAvatar, multipleProfiles, askProfileOnStart)
+        val profileActions = remember(profiles) {
+            ProfileActions(
+                onSwitch = profiles::openPicker,
+                onManage = profiles::openManage,
+                onAskOnStartChange = profiles::setAskOnStart,
+                guardAdult = profiles::guardAdult
+            )
+        }
         NavHost(navController = navController, startDestination = HomeRoute) {
             composable<HomeRoute> {
                 inPlayer = false
                 HomeScreen(
+                    profileMenu = profileMenu,
+                    profileActions = profileActions,
                     onOpen = { item ->
                         when (item) {
                             is BrowseItem.Live ->

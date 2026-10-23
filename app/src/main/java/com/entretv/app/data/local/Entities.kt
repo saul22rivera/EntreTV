@@ -136,15 +136,37 @@ data class EpisodeEntity(
     val durationSecs: Int = 0
 )
 
+/** Perfil creado al pasar a la versión con perfiles: se queda con todo lo que ya había. */
+const val DEFAULT_PROFILE_ID = "default"
+
+/** Perfil de quien mira: tiene su propio progreso, "Seguir viendo" y Mi lista. */
+@Entity(tableName = "profiles")
+data class ProfileEntity(
+    @PrimaryKey val id: String,
+    /** Vacío en el perfil creado al actualizar: se muestra con el nombre por defecto. */
+    val name: String,
+    /** Índice del color del avatar. */
+    val avatar: Int = 0,
+    val isKids: Boolean = false,
+    /** PBKDF2 del PIN en hex; null = sin PIN. */
+    val pinHash: String? = null,
+    val pinSalt: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val sortOrder: Int = 0
+) {
+    val hasPin: Boolean get() = pinHash != null
+}
+
 /** "Mi lista": canales, películas y series guardados por el usuario. */
-@Entity(tableName = "favorites")
+@Entity(tableName = "favorites", primaryKeys = ["profileId", "contentKey"])
 data class FavoriteEntity(
-    @PrimaryKey val contentKey: String,    // id del canal, película o serie
+    val contentKey: String,                // id del canal, película o serie
     val kind: String,                      // "LIVE" | "MOVIE" | "SERIES"
     val playlistId: String,
     val title: String,
     val imageUrl: String,
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val profileId: String = DEFAULT_PROFILE_ID
 )
 
 @Entity(
@@ -196,9 +218,9 @@ object DownloadStatus {
 }
 
 /** Progreso de reproducción estilo Netflix (Live / Película / Episodio). */
-@Entity(tableName = "playback_progress")
+@Entity(tableName = "playback_progress", primaryKeys = ["profileId", "contentKey"])
 data class PlaybackProgressEntity(
-    @PrimaryKey val contentKey: String,    // LIVE: playlistId:id  |  MOVIE: playlistId:id  |  EPISODE: playlistId:seriesId#epId
+    val contentKey: String,                // LIVE: playlistId:id  |  MOVIE: playlistId:id  |  EPISODE: playlistId:seriesId#epId
     val kind: String,                      // "LIVE" | "MOVIE" | "EPISODE"
     val playlistId: String,
     val refId: String,
@@ -207,7 +229,8 @@ data class PlaybackProgressEntity(
     val subtitle: String = "",             // p.ej. "T2:E5"
     val positionMs: Long,
     val durationMs: Long,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val profileId: String = DEFAULT_PROFILE_ID
 ) {
     /** Visto al 95% o más → se considera terminado. */
     val isCompleted: Boolean get() = durationMs > 0 && positionMs >= durationMs * 95 / 100

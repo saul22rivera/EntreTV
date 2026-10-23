@@ -9,12 +9,16 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.entretv.app.BuildConfig
+import com.entretv.app.data.local.DEFAULT_PROFILE_ID
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.ui.isTvDevice
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsStore by preferencesDataStore(name = "entre_settings")
@@ -67,7 +71,8 @@ data class AccountInfo(
 
 @Singleton
 class SettingsRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val profiles: ProfileSession
 ) {
     companion object {
         val BUFFER_OPTIONS = listOf(0, 3, 5, 9)
@@ -204,22 +209,36 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    /** El perfil que ya existía sigue usando la clave de antes. */
+    private fun dismissedKey(profileId: String) =
+        if (profileId == DEFAULT_PROFILE_ID) KEY_CONTINUE_DISMISSED else stringSetPreferencesKey("continue_dismissed_$profileId")
+
     /**
-     * Series que el usuario quitó de "Seguir viendo" y cuándo. Vuelven a aparecer si mira
+     * Series que el perfil activo quitó de "Seguir viendo" y cuándo. Vuelven a aparecer si mira
      * algo de esa serie después; el progreso no se borra.
      */
-    val continueDismissed: Flow<Map<String, Long>> = context.settingsStore.data.map { prefs ->
-        prefs[KEY_CONTINUE_DISMISSED].orEmpty().mapNotNull { entry ->
-            val at = entry.substringAfterLast('|').toLongOrNull() ?: return@mapNotNull null
-            entry.substringBeforeLast('|') to at
-        }.toMap()
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val continueDismissed: Flow<Map<String, Long>> = profiles.activeId.flatMapLatest { profileId ->
+        val key = dismissedKey(profileId)
+        context.settingsStore.data.map { prefs ->
+            prefs[key].orEmpty().mapNotNull { entry ->
+                val at = entry.substringAfterLast('|').toLongOrNull() ?: return@mapNotNull null
+                entry.substringBeforeLast('|') to at
+            }.toMap()
+        }
     }
 
     suspend fun dismissContinue(key: String, at: Long) {
+        val prefKey = dismissedKey(profiles.activeId.value)
         context.settingsStore.edit { prefs ->
-            val kept = prefs[KEY_CONTINUE_DISMISSED].orEmpty().filterNot { it.substringBeforeLast('|') == key }
-            prefs[KEY_CONTINUE_DISMISSED] = (kept + "$key|$at").takeLast(200).toSet()
+            val kept = prefs[prefKey].orEmpty().filterNot { it.substringBeforeLast('|') == key }
+            prefs[prefKey] = (kept + "$key|$at").takeLast(200).toSet()
         }
+    }
+
+    /** Lo que se guardó aquí a nombre de un perfil que se borra. */
+    suspend fun clearProfileData(profileId: String) {
+        context.settingsStore.edit { it.remove(dismissedKey(profileId)) }
     }
 
     /** Las descargas esperan a una red sin límite de datos (Wi‑Fi o cable). */

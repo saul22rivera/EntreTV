@@ -44,6 +44,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuOpen
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
@@ -150,7 +151,11 @@ fun NavRail(
     summaryActive: Boolean = false,
     onHome: () -> Unit = {},
     /** TV: secciones sin panel de categorías (En vivo las trae en pantalla); abren el menú principal. */
-    tvMenuOnlySections: Set<Section> = emptySet()
+    tvMenuOnlySections: Set<Section> = emptySet(),
+    /** "Perfil: …" en el menú; null = sin perfiles. */
+    profileLabel: String? = null,
+    profileTint: Color? = null,
+    onProfile: () -> Unit = {}
 ) {
     val phone = profile.compactRail
     BackHandler(enabled = expanded) { onExpandedChange(false) }
@@ -220,7 +225,10 @@ fun NavRail(
                 onCategoryMenu = { onExpandedChange(false); onCategoryMenu(it) },
                 onOrganize = { onExpandedChange(false); onOrganize() },
                 onSettings = { onExpandedChange(false); onSettings() },
-                onDownloads = onDownloads
+                onDownloads = onDownloads,
+                profileLabel = profileLabel,
+                profileTint = profileTint,
+                onProfile = { onExpandedChange(false); onProfile() }
             ) else ExpandedPanel(
                 width = 288.dp,
                 // En el celular las secciones ya están en la píldora: el panel es de la sección elegida.
@@ -241,7 +249,10 @@ fun NavRail(
                 onCategoryMenu = { onExpandedChange(false); onCategoryMenu(it) },
                 onOrganize = { onExpandedChange(false); onOrganize() },
                 onSettings = { onExpandedChange(false); onSettings() },
-                onDownloads = onDownloads
+                onDownloads = onDownloads,
+                profileLabel = profileLabel,
+                profileTint = profileTint,
+                onProfile = { onExpandedChange(false); onProfile() }
             )
         }
     }
@@ -370,7 +381,10 @@ private fun ExpandedPanel(
     onCategoryMenu: (String) -> Unit,
     onOrganize: () -> Unit,
     onSettings: () -> Unit,
-    onDownloads: () -> Unit
+    onDownloads: () -> Unit,
+    profileLabel: String?,
+    profileTint: Color?,
+    onProfile: () -> Unit
 ) {
     val firstFocus = remember { FocusRequester() }
     var hadFocus by remember { mutableStateOf(false) }
@@ -485,6 +499,9 @@ private fun ExpandedPanel(
                 Spacer(Modifier.weight(1f))
             }
             HorizontalDivider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 6.dp))
+            if (profileLabel != null) {
+                PanelItem(icon = Icons.Default.AccountCircle, label = profileLabel, selected = false, iconTint = profileTint, onClick = onProfile)
+            }
             PanelItem(icon = Icons.Default.Download, label = stringResource(R.string.menu_downloads), selected = false, onClick = onDownloads)
             PanelItem(icon = Icons.Default.Settings, label = stringResource(R.string.menu_settings), selected = false, onClick = onSettings)
         }
@@ -521,7 +538,10 @@ private fun TvExpandedPanel(
     onCategoryMenu: (String) -> Unit,
     onOrganize: () -> Unit,
     onSettings: () -> Unit,
-    onDownloads: () -> Unit
+    onDownloads: () -> Unit,
+    profileLabel: String?,
+    profileTint: Color?,
+    onProfile: () -> Unit
 ) {
     val hasCategories = showCategories && !summaryActive && section !in menuOnlySections
     var level by remember { mutableStateOf(TvLevel.MENU) }
@@ -677,6 +697,9 @@ private fun TvExpandedPanel(
                     }
                     Spacer(Modifier.weight(1f))
                     HorizontalDivider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 6.dp))
+                    if (profileLabel != null) {
+                        PanelItem(icon = Icons.Default.AccountCircle, label = profileLabel, selected = false, iconTint = profileTint, onClick = onProfile)
+                    }
                     PanelItem(icon = Icons.Default.Download, label = stringResource(R.string.menu_downloads), selected = false, onClick = onDownloads)
                     PanelItem(icon = Icons.Default.Settings, label = stringResource(R.string.menu_settings), selected = false, onClick = onSettings)
                 }
@@ -769,6 +792,7 @@ private fun PanelItem(
     label: String,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    iconTint: Color? = null,
     onClick: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
@@ -792,7 +816,7 @@ private fun PanelItem(
             .padding(horizontal = 14.dp, vertical = 11.dp)
     ) {
         val tint = if (selected) EntreBrand.OnAccent else Color.White
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = null, tint = iconTint ?: tint, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(14.dp))
         Text(label, color = tint, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }

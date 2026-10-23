@@ -18,6 +18,7 @@ import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.local.PlaylistEntity
 import com.entretv.app.data.local.SeriesEntity
 import com.entretv.app.data.local.VodMovieEntity
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.data.repo.AccountException
 import com.entretv.app.data.repo.MetadataRepository
 import com.entretv.app.data.repo.PlaylistRepository
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -275,7 +277,9 @@ private data class CatalogOptions(
     val prefs: Map<Pair<String, String>, CategoryPrefEntity> = emptyMap(),
     val hidden: Set<String> = emptySet(),
     val cleanNames: Boolean = true,
-    val locked: Boolean = false
+    val locked: Boolean = false,
+    /** Perfil de niños: las categorías de adultos ni aparecen (no se pueden desbloquear). */
+    val kids: Boolean = false
 )
 
 private data class Trending(val movies: List<TrendingTitle> = emptyList(), val series: List<TrendingTitle> = emptyList())
@@ -296,7 +300,8 @@ class HomeViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val parental: ParentalControl,
     private val downloads: DownloadRepository,
-    private val metadata: MetadataRepository
+    private val metadata: MetadataRepository,
+    private val profiles: ProfileSession
 ) : ViewModel() {
     private val lowRam = isLowRamDevice(context)
 
@@ -477,8 +482,8 @@ class HomeViewModel @Inject constructor(
             if (pid == null) flowOf(CatalogOptions())
             else combine(
                 repository.categories(pid), repository.categoryPrefs(pid), hiddenKeys,
-                settings.catalogPrefs, parental.locked
-            ) { cats, prefs, hidden, catalog, locked ->
+                settings.catalogPrefs, combine(parental.locked, parental.kids) { locked, kids -> locked to kids }
+            ) { cats, prefs, hidden, catalog, (locked, kids) ->
                 CatalogOptions(
                     playlistId = pid,
                     serverOrder = cats.groupBy { it.section }
@@ -486,7 +491,8 @@ class HomeViewModel @Inject constructor(
                     prefs = prefs.associateBy { it.section to it.name },
                     hidden = hidden,
                     cleanNames = catalog.cleanNames,
-                    locked = locked
+                    locked = locked,
+                    kids = kids
                 )
             }
         }
@@ -691,7 +697,20 @@ class HomeViewModel @Inject constructor(
         keyOf: (T) -> String
     ): List<T> {
         val skip = excluder(sectionKey, o)
-        return items.filter { keyOf(it) !in o.hidden && !skip(groupOf(it)) }
+        return items.filter { keyOf(it) !in o.hidden && !skip(groupOf(it)) && !(o.kids && adultTitle(it)) }
+    }
+
+    private val adultTitles = ConcurrentHashMap<String, Boolean>()
+
+    /** Perfil de niños: también fuera los títulos de adultos que caen en otra categoría. */
+    private fun adultTitle(item: Any?): Boolean {
+        val name = when (item) {
+            is ChannelEntity -> item.name
+            is VodMovieEntity -> item.name
+            is SeriesEntity -> item.name
+            else -> return false
+        }
+        return adultTitles.getOrPut(name) { ParentalControl.looksAdult(name) }
     }
 
     // ============================ Resumen (celular) ============================
@@ -878,13 +897,18 @@ class HomeViewModel @Inject constructor(
         val allGroups = items.groupBy(groupOf)
         val names = orderedCategories(sectionKey, allGroups.keys, o, order).filter { it in allGroups }
         val hiddenCats = names.filter { o.prefs[sectionKey to it]?.hidden == true }.toSet()
-        val locked = if (o.locked) {
+        val adultCats = if (o.locked) {
             names.filter { ParentalControl.isAdult(it, o.prefs[sectionKey to it]) }.toSet()
         } else emptySet()
-        val shown = names.filter { it !in hiddenCats }
+        val locked = if (o.kids) emptySet() else adultCats
+        val shown = names.filter { it !in hiddenCats && !(o.kids && it in adultCats) }
         val visibleRaw: Map<String, List<T>> = shown.filter { it !in locked }.associateWith { n ->
             val list = allGroups[n].orEmpty()
-            if (o.hidden.isEmpty()) list else list.filter { keyOf(it) !in o.hidden }
+            when {
+                o.kids -> list.filter { keyOf(it) !in o.hidden && !adultTitle(it) }
+                o.hidden.isEmpty() -> list
+                else -> list.filter { keyOf(it) !in o.hidden }
+            }
         }
         val counts = shown.associateWith { n ->
             visibleRaw[n]?.size ?: allGroups[n].orEmpty().count { keyOf(it) !in o.hidden }
@@ -1337,6 +1361,13 @@ class HomeViewModel @Inject constructor(
                     selectedPlaylistId.value = list.first().id
                     refreshIfDue()
                 }
+            }
+        }
+        // Otro perfil: lo abierto (categoría, búsqueda) puede no existir para él.
+        viewModelScope.launch {
+            profiles.activeId.drop(1).collect {
+                query.value = ""
+                category.value = null
             }
         }
         // Tendencias para el Top 10; se vuelven a pedir si llega una clave de TMDB nueva.

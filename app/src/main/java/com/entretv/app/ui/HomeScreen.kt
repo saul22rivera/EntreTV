@@ -180,6 +180,10 @@ import com.entretv.app.ui.home.PinDialog
 import com.entretv.app.ui.home.SettingsPanel
 import com.entretv.app.ui.home.PILL_SPACE
 import com.entretv.app.ui.home.RAIL_COLLAPSED_WIDTH
+import com.entretv.app.ui.profile.ProfileActions
+import com.entretv.app.ui.profile.ProfileMenu
+import com.entretv.app.ui.profile.profileColor
+import com.entretv.app.ui.profile.profileDisplayName
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
 import java.util.concurrent.atomic.AtomicBoolean
@@ -201,6 +205,8 @@ fun HomeScreen(
     onPlayLiveFullscreen: (String) -> Unit = {},
     /** TV En vivo: guía en cuadrícula (lista, categoría elegida). */
     onOpenGuide: (String, String?) -> Unit = { _, _ -> },
+    profileMenu: ProfileMenu? = null,
+    profileActions: ProfileActions? = null,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -459,10 +465,19 @@ fun HomeScreen(
         } else viewModel.selectCategory(name)
     }
 
-    fun openOrganize() {
+    /** En el perfil de niños lo de adultos (Configuración, organizar categorías) pide un PIN de adultos. */
+    fun guarded(action: () -> Unit) {
+        profileActions?.guardAdult?.invoke(action) ?: action()
+    }
+
+    fun openSettings() = guarded { showSettings = true }
+
+    fun showOrganizeDialog() {
         viewModel.organize(ui.section)
         showOrganize = true
     }
+
+    fun openOrganize() = guarded(::showOrganizeDialog)
 
     /**
      * Marcar como adultos pide confirmación; quitar la marca (o mostrar una categoría de
@@ -527,7 +542,7 @@ fun HomeScreen(
                         scope.launch { snackbar.showSnackbar(context.getString(R.string.home_images_cleared)) }
                     },
                     onResetAll = { showResetAll = true },
-                    onSettings = { showSettings = true },
+                    onSettings = ::openSettings,
                     onDownloads = onOpenDownloads,
                     onGuide = openGuide,
                     onLogo = if (profile.compactRail) ::goHome else null,
@@ -853,11 +868,16 @@ fun HomeScreen(
                     },
                     onCategory = ::openCategory,
                     onCategoryMenu = {
-                        viewModel.organize(ui.section)
-                        categoryMenu = it
+                        guarded {
+                            viewModel.organize(ui.section)
+                            categoryMenu = it
+                        }
                     },
                     onOrganize = ::openOrganize,
-                    onSettings = { showSettings = true },
+                    onSettings = ::openSettings,
+                    profileLabel = profileMenu?.let { stringResource(R.string.menu_profile, profileDisplayName(it.name)) },
+                    profileTint = profileMenu?.let { profileColor(it.avatar) },
+                    onProfile = { profileActions?.onSwitch?.invoke() },
                     onDownloads = {
                         setRailExpanded(false)
                         onOpenDownloads()
@@ -1023,7 +1043,7 @@ fun HomeScreen(
                     )
                 }
             )
-            add(ContentAction(Icons.AutoMirrored.Filled.Sort, stringResource(R.string.home_organize_categories)) { openOrganize() })
+            add(ContentAction(Icons.AutoMirrored.Filled.Sort, stringResource(R.string.home_organize_categories)) { showOrganizeDialog() })
         }
         ContentMenu(
             title = label,
@@ -1048,6 +1068,18 @@ fun HomeScreen(
                 showAccount = true
             },
             onLogout = { confirmLogout = true },
+            profileName = profileMenu?.let { profileDisplayName(it.name) },
+            multipleProfiles = profileMenu?.multiple == true,
+            askProfileOnStart = profileMenu?.askOnStart == true,
+            onSwitchProfile = {
+                showSettings = false
+                profileActions?.onSwitch?.invoke()
+            },
+            onManageProfiles = {
+                showSettings = false
+                profileActions?.onManage?.invoke()
+            },
+            onAskProfileOnStartChange = { profileActions?.onAskOnStartChange?.invoke(it) },
             appVersion = updateViewModel.versionName,
             onCheckUpdates = updateViewModel::checkNow,
             appLanguage = remember { AppLanguage.current(context) },
@@ -1087,7 +1119,7 @@ fun HomeScreen(
             onMaxBufferChange = viewModel::setMaxBufferSeconds,
             onDefaultSortChange = viewModel::setDefaultSort,
             onCleanNamesChange = viewModel::setCleanNames,
-            onOrganize = { openOrganize() },
+            onOrganize = { showOrganizeDialog() },
             onHiddenItems = { showHidden = true },
             onCreatePin = { pinError = null; pinStep = PinStep.Create },
             onChangePin = { pinError = null; pinStep = PinStep.VerifyForChange },
@@ -1297,6 +1329,7 @@ private fun CatalogRows(
 ) {
     // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
     val listState = rememberSaveable(stateKey, saver = LazyListState.Saver) { LazyListState() }
+    RevealContinueRow(listState, continueWatching.isNotEmpty())
     val myList = content.rows.firstOrNull { it.title == MY_LIST_ROW && !content.isSearch }
     val others = content.rows.filter { it !== myList && it.items.isNotEmpty() }
     // Mismo orden que los ítems del LazyColumn: las flechas del control lo usan para ir de fila en fila.
@@ -1369,6 +1402,19 @@ private fun CatalogRows(
     }
 }
 
+/**
+ * La lista se queda anclada a la fila que se veía arriba: si "Seguir viendo" aparece encima
+ * (p. ej. al cambiar de perfil), quedaría fuera de la pantalla. Estando arriba, se vuelve a mostrar.
+ */
+@Composable
+private fun RevealContinueRow(listState: LazyListState, hasContinue: Boolean) {
+    var hadContinue by remember { mutableStateOf(hasContinue) }
+    LaunchedEffect(hasContinue) {
+        if (hasContinue && !hadContinue && listState.firstVisibleItemIndex <= 2) listState.scrollToItem(0)
+        hadContinue = hasContinue
+    }
+}
+
 // ============================ Resumen (celular) ============================
 
 @Composable
@@ -1395,6 +1441,7 @@ private fun PhoneSummary(
         else -> {
             // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
             val listState = rememberSaveable("summary", saver = LazyListState.Saver) { LazyListState() }
+            RevealContinueRow(listState, continueWatching.isNotEmpty())
             if (tvNav != null) {
                 tvNav.rowOrder = buildList {
                     if (continueWatching.isNotEmpty()) add("continue")

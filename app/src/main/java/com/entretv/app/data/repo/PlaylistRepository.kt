@@ -45,7 +45,9 @@ import com.entretv.app.data.remote.asField
 import com.entretv.app.data.remote.asRating
 import com.entretv.app.data.remote.asYear
 import com.entretv.app.data.remote.yearFromName
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.data.settings.AccountInfo
+import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
@@ -56,6 +58,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -66,6 +69,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -91,6 +95,7 @@ class AccountException(val text: UiText) : Exception() {
     constructor(@StringRes id: Int, vararg args: Any) : this(UiText.Res(id, args.toList()))
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
 class PlaylistRepository @Inject constructor(
     @ApplicationContext context: Context,
@@ -105,6 +110,7 @@ class PlaylistRepository @Inject constructor(
     private val downloadDao: DownloadDao,
     private val xtreamApi: XtreamApi,
     private val settings: SettingsRepository,
+    private val profiles: ProfileSession,
     private val json: Json
 ) {
     private val detailsCache = LruCache<String, ContentDetails>(200)
@@ -127,8 +133,11 @@ class PlaylistRepository @Inject constructor(
 
     val playlists: Flow<List<PlaylistEntity>> = playlistDao.observeAll()
 
+    /** Perfil al que se le guarda y del que se lee el progreso y Mi lista. */
+    private val profileId: String get() = profiles.activeId.value
+
     val continueWatching: Flow<List<PlaybackProgressEntity>> =
-        progressDao.observeContinueWatching()
+        profiles.activeId.flatMapLatest { progressDao.observeContinueWatching(it) }
 
     fun channels(playlistId: String): Flow<List<ChannelEntity>> =
         channelDao.observeByPlaylist(playlistId)
@@ -763,52 +772,77 @@ class PlaylistRepository @Inject constructor(
         detailsCache.put(contentKey, details)
     }
 
+    /**
+     * Películas y series de categorías de adultos (por nombre o marcadas a mano) de la lista.
+     * Lo usan el perfil de niños y la pantalla de inicio de la TV.
+     */
+    suspend fun adultContentKeys(playlistId: String): Set<String> {
+        val prefs = categoryPrefsSnapshot(playlistId)
+        val byName = prefs.associateBy { it.section to it.name }
+        suspend fun adultIn(section: String): List<String> {
+            val names = categoriesSnapshot(playlistId, section).map { it.name } +
+                prefs.filter { it.section == section && it.adult == true }.map { it.name }
+            return names.distinct().filter { ParentalControl.isAdult(it, byName[section to it]) }
+        }
+        return contentKeysIn(playlistId, adultIn(SECTION_MOVIES), adultIn(SECTION_SERIES))
+    }
+
     // ============================ Mi lista ============================
 
-    val favorites: Flow<List<FavoriteEntity>> = favoriteDao.observeAll()
+    val favorites: Flow<List<FavoriteEntity>> = profiles.activeId.flatMapLatest { favoriteDao.observeAll(it) }
 
-    fun isFavorite(contentKey: String): Flow<Boolean> = favoriteDao.observeIsFavorite(contentKey)
+    fun isFavorite(contentKey: String): Flow<Boolean> =
+        profiles.activeId.flatMapLatest { favoriteDao.observeIsFavorite(it, contentKey) }
 
     /** Agrega o quita de "Mi lista". Devuelve true si quedó agregado. */
     suspend fun toggleFavorite(favorite: FavoriteEntity): Boolean = withContext(Dispatchers.IO) {
-        if (favoriteDao.isFavorite(favorite.contentKey)) {
-            favoriteDao.delete(favorite.contentKey)
+        val profile = profileId
+        if (favoriteDao.isFavorite(profile, favorite.contentKey)) {
+            favoriteDao.delete(profile, favorite.contentKey)
             false
         } else {
-            favoriteDao.upsert(favorite)
+            favoriteDao.upsert(favorite.copy(profileId = profile))
             true
         }
     }
 
-    fun observeProgress(contentKey: String): Flow<PlaybackProgressEntity?> = progressDao.observe(contentKey)
+    fun observeProgress(contentKey: String): Flow<PlaybackProgressEntity?> =
+        profiles.activeId.flatMapLatest { progressDao.observe(it, contentKey) }
 
     fun observeSeriesProgress(seriesKey: String): Flow<List<PlaybackProgressEntity>> =
-        progressDao.observeByPrefix("$seriesKey#")
+        profiles.activeId.flatMapLatest { progressDao.observeByPrefix(it, "$seriesKey#") }
 
     // ============================ Progreso (Netflix) ============================
 
     suspend fun saveProgress(entity: PlaybackProgressEntity) {
         if (entity.kind == "LIVE") return // el live no guarda minuto
-        withContext(Dispatchers.IO) { progressDao.upsert(entity) }
+        val profile = profileId
+        withContext(Dispatchers.IO) { progressDao.upsert(entity.copy(profileId = profile)) }
     }
 
     suspend fun progressFor(contentKey: String): PlaybackProgressEntity? =
-        progressDao.get(contentKey)
+        progressDao.get(profileId, contentKey)
 
     suspend fun progressForMany(keys: List<String>): List<PlaybackProgressEntity> =
-        if (keys.isEmpty()) emptyList() else progressDao.getMany(keys)
+        if (keys.isEmpty()) emptyList() else progressDao.getMany(profileId, keys)
 
     /** Quitar un elemento de "Seguir viendo". */
-    suspend fun removeProgress(contentKey: String) =
-        withContext(Dispatchers.IO) { progressDao.delete(contentKey) }
+    suspend fun removeProgress(contentKey: String) {
+        val profile = profileId
+        withContext(Dispatchers.IO) { progressDao.delete(profile, contentKey) }
+    }
 
     /** Reiniciar una serie completa (todos sus episodios vuelven a 0). */
-    suspend fun resetSeries(seriesKey: String) =
-        withContext(Dispatchers.IO) { progressDao.deleteSeriesProgress("$seriesKey#") }
+    suspend fun resetSeries(seriesKey: String) {
+        val profile = profileId
+        withContext(Dispatchers.IO) { progressDao.deleteSeriesProgress(profile, "$seriesKey#") }
+    }
 
-    /** Borrar TODO el progreso (películas y series). */
-    suspend fun resetAllProgress() =
-        withContext(Dispatchers.IO) { progressDao.clearAll() }
+    /** Borrar TODO el progreso (películas y series) del perfil activo. */
+    suspend fun resetAllProgress() {
+        val profile = profileId
+        withContext(Dispatchers.IO) { progressDao.deleteByProfile(profile) }
+    }
 
     // ============================ EPG ============================
 

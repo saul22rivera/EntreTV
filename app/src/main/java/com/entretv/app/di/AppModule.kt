@@ -11,6 +11,7 @@ import com.entretv.app.data.local.DownloadDao
 import com.entretv.app.data.local.EpgDao
 import com.entretv.app.data.local.FavoriteDao
 import com.entretv.app.data.local.PlaylistDao
+import com.entretv.app.data.local.ProfileDao
 import com.entretv.app.data.local.ProgressDao
 import com.entretv.app.data.local.VodDao
 import com.entretv.app.data.remote.XtreamApi
@@ -81,8 +82,9 @@ object AppModule {
                 AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5,
                 AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7,
-                AppDatabase.MIGRATION_7_8
+                AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9
             )
+            .addCallback(AppDatabase.CREATE_DEFAULT_PROFILE)
             // Las escrituras grandes (todo el catálogo) no compiten con la reproducción.
             .setTransactionExecutor(backgroundExecutor("db-write", 2))
             .build()
@@ -96,4 +98,5 @@ object AppModule {
     @Provides fun provideCatalogDao(db: AppDatabase): CatalogDao = db.catalogDao()
     @Provides fun provideDownloadDao(db: AppDatabase): DownloadDao = db.downloadDao()
     @Provides fun provideDetailsCacheDao(db: AppDatabase): DetailsCacheDao = db.detailsCacheDao()
+    @Provides fun provideProfileDao(db: AppDatabase): ProfileDao = db.profileDao()
 }

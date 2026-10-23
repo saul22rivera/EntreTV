@@ -1,6 +1,7 @@
 package com.entretv.app.data.settings
 
 import com.entretv.app.data.local.CategoryPrefEntity
+import com.entretv.app.data.profile.ProfileSession
 import java.security.MessageDigest
 import java.text.Normalizer
 import javax.inject.Inject
@@ -14,19 +15,24 @@ import kotlinx.coroutines.flow.map
 
 /**
  * PIN parental. Con PIN puesto, las categorías de adultos se ocultan hasta que se
- * desbloquean; el desbloqueo dura hasta cerrar la app.
+ * desbloquean; el desbloqueo dura hasta cerrar la app. El perfil de niños no ve
+ * contenido de adultos nunca, haya PIN o no.
  */
 @Singleton
 class ParentalControl @Inject constructor(
-    private val settings: SettingsRepository
+    private val settings: SettingsRepository,
+    session: ProfileSession
 ) {
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked
 
     val pinSet: Flow<Boolean> = settings.pinHash.map { it.isNotEmpty() }
 
+    /** El perfil activo es de niños. */
+    val kids: StateFlow<Boolean> = session.kids
+
     /** True si el contenido adulto debe quedar oculto. */
-    val locked: Flow<Boolean> = combine(pinSet, _unlocked) { set, open -> set && !open }
+    val locked: Flow<Boolean> = combine(pinSet, _unlocked, kids) { set, open, kids -> kids || (set && !open) }
 
     suspend fun unlock(pin: String): Boolean {
         val ok = checkPin(pin)

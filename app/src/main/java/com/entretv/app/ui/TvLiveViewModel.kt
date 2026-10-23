@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.repo.PlaylistRepository
+import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
 import com.entretv.app.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -49,6 +50,7 @@ data class LiveChannels(
 class TvLiveViewModel @Inject constructor(
     private val repository: PlaylistRepository,
     settings: SettingsRepository,
+    parental: ParentalControl,
     val playerManager: PlayerManager
 ) : ViewModel() {
 
@@ -61,10 +63,11 @@ class TvLiveViewModel @Inject constructor(
     val channels: StateFlow<LiveChannels> = combine(
         playlistId.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repository.channels(id) },
         repository.hiddenItems,
-        settings.catalogPrefs
-    ) { list, hidden, prefs ->
+        settings.catalogPrefs,
+        parental.kids
+    ) { list, hidden, prefs, kids ->
         val hiddenKeys = hidden.mapTo(HashSet()) { it.contentKey }
-        val shown = list.filter { it.id !in hiddenKeys }
+        val shown = list.filter { it.id !in hiddenKeys && !(kids && ParentalControl.looksAdult(it.name)) }
             .map { if (prefs.cleanNames) it.copy(name = TitleCleaner.clean(it.name, true)) else it }
         LiveChannels(byGroup = shown.groupBy { it.groupTitle }, byId = shown.associateBy { it.id })
     }

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Profiles -->
+    <string name="profile_who_is_watching">Who\'s watching?</string>
+    <string name="profile_manage_title">Manage profiles</string>
+    <string name="profile_manage">Manage profiles</string>
+    <string name="profile_done">Done</string>
+    <string name="profile_add">Add profile</string>
+    <string name="profile_new_title">New profile</string>
+    <string name="profile_edit_title">Edit profile</string>
+    <string name="profile_edit">Edit</string>
+    <string name="profile_name">Name</string>
+    <string name="profile_default_name">Main</string>
+    <string name="profile_new_default_name">Profile %1$d</string>
+    <string name="profile_color">Color</string>
+    <string name="profile_color_option">Color %1$d</string>
+    <string name="profile_kids">Kids profile</string>
+    <string name="profile_kids_desc">No adult content anywhere. Settings and profiles ask for an adult PIN.</string>
+    <string name="profile_kids_badge">KIDS</string>
+    <string name="profile_locked">PIN protected</string>
+    <string name="profile_pin_section">PIN lock</string>
+    <string name="profile_pin_add">Add PIN</string>
+    <string name="profile_pin_add_desc">Required to enter and to edit this profile.</string>
+    <string name="profile_pin_on">This profile asks for a PIN to enter and to edit it.</string>
+    <string name="profile_pin_change">Change PIN</string>
+    <string name="profile_pin_remove">Remove PIN</string>
+    <string name="profile_save">Save</string>
+    <string name="profile_cancel">Cancel</string>
+    <string name="profile_delete">Delete profile</string>
+    <string name="profile_delete_title">Delete %1$s?</string>
+    <string name="profile_delete_message">Its progress, Continue watching and My List will be deleted. This can\'t be undone.</string>
+    <string name="profile_delete_confirm">Delete</string>
+    <string name="profile_limit">Up to %1$d profiles</string>
+    <string name="profile_pin_enter_title">%1$s\'s PIN</string>
+    <string name="profile_pin_enter_message">Enter the 4-digit PIN to continue.</string>
+    <string name="profile_pin_edit_message">Enter the PIN to edit this profile.</string>
+    <string name="profile_pin_adult_title">Adult PIN</string>
+    <string name="profile_pin_adult_message">Enter an adult profile\'s PIN (or the adult content PIN) to continue.</string>
+    <plurals name="profile_pin_wrong">
+        <item quantity="one">Wrong PIN. %1$d attempt left.</item>
+        <item quantity="other">Wrong PIN. %1$d attempts left.</item>
+    </plurals>
+    <string name="profile_pin_locked">Too many attempts. Try again in %1$d s.</string>
+    <string name="profile_pin_new_title">New PIN</string>
+    <string name="profile_pin_new_message">Choose 4 digits.</string>
+    <string name="profile_pin_repeat_title">Repeat the PIN</string>
+    <string name="profile_pin_repeat_message">Enter it again to confirm.</string>
+    <string name="profile_pin_mismatch">The PINs don\'t match, try again</string>
+    <string name="profile_adult_confirm_title">Adults only</string>
+    <string name="profile_adult_confirm_message">This option is for adults. To protect it, give an adult profile a PIN. Continue?</string>
+    <string name="profile_adult_confirm_ok">Continue</string>
+
+    <string name="menu_profile">Profile: %1$s</string>
+    <string name="settings_section_profiles">Profiles</string>
+    <string name="settings_switch_profile">Switch profile</string>
+    <string name="settings_switch_profile_desc">Current: %1$s</string>
+    <string name="settings_manage_profiles">Manage profiles</string>
+    <string name="settings_manage_profiles_desc">Add, edit or delete profiles, kids profiles and PINs</string>
+    <string name="settings_ask_profile">Ask for profile on start</string>
+    <string name="settings_ask_profile_desc">With more than one profile, the app opens on “Who\'s watching?”</string>
+</resources>

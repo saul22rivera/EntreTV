@@ -148,33 +148,54 @@ interface ProgressDao {
     suspend fun upsert(progress: PlaybackProgressEntity)
 
     /** Fila "Seguir viendo" estilo Netflix: lo último visto primero (de una serie llegan varios episodios). */
-    @Query("SELECT * FROM playback_progress ORDER BY updatedAt DESC LIMIT 300")
-    fun observeContinueWatching(): Flow<List<PlaybackProgressEntity>>
+    @Query("SELECT * FROM playback_progress WHERE profileId = :profileId ORDER BY updatedAt DESC LIMIT 300")
+    fun observeContinueWatching(profileId: String): Flow<List<PlaybackProgressEntity>>
 
     @Query("DELETE FROM playback_progress WHERE playlistId = :playlistId")
     suspend fun deleteByPlaylist(playlistId: String)
 
-    @Query("SELECT * FROM playback_progress WHERE contentKey = :contentKey")
-    suspend fun get(contentKey: String): PlaybackProgressEntity?
+    @Query("SELECT * FROM playback_progress WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun get(profileId: String, contentKey: String): PlaybackProgressEntity?
 
-    @Query("SELECT * FROM playback_progress WHERE contentKey IN (:keys)")
-    suspend fun getMany(keys: List<String>): List<PlaybackProgressEntity>
+    @Query("SELECT * FROM playback_progress WHERE profileId = :profileId AND contentKey IN (:keys)")
+    suspend fun getMany(profileId: String, keys: List<String>): List<PlaybackProgressEntity>
 
-    @Query("SELECT * FROM playback_progress WHERE contentKey = :contentKey")
-    fun observe(contentKey: String): Flow<PlaybackProgressEntity?>
+    @Query("SELECT * FROM playback_progress WHERE profileId = :profileId AND contentKey = :contentKey")
+    fun observe(profileId: String, contentKey: String): Flow<PlaybackProgressEntity?>
 
-    @Query("SELECT * FROM playback_progress WHERE contentKey LIKE :prefix || '%' ORDER BY updatedAt DESC")
-    fun observeByPrefix(prefix: String): Flow<List<PlaybackProgressEntity>>
+    @Query(
+        "SELECT * FROM playback_progress WHERE profileId = :profileId AND contentKey LIKE :prefix || '%' " +
+            "ORDER BY updatedAt DESC"
+    )
+    fun observeByPrefix(profileId: String, prefix: String): Flow<List<PlaybackProgressEntity>>
 
-    @Query("DELETE FROM playback_progress WHERE contentKey = :contentKey")
-    suspend fun delete(contentKey: String)
+    @Query("DELETE FROM playback_progress WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun delete(profileId: String, contentKey: String)
 
     /** Reinicia una serie completa: borra el progreso de todos sus episodios. */
-    @Query("DELETE FROM playback_progress WHERE contentKey LIKE :seriesPrefix || '%'")
-    suspend fun deleteSeriesProgress(seriesPrefix: String)
+    @Query("DELETE FROM playback_progress WHERE profileId = :profileId AND contentKey LIKE :seriesPrefix || '%'")
+    suspend fun deleteSeriesProgress(profileId: String, seriesPrefix: String)
 
-    @Query("DELETE FROM playback_progress")
-    suspend fun clearAll()
+    @Query("DELETE FROM playback_progress WHERE profileId = :profileId")
+    suspend fun deleteByProfile(profileId: String)
+}
+
+@Dao
+interface ProfileDao {
+    @Query("SELECT * FROM profiles ORDER BY sortOrder, createdAt")
+    fun observeAll(): Flow<List<ProfileEntity>>
+
+    @Query("SELECT * FROM profiles ORDER BY sortOrder, createdAt")
+    suspend fun getAll(): List<ProfileEntity>
+
+    @Query("SELECT * FROM profiles WHERE id = :id")
+    suspend fun get(id: String): ProfileEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(profile: ProfileEntity)
+
+    @Query("DELETE FROM profiles WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 @Dao
@@ -194,23 +215,26 @@ interface EpgDao {
 
 @Dao
 interface FavoriteDao {
-    @Query("SELECT * FROM favorites ORDER BY addedAt DESC")
-    fun observeAll(): Flow<List<FavoriteEntity>>
+    @Query("SELECT * FROM favorites WHERE profileId = :profileId ORDER BY addedAt DESC")
+    fun observeAll(profileId: String): Flow<List<FavoriteEntity>>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE contentKey = :contentKey)")
-    fun observeIsFavorite(contentKey: String): Flow<Boolean>
+    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE profileId = :profileId AND contentKey = :contentKey)")
+    fun observeIsFavorite(profileId: String, contentKey: String): Flow<Boolean>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE contentKey = :contentKey)")
-    suspend fun isFavorite(contentKey: String): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE profileId = :profileId AND contentKey = :contentKey)")
+    suspend fun isFavorite(profileId: String, contentKey: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(favorite: FavoriteEntity)
 
-    @Query("DELETE FROM favorites WHERE contentKey = :contentKey")
-    suspend fun delete(contentKey: String)
+    @Query("DELETE FROM favorites WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun delete(profileId: String, contentKey: String)
 
     @Query("DELETE FROM favorites WHERE playlistId = :playlistId")
     suspend fun deleteByPlaylist(playlistId: String)
+
+    @Query("DELETE FROM favorites WHERE profileId = :profileId")
+    suspend fun deleteByProfile(profileId: String)
 }
 
 @Dao
@@ -326,9 +350,9 @@ interface DownloadDao {
         SeriesEntity::class, EpisodeEntity::class, EpgEntity::class,
         PlaybackProgressEntity::class, FavoriteEntity::class,
         CategoryEntity::class, CategoryPrefEntity::class, HiddenItemEntity::class,
-        DownloadEntity::class, DetailsCacheEntity::class
+        DownloadEntity::class, DetailsCacheEntity::class, ProfileEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -341,8 +365,73 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun catalogDao(): CatalogDao
     abstract fun downloadDao(): DownloadDao
     abstract fun detailsCacheDao(): DetailsCacheDao
+    abstract fun profileDao(): ProfileDao
 
     companion object {
+        /** Una instalación nueva arranca con un perfil, igual que una actualizada. */
+        val CREATE_DEFAULT_PROFILE = object : RoomDatabase.Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                insertDefaultProfile(db)
+            }
+        }
+
+        private fun insertDefaultProfile(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "INSERT OR IGNORE INTO profiles (id, name, avatar, isKids, pinHash, pinSalt, createdAt, sortOrder) " +
+                    "VALUES (?, '', 0, 0, NULL, NULL, ?, 0)",
+                arrayOf<Any>(DEFAULT_PROFILE_ID, System.currentTimeMillis())
+            )
+        }
+
+        /**
+         * Perfiles: el progreso y Mi lista pasan a ser de un perfil. Todo lo guardado queda en el
+         * perfil por defecto; las tablas se rehacen porque la clave primaria suma profileId.
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS profiles (
+                        id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, avatar INTEGER NOT NULL,
+                        isKids INTEGER NOT NULL, pinHash TEXT, pinSalt TEXT,
+                        createdAt INTEGER NOT NULL, sortOrder INTEGER NOT NULL)"""
+                )
+                insertDefaultProfile(db)
+
+                db.execSQL(
+                    """CREATE TABLE playback_progress_new (
+                        profileId TEXT NOT NULL, contentKey TEXT NOT NULL, kind TEXT NOT NULL,
+                        playlistId TEXT NOT NULL, refId TEXT NOT NULL,
+                        title TEXT NOT NULL, imageUrl TEXT NOT NULL, subtitle TEXT NOT NULL DEFAULT '',
+                        positionMs INTEGER NOT NULL, durationMs INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL, PRIMARY KEY(profileId, contentKey))"""
+                )
+                db.execSQL(
+                    """INSERT OR REPLACE INTO playback_progress_new
+                        (profileId, contentKey, kind, playlistId, refId, title, imageUrl, subtitle, positionMs, durationMs, updatedAt)
+                        SELECT ?, contentKey, kind, playlistId, refId, title, imageUrl, subtitle, positionMs, durationMs, updatedAt
+                        FROM playback_progress""",
+                    arrayOf<Any>(DEFAULT_PROFILE_ID)
+                )
+                db.execSQL("DROP TABLE playback_progress")
+                db.execSQL("ALTER TABLE playback_progress_new RENAME TO playback_progress")
+
+                db.execSQL(
+                    """CREATE TABLE favorites_new (
+                        profileId TEXT NOT NULL, contentKey TEXT NOT NULL, kind TEXT NOT NULL,
+                        playlistId TEXT NOT NULL, title TEXT NOT NULL, imageUrl TEXT NOT NULL,
+                        addedAt INTEGER NOT NULL, PRIMARY KEY(profileId, contentKey))"""
+                )
+                db.execSQL(
+                    """INSERT OR REPLACE INTO favorites_new
+                        (profileId, contentKey, kind, playlistId, title, imageUrl, addedAt)
+                        SELECT ?, contentKey, kind, playlistId, title, imageUrl, addedAt FROM favorites""",
+                    arrayOf<Any>(DEFAULT_PROFILE_ID)
+                )
+                db.execSQL("DROP TABLE favorites")
+                db.execSQL("ALTER TABLE favorites_new RENAME TO favorites")
+            }
+        }
+
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE channels ADD COLUMN archiveDays INTEGER NOT NULL DEFAULT 0")

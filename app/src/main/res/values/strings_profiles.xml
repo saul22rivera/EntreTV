@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Perfiles -->
+    <string name="profile_who_is_watching">¿Quién está viendo?</string>
+    <string name="profile_manage_title">Administrar perfiles</string>
+    <string name="profile_manage">Administrar perfiles</string>
+    <string name="profile_done">Listo</string>
+    <string name="profile_add">Agregar perfil</string>
+    <string name="profile_new_title">Nuevo perfil</string>
+    <string name="profile_edit_title">Editar perfil</string>
+    <string name="profile_edit">Editar</string>
+    <string name="profile_name">Nombre</string>
+    <string name="profile_default_name">Principal</string>
+    <string name="profile_new_default_name">Perfil %1$d</string>
+    <string name="profile_color">Color</string>
+    <string name="profile_color_option">Color %1$d</string>
+    <string name="profile_kids">Perfil de niños</string>
+    <string name="profile_kids_desc">Sin contenido para adultos en ningún lado. Configuración y los perfiles piden un PIN de adultos.</string>
+    <string name="profile_kids_badge">NIÑOS</string>
+    <string name="profile_locked">Con PIN</string>
+    <string name="profile_pin_section">Bloqueo con PIN</string>
+    <string name="profile_pin_add">Agregar PIN</string>
+    <string name="profile_pin_add_desc">Se pedirá para entrar a este perfil y para editarlo.</string>
+    <string name="profile_pin_on">Este perfil pide un PIN para entrar y para editarlo.</string>
+    <string name="profile_pin_change">Cambiar PIN</string>
+    <string name="profile_pin_remove">Quitar PIN</string>
+    <string name="profile_save">Guardar</string>
+    <string name="profile_cancel">Cancelar</string>
+    <string name="profile_delete">Eliminar perfil</string>
+    <string name="profile_delete_title">¿Eliminar a %1$s?</string>
+    <string name="profile_delete_message">Se borran su progreso, «Seguir viendo» y Mi lista. No se puede deshacer.</string>
+    <string name="profile_delete_confirm">Eliminar</string>
+    <string name="profile_limit">Hasta %1$d perfiles</string>
+    <string name="profile_pin_enter_title">PIN de %1$s</string>
+    <string name="profile_pin_enter_message">Ingresa el PIN de 4 dígitos para entrar.</string>
+    <string name="profile_pin_edit_message">Ingresa el PIN para editar este perfil.</string>
+    <string name="profile_pin_adult_title">PIN de adultos</string>
+    <string name="profile_pin_adult_message">Ingresa el PIN de un perfil de adultos (o el PIN de adultos) para continuar.</string>
+    <plurals name="profile_pin_wrong">
+        <item quantity="one">PIN incorrecto. Queda %1$d intento.</item>
+        <item quantity="other">PIN incorrecto. Quedan %1$d intentos.</item>
+    </plurals>
+    <string name="profile_pin_locked">Demasiados intentos. Prueba de nuevo en %1$d s.</string>
+    <string name="profile_pin_new_title">Nuevo PIN</string>
+    <string name="profile_pin_new_message">Elige 4 dígitos.</string>
+    <string name="profile_pin_repeat_title">Repite el PIN</string>
+    <string name="profile_pin_repeat_message">Ingrésalo otra vez para confirmar.</string>
+    <string name="profile_pin_mismatch">Los PIN no coinciden, inténtalo de nuevo</string>
+    <string name="profile_adult_confirm_title">Solo para adultos</string>
+    <string name="profile_adult_confirm_message">Esta opción es para adultos. Para protegerla, ponle un PIN a un perfil de adultos. ¿Continuar?</string>
+    <string name="profile_adult_confirm_ok">Continuar</string>
+
+    <string name="menu_profile">Perfil: %1$s</string>
+    <string name="settings_section_profiles">Perfiles</string>
+    <string name="settings_switch_profile">Cambiar de perfil</string>
+    <string name="settings_switch_profile_desc">Ahora: %1$s</string>
+    <string name="settings_manage_profiles">Administrar perfiles</string>
+    <string name="settings_manage_profiles_desc">Agregar, editar o eliminar perfiles, perfiles de niños y PIN</string>
+    <string name="settings_ask_profile">Preguntar perfil al abrir</string>
+    <string name="settings_ask_profile_desc">Con más de un perfil, la app abre en «¿Quién está viendo?»</string>
+</resources>
