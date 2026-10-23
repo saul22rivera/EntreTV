@@ -49,6 +49,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -121,6 +122,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -148,6 +150,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -169,6 +172,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import com.entretv.app.R
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.settings.SettingsRepository
@@ -195,9 +199,11 @@ import com.entretv.app.ui.profile.profileDisplayName
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Si la tira de íconos recibe el foco dentro de este tiempo tras una flecha izquierda, la llevó el usuario. */
 private const val STRIP_KEY_WINDOW_MS = 700L
@@ -213,6 +219,46 @@ private const val ROW_PREFETCH_LOW_RAM = 4
 private val DeviceProfile.rowPrefetch get() = if (lowRam) ROW_PREFETCH_LOW_RAM else ROW_PREFETCH
 
 private val LIVE_CARD_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
+private val POSTER_WAIT_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Accent.copy(alpha = 0.16f)))
+
+/**
+ * Estado de una cuadrícula de pósters que compone las filas antes de que entren en pantalla
+ * (una pantalla por delante y media por detrás; con poca memoria, media por delante): sus
+ * pósters ya se están pidiendo al bajar.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun rememberPosterGridState(profile: DeviceProfile, vararg keys: Any?): LazyGridState {
+    val window = remember(profile.lowRam) {
+        if (profile.lowRam) LazyLayoutCacheWindow(aheadFraction = 0.5f)
+        else LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 0.5f)
+    }
+    val saver = remember(window) {
+        listSaver<LazyGridState, Int>(
+            save = { listOf(it.firstVisibleItemIndex, it.firstVisibleItemScrollOffset) },
+            restore = { LazyGridState(window, it[0], it[1]) }
+        )
+    }
+    return rememberSaveable(*keys, saver = saver) { LazyGridState(window) }
+}
+
+/** Mientras llega el póster, o si falla: el título sobre un degradado en vez de un cuadro oscuro. */
+@Composable
+private fun PosterPlaceholder(title: String) {
+    Box(
+        Modifier.fillMaxSize().background(POSTER_WAIT_BRUSH).padding(8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            color = EntreBrand.TextDim,
+            textAlign = TextAlign.Center,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, coil.annotation.ExperimentalCoilApi::class)
 @Composable
@@ -640,7 +686,10 @@ fun HomeScreen(
                     onClearImages = {
                         coil.Coil.imageLoader(context).memoryCache?.clear()
                         coil.Coil.imageLoader(context).diskCache?.clear()
-                        scope.launch { snackbar.showSnackbar(context.getString(R.string.home_images_cleared)) }
+                        scope.launch {
+                            withContext(Dispatchers.IO) { PosterThumbs.clear(context) }
+                            snackbar.showSnackbar(context.getString(R.string.home_images_cleared))
+                        }
                     },
                     onResetAll = { showResetAll = true },
                     onSettings = ::openSettings,
@@ -1664,7 +1713,7 @@ private fun CatalogGrid(
     /** TV: arriba desde la primera fila va aquí (la cabecera); si no, la búsqueda de foco acaba en la tira del menú. */
     upToHeader: FocusRequester? = null
 ) {
-    val gridState = rememberSaveable(stateKey, sort, saver = LazyGridState.Saver) { LazyGridState() }
+    val gridState = rememberPosterGridState(profile, stateKey, sort)
     val total = content.rows.sumOf { it.items.size }
     val multiSection = content.rows.count { it.items.isNotEmpty() } > 1
     val list = listView == true
@@ -2072,7 +2121,7 @@ private fun ContinueGrid(
 ) {
     // Las filas no están en pantalla: arriba y abajo los resuelve la búsqueda de foco de la cuadrícula.
     if (tvNav != null) tvNav.rowOrder = emptyList()
-    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+    val gridState = rememberPosterGridState(profile)
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = profile.continueWidth - 24.dp),
         state = gridState,
@@ -2468,15 +2517,25 @@ private fun PosterCard(
                     if (isLive && !profile.lowRam) Modifier.background(LIVE_CARD_BRUSH)
                     else Modifier.background(EntreBrand.PanelHigh)
                 )
-                .then(if (focused) Modifier.border(3.dp, EntreBrand.Accent, shape) else Modifier),
+                .then(if (focused) Modifier.border(3.dp, EntreBrand.Accent, shape) else Modifier)
+                .then(
+                    if (fillWidth && !isLive && !profile.lowRam) Modifier.onSizeChanged { GridPosterSize.px = it }
+                    else Modifier
+                ),
             contentAlignment = Alignment.Center
         ) {
             if (item.imageUrl.isNotEmpty()) {
+                val context = LocalContext.current
+                var waiting by remember(item.imageUrl) { mutableStateOf(!isLive) }
+                if (waiting) PosterPlaceholder(item.title)
                 AsyncImage(
-                    model = remember(item.imageUrl) { cardImage(item.imageUrl) },
+                    model = remember(item.imageUrl) {
+                        if (isLive) cardImage(item.imageUrl) else posterRequest(context, item.imageUrl).build()
+                    },
                     contentDescription = item.title,
                     modifier = if (isLive) Modifier.fillMaxSize().padding(8.dp) else Modifier.fillMaxSize(),
-                    contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop
+                    contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop,
+                    onState = if (isLive) null else { state -> waiting = state !is AsyncImagePainter.State.Success }
                 )
             } else {
                 Icon(iconFor(item), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2547,8 +2606,11 @@ private fun ListItemCard(
             contentAlignment = Alignment.Center
         ) {
             if (item.imageUrl.isNotEmpty()) {
+                val context = LocalContext.current
                 AsyncImage(
-                    model = remember(item.imageUrl) { cardImage(item.imageUrl) },
+                    model = remember(item.imageUrl) {
+                        if (isLive) cardImage(item.imageUrl) else posterRequest(context, item.imageUrl).build()
+                    },
                     contentDescription = null,
                     modifier = if (isLive) Modifier.fillMaxSize().padding(4.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop

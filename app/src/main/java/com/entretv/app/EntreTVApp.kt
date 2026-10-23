@@ -14,6 +14,7 @@ import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.sync.CatalogSyncWorker
 import com.entretv.app.tv.TvHomePublisher
 import com.entretv.app.ui.AppLanguage
+import com.entretv.app.ui.PosterThumbs
 import com.entretv.app.ui.isLowRamDevice
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -70,7 +71,12 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
     // normal: con largeHeap, maxSizePercent se calcularía sobre largeMemoryClass.
     override fun newImageLoader(): ImageLoader {
         val lowRam = isLowRamDevice(this)
+        val thumbs = PosterThumbs(this, (if (lowRam) 100L else 150L) * 1024 * 1024, appScope).also { it.trim() }
         return ImageLoader.Builder(this)
+            .components {
+                add(thumbs.interceptor)
+                add(thumbs.fetcherFactory)
+            }
             .memoryCache {
                 MemoryCache.Builder(this)
                     .apply {

@@ -160,6 +160,7 @@ private const val AUTO_CHECK_MS = 5 * 60_000L
 
 /** Precarga de pósters: por categoría vecina en TV, y por categoría y en total tras actualizar. */
 private const val NEIGHBOR_POSTERS = 18
+private const val NEIGHBOR_WARM_POSTERS = 12
 private const val CATALOG_POSTERS_PER_CATEGORY = 12
 private const val CATALOG_POSTERS_MAX = 400
 
@@ -1609,13 +1610,16 @@ class HomeViewModel @Inject constructor(
     // ============================ Precarga de pósters ============================
 
     /**
-     * TV, Películas y Series: baja los primeros pósters de las categorías vecinas a la enfocada.
+     * TV, Películas y Series: prepara los primeros pósters de las categorías vecinas a la enfocada.
+     * Los primeros [NEIGHBOR_WARM_POSTERS] de cada una quedan además en memoria, listos para dibujar.
      * Corre en la corrutina de quien llama: moverse a otra categoría la cancela.
      */
     suspend fun prefetchNeighbors(categories: List<String>) {
         val s = section.value
         if (s == Section.LIVE || categories.isEmpty()) return
-        posters.prefetch(sectionPosters(s, categories, NEIGHBOR_POSTERS))
+        val perCategory = categories.map { sectionPosters(s, listOf(it), NEIGHBOR_POSTERS) }
+        posters.warm(perCategory.flatMap { it.take(NEIGHBOR_WARM_POSTERS) })
+        posters.prefetch(perCategory.flatMap { it.drop(NEIGHBOR_WARM_POSTERS) })
     }
 
     /**
