@@ -126,6 +126,10 @@ fun TvLiveScreen(
     focusRequests: Int = 0,
     /** Arriba desde el primer canal: lleva el foco a Buscar. */
     onExitUp: () -> Unit = {},
+    /** Tecla Guía del control: abre la guía en cuadrícula en la categoría elegida. */
+    onOpenGuide: (String?) -> Unit = {},
+    /** Informa la categoría elegida (para el botón Guía de la cabecera). */
+    onCategoryShown: (String?) -> Unit = {},
     viewModel: TvLiveViewModel = hiltViewModel()
 ) {
     LaunchedEffect(playlistId) { viewModel.setPlaylist(playlistId) }
@@ -158,6 +162,9 @@ fun TvLiveScreen(
             else -> channels.byGroup[selected].orEmpty()
         }
     }
+
+    val guideCategory = selected?.takeIf { it !in lockedCategories }
+    LaunchedEffect(guideCategory) { onCategoryShown(guideCategory) }
 
     var zone by rememberSaveable { mutableStateOf(LiveZone.CHANNELS) }
     var focusedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -313,6 +320,12 @@ fun TvLiveScreen(
                         cancelFocusChange()
                     }
                 }
+            }
+            // Se abre al soltar: si no, la guía recibiría el soltar y se cerraría enseguida.
+            .onPreviewKeyEvent { event ->
+                if (event.key != Key.Guide) return@onPreviewKeyEvent false
+                if (event.type == KeyEventType.KeyUp) onOpenGuide(guideCategory)
+                true
             }
             .focusGroup()
             .padding(start = 12.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),

@@ -179,6 +179,21 @@
     <string name="live_later">MÁS TARDE</string>
     <string name="live_playing">Reproduciendo</string>
 
+    <!-- Guía en cuadrícula -->
+    <string name="guide_button">Guía</string>
+    <string name="guide_title">Guía de TV</string>
+    <string name="guide_no_info">Sin información</string>
+    <string name="guide_loading">Cargando…</string>
+    <string name="guide_ended">Terminó</string>
+    <string name="guide_upcoming">Próximamente</string>
+    <plurals name="guide_minutes_left">
+        <item quantity="one">Queda %d minuto</item>
+        <item quantity="other">Quedan %d minutos</item>
+    </plurals>
+    <string name="guide_catchup_available">Ver desde el inicio</string>
+    <string name="guide_catchup_channel">Canal con programas anteriores</string>
+    <string name="guide_hint">OK: ver · ◀ ▶ horario · ⏪ ⏩ ±2 h</string>
+
     <!-- Inicio de sesión -->
     <string name="login_subtitle">Inicia sesión con los datos que te dio tu proveedor</string>
     <string name="login_verifying">Verificando tu cuenta…</string>

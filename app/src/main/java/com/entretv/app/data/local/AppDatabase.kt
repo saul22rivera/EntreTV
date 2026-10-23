@@ -55,6 +55,10 @@ interface ChannelDao {
             "WHERE playlistId = :playlistId AND substr(streamUrl, 1, length(:oldRoot)) = :oldRoot"
     )
     suspend fun rewriteRoot(playlistId: String, oldRoot: String, newRoot: String)
+
+    /** Solo escribe si cambió: sin filas tocadas Room no avisa y las listas no se rearman. */
+    @Query("UPDATE channels SET archiveDays = :days WHERE id = :id AND archiveDays != :days")
+    suspend fun setArchiveDays(id: String, days: Int): Int
 }
 
 @Dao
@@ -180,6 +184,9 @@ interface EpgDao {
 
     @Query("SELECT * FROM epg WHERE channelKey = :channelKey AND end > :now ORDER BY start LIMIT :limit")
     suspend fun upcomingFor(channelKey: String, now: Long, limit: Int): List<EpgEntity>
+
+    @Query("SELECT * FROM epg WHERE channelKey IN (:channelKeys) AND end > :from AND start < :to ORDER BY start")
+    suspend fun between(channelKeys: List<String>, from: Long, to: Long): List<EpgEntity>
 
     @Query("DELETE FROM epg WHERE end < :threshold")
     suspend fun purgeOld(threshold: Long)
@@ -321,7 +328,7 @@ interface DownloadDao {
         CategoryEntity::class, CategoryPrefEntity::class, HiddenItemEntity::class,
         DownloadEntity::class, DetailsCacheEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -336,6 +343,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun detailsCacheDao(): DetailsCacheDao
 
     companion object {
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE channels ADD COLUMN archiveDays INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE vod_movies ADD COLUMN tmdbId TEXT NOT NULL DEFAULT ''")

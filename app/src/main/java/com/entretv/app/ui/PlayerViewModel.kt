@@ -13,6 +13,7 @@ import com.entretv.app.data.local.EpisodeEntity
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.local.VodMovieEntity
+import com.entretv.app.data.repo.GuideRepository
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
@@ -85,6 +86,19 @@ sealed interface Playable {
         override val imageUrl get() = episode.imageUrl.ifBlank { seriesCover }
         override val kind get() = "EPISODE"
     }
+
+    /** Programa pasado de un canal con archivo. Sin data class: la URL lleva credenciales y no debe salir en toString. */
+    class CatchUp(
+        val channel: ChannelEntity,
+        val start: Long,
+        override val title: String,
+        override val streamUrl: String
+    ) : Playable {
+        override val contentKey get() = "${channel.id}@$start"
+        override val subtitle get() = channel.name
+        override val imageUrl get() = channel.logoUrl
+        override val kind get() = "CATCHUP"
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -96,6 +110,7 @@ class PlayerViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val parental: ParentalControl,
     private val downloads: DownloadRepository,
+    private val guide: GuideRepository,
     val playerManager: PlayerManager
 ) : ViewModel(), PlayerSettingsActions {
 
@@ -348,6 +363,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private suspend fun markCompleted(p: Playable) {
+        if (p is Playable.CatchUp) return
         val duration = playerManager.durationMs.value.takeIf { it > 0 }
             ?: playerManager.player.duration.takeIf { it > 0 }
             ?: (p as? Playable.Episode)?.episode?.durationSecs?.takeIf { it > 0 }?.let { it * 1_000L }
@@ -370,6 +386,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun Playable.favoriteKey(): String = when (this) {
         is Playable.Episode -> episode.seriesKey
+        is Playable.CatchUp -> channel.id
         else -> contentKey
     }
 
@@ -378,6 +395,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             val favorite = when (p) {
                 is Playable.LiveChannel -> FavoriteEntity(p.channel.id, "LIVE", p.channel.playlistId, p.title, p.imageUrl)
+                is Playable.CatchUp -> FavoriteEntity(p.channel.id, "LIVE", p.channel.playlistId, p.channel.name, p.imageUrl)
                 is Playable.Movie -> FavoriteEntity(p.movie.id, "MOVIE", p.movie.playlistId, p.title, p.imageUrl)
                 is Playable.Episode -> {
                     val series = repository.seriesById(p.episode.seriesKey)
@@ -404,6 +422,15 @@ class PlayerViewModel @Inject constructor(
         cleanNames = settings.catalogPrefs.first().cleanNames
         when (kind) {
             "LIVE" -> repository.channelById(contentKey)?.let { startPlayable(Playable.LiveChannel(display(it))) }
+            "CATCHUP" -> {
+                val channel = repository.channelById(contentKey) ?: return
+                val url = guide.catchupUrl(channel, route.startSec, route.endSec)
+                if (url == null) {
+                    showNotice(uiText(R.string.player_catchup_failed), 5_000)
+                    return
+                }
+                startPlayable(Playable.CatchUp(display(channel), route.startSec, route.title.ifBlank { channel.name }, url))
+            }
             "MOVIE" -> {
                 val movie = repository.movieById(contentKey)
                 if (movie != null) {
@@ -446,9 +473,9 @@ class PlayerViewModel @Inject constructor(
         introSeekFrom = -1L
         _introEndMs.value = (p as? Playable.Episode)?.episode?.seriesKey
             ?.takeIf { it.isNotEmpty() }?.let { settings.introEnd(it) }
-        val saved = repository.progressFor(p.contentKey)
+        val saved = if (p is Playable.CatchUp) null else repository.progressFor(p.contentKey)
         val resumeAt = saved?.positionMs?.takeIf { it > 30_000 && saved.durationMs > 0 && !saved.isCompleted } ?: 0L
-        val url = if (p.kind == "LIVE") p.streamUrl else downloads.localUri(p.contentKey) ?: p.streamUrl
+        val url = if (p.kind == "LIVE" || p is Playable.CatchUp) p.streamUrl else downloads.localUri(p.contentKey) ?: p.streamUrl
 
         playerManager.play(
             url, p.title, p.subtitle,
@@ -485,7 +512,7 @@ class PlayerViewModel @Inject constructor(
     /** Guarda el minuto cada 5 segundos mientras reproduce VOD. */
     private fun startProgressLoop(p: Playable) {
         saveJob?.cancel()
-        if (p.kind == "LIVE") return
+        if (p.kind == "LIVE" || p is Playable.CatchUp) return
         lastSavedMs = -1L
         saveJob = viewModelScope.launch {
             while (isActive) {
@@ -496,6 +523,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private suspend fun savePosition(p: Playable) {
+        if (p.kind == "LIVE" || p is Playable.CatchUp) return
         val position = playerManager.player.currentPosition.coerceAtLeast(0L)
         val duration = playerManager.durationMs.value.takeIf { it > 0 }
             ?: playerManager.player.duration.coerceAtLeast(0L)
@@ -600,7 +628,7 @@ class PlayerViewModel @Inject constructor(
                     val next = list[(idx + delta + list.size) % list.size]
                     startPlayable(p.copy(episode = next))
                 }
-                is Playable.Movie -> Unit
+                is Playable.Movie, is Playable.CatchUp -> Unit
             }
         }
     }

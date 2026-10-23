@@ -466,7 +466,7 @@ fun PlayerScreen(
                             horizontalArrangement = Arrangement.spacedBy(if (profile.isTv) 28.dp else if (small) 14.dp else 20.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (playable?.kind != "MOVIE") {
+                            if (playable is Playable.LiveChannel || playable is Playable.Episode) {
                                 ControlIcon(
                                     Icons.AutoMirrored.Filled.NavigateBefore,
                                     stringResource(if (isLive) R.string.player_prev_channel else R.string.player_prev_episode),
@@ -496,7 +496,7 @@ fun PlayerScreen(
                             if (!isLive) {
                                 ControlIcon(Icons.Default.Forward30, stringResource(R.string.player_forward_30), 40.dp, modifier = downToSeek) { seekBy(30_000); interaction++ }
                             }
-                            if (playable?.kind != "MOVIE") {
+                            if (playable is Playable.LiveChannel || playable is Playable.Episode) {
                                 ControlIcon(
                                     Icons.AutoMirrored.Filled.NavigateNext,
                                     stringResource(if (isLive) R.string.player_next_channel else R.string.player_next_episode),

@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarViewDay
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -198,6 +199,8 @@ fun HomeScreen(
     onOpenDownloads: () -> Unit,
     /** TV En vivo: pantalla completa del canal que ya suena en el mini reproductor. */
     onPlayLiveFullscreen: (String) -> Unit = {},
+    /** TV En vivo: guía en cuadrícula (lista, categoría elegida). */
+    onOpenGuide: (String, String?) -> Unit = { _, _ -> },
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -246,6 +249,8 @@ fun HomeScreen(
     val showSummary = (profile.compactRail || (profile.isTv && tvHomeChosen)) && ui.summary && !searching
     // TV: En vivo es la vista de categorías, canales y mini reproductor.
     val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null && !showSummary
+    var liveCategory by remember { mutableStateOf<String?>(null) }
+    val openGuide: (() -> Unit)? = ui.selectedPlaylistId?.takeIf { tvLive }?.let { id -> { onOpenGuide(id, liveCategory) } }
     // La vista en lista o cuadrícula se recuerda por sección; los resultados de búsqueda usan la de su tipo.
     val gridSection = when (ui.category) {
         SEARCH_MOVIES -> Section.MOVIES
@@ -524,6 +529,7 @@ fun HomeScreen(
                     onResetAll = { showResetAll = true },
                     onSettings = { showSettings = true },
                     onDownloads = onOpenDownloads,
+                    onGuide = openGuide,
                     onLogo = if (profile.compactRail) ::goHome else null,
                     headerFocus = headerFocus,
                     showClock = showClock,
@@ -745,6 +751,8 @@ fun HomeScreen(
                             canTakeFocus = !railExpanded,
                             focusRequests = liveFocusRequests,
                             onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } },
+                            onOpenGuide = { category -> ui.selectedPlaylistId?.let { onOpenGuide(it, category) } },
+                            onCategoryShown = { liveCategory = it },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .onFocusChanged {
@@ -1692,6 +1700,8 @@ private fun HomeHeader(
     onResetAll: () -> Unit,
     onSettings: () -> Unit,
     onDownloads: () -> Unit,
+    /** TV En vivo: botón Guía; null lo oculta. */
+    onGuide: (() -> Unit)? = null,
     /** Celular: tocar el logo vuelve al resumen. En TV es null para que no tome el foco. */
     onLogo: (() -> Unit)? = null,
     /** Lupa: a ella sube el foco desde la primera fila en TV. */
@@ -1731,6 +1741,13 @@ private fun HomeHeader(
                 maxLines = 1,
                 modifier = Modifier.padding(end = 8.dp)
             )
+        }
+        if (onGuide != null) {
+            TextButton(onClick = onGuide) {
+                Icon(Icons.Default.CalendarViewDay, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(stringResource(R.string.guide_button))
+            }
         }
         IconButton(onClick = onToggleSearch, modifier = Modifier.focusRequester(headerFocus)) {
             Icon(

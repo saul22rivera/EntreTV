@@ -3,13 +3,20 @@ package com.entretv.app.data.remote
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 @Serializable
 data class XtreamLogin(
-    @SerialName("user_info") val userInfo: UserInfo? = null
+    @SerialName("user_info") val userInfo: UserInfo? = null,
+    // Crudo: algunos paneles mandan [] en vez de objeto y no debe romper el inicio de sesión.
+    @SerialName("server_info") val serverInfo: JsonElement? = null
 ) {
+    /** Zona horaria del servidor ("America/Mexico_City"); vacía si no la informa. */
+    val serverTimezone: String
+        get() = ((serverInfo as? JsonObject)?.get("timezone") as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+
     @Serializable
     data class UserInfo(
         val username: String = "",
@@ -35,8 +42,15 @@ data class XtreamStream(
     val name: String,
     @SerialName("stream_icon") val streamIcon: String? = null,
     @SerialName("epg_channel_id") val epgChannelId: String? = null,
-    @SerialName("category_id") val categoryId: String = ""
-)
+    @SerialName("category_id") val categoryId: String = "",
+    // 1/0 o "1"/"0" según el panel.
+    @SerialName("tv_archive") val tvArchive: JsonElement? = null,
+    @SerialName("tv_archive_duration") val tvArchiveDuration: JsonElement? = null
+) {
+    /** Días de programas pasados que guarda el servidor; 0 = sin catch-up. */
+    val archiveDays: Int
+        get() = if (tvArchive.asField() != "1") 0 else (tvArchiveDuration.asField().toIntOrNull() ?: 1).coerceIn(1, 30)
+}
 
 @Serializable
 data class XtreamVodStream(
@@ -120,6 +134,8 @@ data class XtreamEpgResponse(
         @SerialName("title") val titleBase64: String = "",
         @SerialName("description") val descriptionBase64: String = "",
         @SerialName("start_timestamp") val startTimestamp: Long = 0,
-        @SerialName("stop_timestamp") val stopTimestamp: Long = 0
+        @SerialName("stop_timestamp") val stopTimestamp: Long = 0,
+        /** Solo en get_simple_data_table: 1 si el programa está grabado en el servidor. */
+        @SerialName("has_archive") val hasArchive: JsonElement? = null
     )
 }

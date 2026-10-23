@@ -29,7 +29,9 @@ data class ChannelEntity(
     val streamUrl: String,
     val epgChannelId: String = "",
     val number: Int = 0,
-    val isFavorite: Boolean = false
+    val isFavorite: Boolean = false,
+    /** Días de catch-up que guarda el servidor (Xtream tv_archive_duration); 0 = sin catch-up. */
+    val archiveDays: Int = 0
 )
 
 @Entity(

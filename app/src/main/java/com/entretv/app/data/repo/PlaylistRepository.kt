@@ -441,7 +441,9 @@ class PlaylistRepository @Inject constructor(
         val streams = fetchAction(p, "get_live_streams", ListSerializer(XtreamStream.serializer()))
         val cats = catsJob.await()
         if (streams.value.isEmpty()) return@coroutineScope null
-        if (!force && cats != null && unchanged(p.id, "live", streams.print, cats.print) && channelDao.count(p.id) > 0) {
+        // La versión hace que los canales guardados antes de tener catch-up se reescriban una vez.
+        val catsPrint = cats?.print?.let { "$it|$LIVE_FIELDS_VERSION" }
+        if (!force && catsPrint != null && unchanged(p.id, "live", streams.print, catsPrint) && channelDao.count(p.id) > 0) {
             return@coroutineScope null
         }
         // Si las categorías no llegaron, cada canal conserva el grupo que ya tenía.
@@ -461,11 +463,12 @@ class PlaylistRepository @Inject constructor(
                 groupTitle = names[s.categoryId] ?: previous[key] ?: s.categoryId,
                 streamUrl = "${root}live/${p.username}/${p.password}/${s.streamId}.m3u8",
                 epgChannelId = s.epgChannelId.orEmpty(),
-                number = index + 1
+                number = index + 1,
+                archiveDays = s.archiveDays
             )
         }
         val order = categoryOrder(p.id, SECTION_LIVE, cats?.value) + channels.map { it.groupTitle }
-        pendingSave(p.id, "live", streams.print, cats?.print) {
+        pendingSave(p.id, "live", streams.print, catsPrint) {
             channelDao.deleteByPlaylist(p.id)
             channelDao.upsertAll(channels)
             saveCategories(p.id, SECTION_LIVE, order)
@@ -844,22 +847,24 @@ class PlaylistRepository @Inject constructor(
         String(Base64.decode(cleaned, Base64.DEFAULT), Charsets.UTF_8).trim()
     }.getOrNull()
 
-    /** Raíz del servidor, sin player_api.php, siempre con / final. */
-    private fun serverRoot(raw: String): String {
-        var value = raw.trim().trimEnd('/')
-        if (value.endsWith("/player_api.php", ignoreCase = true)) {
-            value = value.substring(0, value.length - "/player_api.php".length).trimEnd('/')
-        }
-        return "$value/"
-    }
-
-    private fun apiUrl(raw: String): String = serverRoot(raw) + "player_api.php"
-
     companion object {
+        /** Raíz del servidor, sin player_api.php, siempre con / final. */
+        internal fun serverRoot(raw: String): String {
+            var value = raw.trim().trimEnd('/')
+            if (value.endsWith("/player_api.php", ignoreCase = true)) {
+                value = value.substring(0, value.length - "/player_api.php".length).trimEnd('/')
+            }
+            return "$value/"
+        }
+
+        internal fun apiUrl(raw: String): String = serverRoot(raw) + "player_api.php"
+
         const val SECTION_LIVE = "LIVE"
         const val SECTION_MOVIES = "MOVIES"
         const val SECTION_SERIES = "SERIES"
         private const val MAX_ATTEMPTS = 4
+        /** Sube cuando ChannelEntity guarda un dato nuevo del servidor. */
+        private const val LIVE_FIELDS_VERSION = 2
         private const val TAG = "CatalogSync"
         private val URL_PATTERN = Regex("""\w+://\S+""")
         private val CATEGORY_LIST = ListSerializer(XtreamCategory.serializer())

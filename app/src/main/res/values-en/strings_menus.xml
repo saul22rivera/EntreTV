@@ -179,6 +179,21 @@
     <string name="live_later">LATER</string>
     <string name="live_playing">Playing</string>
 
+    <!-- Grid guide -->
+    <string name="guide_button">Guide</string>
+    <string name="guide_title">TV guide</string>
+    <string name="guide_no_info">No information</string>
+    <string name="guide_loading">Loading…</string>
+    <string name="guide_ended">Ended</string>
+    <string name="guide_upcoming">Upcoming</string>
+    <plurals name="guide_minutes_left">
+        <item quantity="one">%d minute left</item>
+        <item quantity="other">%d minutes left</item>
+    </plurals>
+    <string name="guide_catchup_available">Watch from the start</string>
+    <string name="guide_catchup_channel">Channel with past programs</string>
+    <string name="guide_hint">OK: watch · ◀ ▶ time · ⏪ ⏩ ±2 h</string>
+
     <!-- Sign in -->
     <string name="login_subtitle">Sign in with the details your provider gave you</string>
     <string name="login_verifying">Verifying your account…</string>

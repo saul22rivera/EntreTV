@@ -89,8 +89,29 @@ interface XtreamApi {
         @Query("username") username: String,
         @Query("password") password: String,
         @Query("stream_id") streamId: Int,
+        @Query("limit") limit: Int? = null,
         @Query("action") action: String = "get_short_epg"
     ): XtreamEpgResponse
+
+    /** Guía completa del canal (días pasados incluidos, con has_archive): solo para canales con catch-up. */
+    @GET
+    suspend fun simpleDataTable(
+        @Url baseUrl: String,
+        @Query("username") username: String,
+        @Query("password") password: String,
+        @Query("stream_id") streamId: Int,
+        @Query("action") action: String = "get_simple_data_table"
+    ): XtreamEpgResponse
+
+    /** Canales de una sola categoría: liviano, para saber cuáles tienen catch-up sin bajar toda la lista. */
+    @GET
+    suspend fun liveStreamsIn(
+        @Url baseUrl: String,
+        @Query("username") username: String,
+        @Query("password") password: String,
+        @Query("category_id") categoryId: String,
+        @Query("action") action: String = "get_live_streams"
+    ): List<XtreamStream>
 
     @GET
     suspend fun fetchText(@Url url: String): ResponseBody

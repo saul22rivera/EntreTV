@@ -16,6 +16,7 @@
     <string name="player_episode_subtitle">S%1$d:E%2$d · %3$s</string>
     <string name="player_no_category">Uncategorized</string>
     <string name="player_series_fallback">Series</string>
+    <string name="player_catchup_failed">This program is no longer available.</string>
 
     <!-- Errors -->
     <string name="player_error_live">The channel isn\'t responding. Check your connection or try another channel.</string>

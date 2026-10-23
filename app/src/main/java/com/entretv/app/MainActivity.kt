@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,8 +34,10 @@ import com.entretv.app.ui.PlayerScreen
 import com.entretv.app.ui.Session
 import com.entretv.app.ui.SessionViewModel
 import com.entretv.app.ui.UpdateHost
+import com.entretv.app.ui.guide.GuideScreen
 import com.entretv.app.ui.navigation.DetailsRoute
 import com.entretv.app.ui.navigation.DownloadsRoute
+import com.entretv.app.ui.navigation.GuideRoute
 import com.entretv.app.ui.navigation.HomeRoute
 import com.entretv.app.ui.navigation.PlayerRoute
 import com.entretv.app.ui.theme.EntreTVTheme
@@ -128,6 +131,26 @@ class MainActivity : AppCompatActivity() {
                     onOpenDownloads = { navController.navigate(DownloadsRoute) },
                     onPlayLiveFullscreen = { channelId ->
                         navController.navigate(PlayerRoute(channelId, "LIVE", keepPlaying = true))
+                    },
+                    onOpenGuide = { playlistId, category ->
+                        navController.navigate(GuideRoute(playlistId, category)) { launchSingleTop = true }
+                    }
+                )
+            }
+            composable<GuideRoute> { entry ->
+                inPlayer = false
+                GuideScreen(
+                    onBack = {
+                        // Un Atrás repetido durante la transición no debe sacar también el inicio.
+                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) navController.popBackStack()
+                    },
+                    onPlayLive = { channel ->
+                        navController.navigate(PlayerRoute(channel.id, "LIVE"))
+                    },
+                    onPlayCatchUp = { channel, program ->
+                        navController.navigate(
+                            PlayerRoute(channel.id, "CATCHUP", startSec = program.start, endSec = program.end, title = program.title)
+                        )
                     }
                 )
             }
