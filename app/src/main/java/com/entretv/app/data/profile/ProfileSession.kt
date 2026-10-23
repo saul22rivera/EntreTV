@@ -44,6 +44,11 @@ class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
     /** El arranque ya pasó por la elección de perfil (o no hacía falta) en este proceso. */
     @Volatile var startupHandled: Boolean = false
 
+    /** Ya se le buscó nombre al perfil por defecto con la cuenta guardada (se hace una sola vez). */
+    var defaultNameChecked: Boolean
+        get() = prefs.getBoolean(KEY_DEFAULT_NAMED, false)
+        set(value) = prefs.edit().putBoolean(KEY_DEFAULT_NAMED, value).apply()
+
     fun activate(profile: ProfileEntity) {
         prefs.edit()
             .putString(KEY_ACTIVE, profile.id)
@@ -93,5 +98,6 @@ class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
         const val KEY_AVATAR = "active_avatar"
         const val KEY_MULTIPLE = "multiple"
         const val KEY_ASK_ON_START = "ask_on_start"
+        const val KEY_DEFAULT_NAMED = "default_name_checked"
     }
 }

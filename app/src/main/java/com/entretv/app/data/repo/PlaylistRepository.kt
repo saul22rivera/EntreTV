@@ -9,6 +9,7 @@ import androidx.room.withTransaction
 import com.entretv.app.BuildConfig
 import com.entretv.app.R
 import com.entretv.app.ui.UiText
+import com.entretv.app.ui.isLowRamDevice
 import com.entretv.app.ui.uiText
 import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.local.AppDatabase
@@ -50,6 +51,7 @@ import com.entretv.app.data.settings.AccountInfo
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.Calendar
@@ -65,8 +67,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -84,11 +89,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromStream
-import okio.Buffer
-import okio.ForwardingSource
 import okio.HashingSource
 import okio.buffer
+import okio.sink
+import okio.source
 import retrofit2.HttpException
+
+/** Lo que trajo una actualización que cambió el catálogo: títulos y canales que no estaban. */
+data class CatalogUpdate(val newMovies: Int = 0, val newSeries: Int = 0, val newChannels: Int = 0)
 
 /** Error de inicio de sesión con un mensaje listo para mostrar en el idioma de la app. */
 class AccountException(val text: UiText) : Exception() {
@@ -127,9 +135,19 @@ class PlaylistRepository @Inject constructor(
     /** Bajar y leer el catálogo (canales, películas y series a la vez) sin quitarle CPU al video. */
     private val syncDispatcher = backgroundExecutor("catalog-sync", 3).asCoroutineDispatcher()
 
+    /** Con video, con poca memoria o en la automática: una sección detrás de otra en un solo hilo. */
+    private val lightDispatcher = backgroundExecutor("catalog-sync-light", 1).asCoroutineDispatcher()
+
+    private val lowRam = isLowRamDevice(context)
+    private val syncDir = File(context.cacheDir, "sync")
+
     private val _syncing = MutableStateFlow(false)
     /** True mientras se baja el catálogo: al entrar, a mano o en la actualización programada. */
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+
+    private val _updates = MutableSharedFlow<CatalogUpdate>(extraBufferCapacity = 1)
+    /** Cada actualización que cambió algo de lo guardado (no la primera descarga). */
+    val updates: SharedFlow<CatalogUpdate> = _updates.asSharedFlow()
 
     val playlists: Flow<List<PlaylistEntity>> = playlistDao.observeAll()
 
@@ -321,89 +339,117 @@ class PlaylistRepository @Inject constructor(
 
     /**
      * Actualización al entrar: lo guardado se ve al instante y esto corre en segundo plano.
-     * Sin [force] se respeta la frecuencia de Configuración (por defecto, una vez al día
-     * después de las 9:00; ver [refreshDue]).
+     * Sin [force] se respeta la frecuencia de Configuración (ver [refreshDue]); con [auto], la
+     * revisión cada 3 h de la automática. [light] (o poca memoria) baja una sección detrás de
+     * otra en un solo hilo y guarda cada una apenas llega, para no competir con el video.
      * Cada sección (canales, películas, series) es independiente: si una falla se conserva lo guardado.
+     * Con [force] se baja todo igual, pero lo que no cambió tampoco se reescribe.
      *
      * @return secciones que no se pudieron actualizar, con el motivo.
      */
-    suspend fun refreshAll(force: Boolean = false): Result<List<UiText>> = withContext(syncDispatcher) {
-        runCatching {
-            refreshLock.withLock {
-                playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force) }
-            }
-        }.onFailure { logSyncFailure("refresh", it) }
-    }
-
-    suspend fun refreshPlaylist(playlistId: String, force: Boolean = true): Result<List<UiText>> = withContext(syncDispatcher) {
-        runCatching {
-            refreshLock.withLock {
-                val p = playlistDao.get(playlistId) ?: error("Playlist no encontrada")
-                refreshIfDue(p, force)
-            }
-        }.onFailure { logSyncFailure("refresh", it) }
+    suspend fun refreshAll(force: Boolean = false, light: Boolean = false, auto: Boolean = false): Result<List<UiText>> {
+        val oneByOne = light || lowRam
+        return withContext(if (oneByOne) lightDispatcher else syncDispatcher) {
+            runCatching {
+                refreshLock.withLock {
+                    // Restos de una descarga cortada porque se cerró la app.
+                    syncDir.listFiles()?.forEach { it.delete() }
+                    playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force, auto, oneByOne) }
+                }
+            }.onFailure { logSyncFailure("refresh", it) }
+        }
     }
 
     /** True si la lista nunca se descargó completa (primer inicio de sesión). */
     suspend fun needsFirstSync(playlistId: String): Boolean = settings.lastRefreshAt(playlistId) == 0L
 
-    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean): List<UiText> {
+    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean, auto: Boolean, oneByOne: Boolean): List<UiText> {
         val last = settings.lastRefreshAt(p.id)
-        if (!force && !refreshDue(last, settings.refreshMode.first())) return emptyList()
+        val mode = settings.refreshMode.first()
+        val due = refreshDue(last, mode) || (auto && mode == SettingsRepository.REFRESH_AUTO && autoDue(last))
+        if (!force && !due) return emptyList()
         _syncing.value = true
         try {
-            val failed = coroutineScope {
+            val outcome = coroutineScope {
                 val account = async { refreshAccountInfo(p) }
-                refreshPlaylistInternal(p, force).also { account.await() }
+                refreshPlaylistInternal(p, oneByOne).also { account.await() }
             }
+            val failed = outcome.failed
             // Una sección que falló y quedó vacía se vuelve a pedir al entrar, sin esperar al próximo corte.
             val emptyAfterFailure = failed.any { sectionCount(p.id, it.section) == 0 }
             if (failed.size < 3 && !emptyAfterFailure) settings.setLastRefreshAt(p.id, System.currentTimeMillis())
+            if (last > 0L && outcome.saved.isNotEmpty()) {
+                fun added(section: String) = outcome.saved.filter { it.section == section }.sumOf { it.pending!!.added }
+                _updates.tryEmit(CatalogUpdate(added(SECTION_MOVIES), added(SECTION_SERIES), added(SECTION_LIVE)))
+            }
             return failed.map { sectionFailed(it.section, it.error!!) }
         } finally {
             _syncing.value = false
         }
     }
 
-    /** @return secciones que no se pudieron actualizar. */
-    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, force: Boolean): List<SectionResult> = coroutineScope {
+    private class SyncOutcome(val failed: List<SectionResult>, val saved: List<SectionResult>) {
+        operator fun plus(other: SyncOutcome) = SyncOutcome(failed + other.failed, saved + other.saved)
+    }
+
+    private suspend fun refreshPlaylistInternal(p: PlaylistEntity, oneByOne: Boolean): SyncOutcome = coroutineScope {
         when (p.type) {
             "M3U" -> listOf(
                 prepareSection(SECTION_LIVE) {
                     val body = withRetry { xtreamApi.fetchText(p.url).string() }
                     // Solo la huella: la lista entera puede pesar decenas de MB y no debe seguir viva hasta guardar.
                     val print = textPrint(body)
-                    if (!force && unchanged(p.id, "m3u", print, "") && channelDao.count(p.id) > 0) return@prepareSection null
+                    if (unchanged(p.id, "m3u", print, "") && channelDao.count(p.id) > 0) return@prepareSection null
                     val channels = M3uParser.parse(p.id, body)
                     if (channels.isEmpty()) return@prepareSection null
+                    val added = addedCount(channels.map { it.id }) { channelDao.ids(p.id) }
                     PendingSave(
                         save = {
                             channelDao.deleteByPlaylist(p.id)
                             channelDao.upsertAll(channels)
                             saveCategories(p.id, SECTION_LIVE, channels.map { it.groupTitle })
                         },
-                        saved = { remember(p.id, "m3u", print, "") }
+                        saved = { remember(p.id, "m3u", print, "") },
+                        added = added
                     )
                 }
             ).let { saveSections(it) }
             else -> {
                 suspend fun prepare(section: String) = prepareSection(section) {
                     when (section) {
-                        SECTION_LIVE -> prepareLive(p, force)
-                        SECTION_MOVIES -> prepareMovies(p, force)
-                        else -> prepareSeries(p, force)
+                        SECTION_LIVE -> prepareLive(p)
+                        SECTION_MOVIES -> prepareMovies(p)
+                        else -> prepareSeries(p)
                     }
                 }
-                val first = listOf(SECTION_LIVE, SECTION_MOVIES, SECTION_SERIES).map { async { prepare(it) } }.awaitAll()
-                // Si una lista llegó cortada en todos los intentos, una vuelta más ya sin las otras descargas.
-                val results = first.map { if (it.error is SerializationException) prepare(it.section) else it }
-                saveSections(results)
+                val sections = listOf(SECTION_LIVE, SECTION_MOVIES, SECTION_SERIES)
+                if (oneByOne) {
+                    // Cada sección se guarda y se suelta antes de bajar la siguiente: menos memoria a la vez.
+                    sections.fold(SyncOutcome(emptyList(), emptyList())) { acc, section ->
+                        val result = prepare(section).let { if (it.error is SerializationException) prepare(section) else it }
+                        acc + saveSections(listOf(result))
+                    }
+                } else {
+                    val first = sections.map { async { prepare(it) } }.awaitAll()
+                    // Si una lista llegó cortada en todos los intentos, una vuelta más ya sin las otras descargas.
+                    val results = first.map { if (it.error is SerializationException) prepare(it.section) else it }
+                    saveSections(results)
+                }
             }
         }
     }
 
-    /** Sección ya bajada y leída: [save] la escribe en la base y [saved] anota su huella. */
-    private class PendingSave(val save: suspend () -> Unit, val saved: () -> Unit)
+    /** Cuántas claves de [ids] no estaban guardadas. */
+    private suspend fun addedCount(ids: List<String>, saved: suspend () -> List<String>): Int {
+        val before = saved().toHashSet()
+        return if (before.isEmpty()) 0 else ids.count { it !in before }
+    }
+
+    /**
+     * Sección ya bajada y leída: [save] la escribe en la base y [saved] anota su huella.
+     * [added] son las entradas que no estaban guardadas.
+     */
+    private class PendingSave(val save: suspend () -> Unit, val saved: () -> Unit, val added: Int = 0)
 
     private class SectionResult(val section: String, val pending: PendingSave?, val error: Exception?)
 
@@ -421,21 +467,21 @@ class PlaylistRepository @Inject constructor(
      * Guarda juntas las secciones que cambiaron, en una transacción: Room avisa una sola vez y
      * la pantalla se arma de nuevo una vez al final, sin pasar por una lista vacía.
      *
-     * @return secciones que no se pudieron bajar o guardar.
+     * @return secciones que no se pudieron bajar o guardar y las que se guardaron.
      */
-    private suspend fun saveSections(results: List<SectionResult>): List<SectionResult> {
+    private suspend fun saveSections(results: List<SectionResult>): SyncOutcome {
         val failed = results.filter { it.error != null }
         val pending = results.filter { it.pending != null }
-        if (pending.isEmpty()) return failed
+        if (pending.isEmpty()) return SyncOutcome(failed, emptyList())
         return try {
             database.withTransaction { pending.forEach { it.pending!!.save() } }
             pending.forEach { it.pending!!.saved() }
-            failed
+            SyncOutcome(failed, pending)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logSyncFailure("save", e)
-            failed + pending.map { SectionResult(it.section, null, e) }
+            SyncOutcome(failed + pending.map { SectionResult(it.section, null, e) }, emptyList())
         }
     }
 
@@ -445,16 +491,16 @@ class PlaylistRepository @Inject constructor(
         else -> vodDao.countSeries(playlistId)
     }
 
-    private suspend fun prepareLive(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
+    private suspend fun prepareLive(p: PlaylistEntity): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_live_categories", CATEGORY_LIST) }
-        val streams = fetchAction(p, "get_live_streams", ListSerializer(XtreamStream.serializer()))
+        // La versión hace que los canales guardados antes de tener catch-up se reescriban una vez.
+        val catsPrint = suspend { catsJob.await()?.print?.let { "$it|$LIVE_FIELDS_VERSION" } }
+        val streams = fetchIfChanged(p, "get_live_streams", ListSerializer(XtreamStream.serializer())) { print ->
+            catsPrint()?.let { unchanged(p.id, "live", print, it) } == true && channelDao.count(p.id) > 0
+        } ?: return@coroutineScope null
         val cats = catsJob.await()
         if (streams.value.isEmpty()) return@coroutineScope null
-        // La versión hace que los canales guardados antes de tener catch-up se reescriban una vez.
-        val catsPrint = cats?.print?.let { "$it|$LIVE_FIELDS_VERSION" }
-        if (!force && catsPrint != null && unchanged(p.id, "live", streams.print, catsPrint) && channelDao.count(p.id) > 0) {
-            return@coroutineScope null
-        }
+        val liveCatsPrint = catsPrint()
         // Si las categorías no llegaron, cada canal conserva el grupo que ya tenía.
         val previous = if (cats == null) {
             channelDao.getByPlaylist(p.id).associate { it.streamKey to it.groupTitle }
@@ -477,21 +523,23 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_LIVE, cats?.value) + channels.map { it.groupTitle }
-        pendingSave(p.id, "live", streams.print, catsPrint) {
+        val content = contentPrint(channels, order)
+        if (sameContent(p.id, "live", streams.print, liveCatsPrint, content) { channelDao.count(p.id) > 0 }) return@coroutineScope null
+        val added = addedCount(channels.map { it.id }) { channelDao.ids(p.id) }
+        pendingSave(p.id, "live", streams.print, liveCatsPrint, added, content) {
             channelDao.deleteByPlaylist(p.id)
             channelDao.upsertAll(channels)
             saveCategories(p.id, SECTION_LIVE, order)
         }
     }
 
-    private suspend fun prepareMovies(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
+    private suspend fun prepareMovies(p: PlaylistEntity): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_vod_categories", CATEGORY_LIST) }
-        val streams = fetchAction(p, "get_vod_streams", ListSerializer(XtreamVodStream.serializer()))
+        val streams = fetchIfChanged(p, "get_vod_streams", ListSerializer(XtreamVodStream.serializer())) { print ->
+            catsJob.await()?.let { unchanged(p.id, "movies", print, it.print) } == true && vodDao.countMovies(p.id) > 0
+        } ?: return@coroutineScope null
         val cats = catsJob.await()
         if (streams.value.isEmpty()) return@coroutineScope null
-        if (!force && cats != null && unchanged(p.id, "movies", streams.print, cats.print) && vodDao.countMovies(p.id) > 0) {
-            return@coroutineScope null
-        }
         val previous = if (cats == null) {
             vodDao.getMovies(p.id).associate { it.movieId to it.categoryName }
         } else emptyMap()
@@ -516,21 +564,23 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_MOVIES, cats?.value) + movies.map { it.categoryName }
-        pendingSave(p.id, "movies", streams.print, cats?.print) {
+        val content = contentPrint(movies, order)
+        if (sameContent(p.id, "movies", streams.print, cats?.print, content) { vodDao.countMovies(p.id) > 0 }) return@coroutineScope null
+        val added = addedCount(movies.map { it.id }) { vodDao.movieIds(p.id) }
+        pendingSave(p.id, "movies", streams.print, cats?.print, added, content) {
             vodDao.deleteMoviesByPlaylist(p.id)
             vodDao.upsertMovies(movies)
             saveCategories(p.id, SECTION_MOVIES, order)
         }
     }
 
-    private suspend fun prepareSeries(p: PlaylistEntity, force: Boolean): PendingSave? = coroutineScope {
+    private suspend fun prepareSeries(p: PlaylistEntity): PendingSave? = coroutineScope {
         val catsJob = async { fetchOrNull(p, "get_series_categories", CATEGORY_LIST) }
-        val list = fetchAction(p, "get_series", ListSerializer(XtreamSeries.serializer()))
+        val list = fetchIfChanged(p, "get_series", ListSerializer(XtreamSeries.serializer())) { print ->
+            catsJob.await()?.let { unchanged(p.id, "series", print, it.print) } == true && vodDao.countSeries(p.id) > 0
+        } ?: return@coroutineScope null
         val cats = catsJob.await()
         if (list.value.isEmpty()) return@coroutineScope null
-        if (!force && cats != null && unchanged(p.id, "series", list.print, cats.print) && vodDao.countSeries(p.id) > 0) {
-            return@coroutineScope null
-        }
         val previous = if (cats == null) {
             vodDao.getSeriesList(p.id).associate { it.seriesId to it.categoryName }
         } else emptyMap()
@@ -553,7 +603,10 @@ class PlaylistRepository @Inject constructor(
             )
         }
         val order = categoryOrder(p.id, SECTION_SERIES, cats?.value) + series.map { it.categoryName }
-        pendingSave(p.id, "series", list.print, cats?.print) {
+        val content = contentPrint(series, order)
+        if (sameContent(p.id, "series", list.print, cats?.print, content) { vodDao.countSeries(p.id) > 0 }) return@coroutineScope null
+        val added = addedCount(series.map { it.id }) { vodDao.seriesIds(p.id) }
+        pendingSave(p.id, "series", list.print, cats?.print, added, content) {
             vodDao.deleteSeriesByPlaylist(p.id)
             vodDao.upsertSeries(series)
             saveCategories(p.id, SECTION_SERIES, order)
@@ -569,8 +622,37 @@ class PlaylistRepository @Inject constructor(
         section: String,
         print: String,
         catsPrint: String?,
+        added: Int,
+        content: Int,
         save: suspend () -> Unit
-    ) = PendingSave(save) { if (catsPrint != null) remember(playlistId, section, print, catsPrint) }
+    ) = PendingSave(save, {
+        if (catsPrint != null) {
+            remember(playlistId, section, print, catsPrint)
+            syncPrefs.edit().putInt(contentKey(playlistId, section), content).apply()
+        }
+    }, added)
+
+    private fun contentPrint(rows: List<Any>, order: List<String>): Int = 31 * rows.hashCode() + order.hashCode()
+
+    private fun contentKey(playlistId: String, section: String) = "$playlistId:$section:content"
+
+    /**
+     * El servidor a veces cambia la respuesta en campos que no se guardan: si lo armado es igual
+     * a lo guardado se anota la huella nueva y no se reescribe la base ni se redibuja nada.
+     */
+    private suspend fun sameContent(
+        playlistId: String,
+        section: String,
+        print: String,
+        catsPrint: String?,
+        content: Int,
+        hasRows: suspend () -> Boolean
+    ): Boolean {
+        val key = contentKey(playlistId, section)
+        if (catsPrint == null || !syncPrefs.contains(key) || syncPrefs.getInt(key, 0) != content || !hasRows()) return false
+        remember(playlistId, section, print, catsPrint)
+        return true
+    }
 
     private fun fingerprint(main: String, extra: String): String = "$main|$extra"
 
@@ -598,25 +680,37 @@ class PlaylistRepository @Inject constructor(
     /** [print] resume la respuesta (bytes y MD5) para saber si cambió sin guardarla entera. */
     private class Fetched<T>(val print: String, val value: T)
 
-    /**
-     * Descarga una acción de player_api.php y la decodifica mientras llega: con listas de
-     * decenas de MB no se arma el texto completo en memoria. Reintenta si llega cortada.
-     */
     private suspend fun <T> fetchAction(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T> =
-        withRetry {
-            requestSlots.withPermit {
+        fetchIfChanged(p, action, serializer) { false }!!
+
+    /**
+     * Baja una acción de player_api.php a un archivo temporal mientras saca su huella y solo la
+     * decodifica si [unchanged] dice que cambió (si no, devuelve null). Leer una lista de decenas
+     * de MB es lo que más memoria y CPU gasta: una lista igual a la guardada ni se lee.
+     * Reintenta si llega cortada.
+     */
+    private suspend fun <T> fetchIfChanged(
+        p: PlaylistEntity,
+        action: String,
+        serializer: KSerializer<T>,
+        unchanged: suspend (String) -> Boolean
+    ): Fetched<T>? = withRetry {
+        syncDir.mkdirs()
+        val file = File.createTempFile(action, ".json", syncDir)
+        try {
+            val print = requestSlots.withPermit {
                 xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
                     val hashing = HashingSource.md5(body.source())
-                    var count = 0L
-                    val counting = object : ForwardingSource(hashing) {
-                        override fun read(sink: Buffer, byteCount: Long): Long =
-                            super.read(sink, byteCount).also { if (it > 0) count += it }
-                    }
-                    val value = json.decodeFromStream(serializer, counting.buffer().inputStream())
-                    Fetched("$count:${hashing.hash.hex()}", value)
+                    val count = file.sink().buffer().use { it.writeAll(hashing) }
+                    "$count:${hashing.hash.hex()}"
                 }
             }
+            if (unchanged(print)) null
+            else Fetched(print, file.source().buffer().use { json.decodeFromStream(serializer, it.inputStream()) })
+        } finally {
+            file.delete()
         }
+    }
 
     private suspend fun <T> fetchOrNull(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T>? =
         try {
@@ -903,35 +997,44 @@ class PlaylistRepository @Inject constructor(
         private val URL_PATTERN = Regex("""\w+://\S+""")
         private val CATEGORY_LIST = ListSerializer(XtreamCategory.serializer())
 
-        /** El proveedor publica lo nuevo temprano: después de esta hora vale la pena volver a bajar. */
-        const val DAILY_CUTOFF_HOUR = 9
-        private const val EVENING_CUTOFF_HOUR = 21
+        /** Cortes de "Tres veces al día": manda el más reciente que ya pasó. */
+        val THRICE_CUTOFF_HOURS = listOf(0, 8, 9)
+
+        /** La automática vuelve a revisar con la app abierta cada este tiempo. */
+        const val AUTO_INTERVAL_MS = 3 * 60 * 60_000L
 
         /**
-         * Toca actualizar según [mode]: siempre, o si la última fue antes del corte más reciente
-         * (las 9:00 de hoy o de ayer; con dos veces al día, también las 21:00).
+         * Toca actualizar al entrar según [mode]: si la última fue antes del corte más reciente
+         * (la medianoche; con tres veces al día, también las 8:00 y las 9:00). Solo manual no
+         * actualiza sola, salvo la primera descarga.
          */
         fun refreshDue(last: Long, mode: Int, now: Long = System.currentTimeMillis()): Boolean {
-            if (last <= 0L || mode == SettingsRepository.REFRESH_ALWAYS) return true
-            return last < lastCutoff(mode, now)
+            // Un reloj atrasado dejaría la última actualización en el futuro.
+            if (last <= 0L || last > now) return true
+            return when (mode) {
+                SettingsRepository.REFRESH_MANUAL -> false
+                SettingsRepository.REFRESH_THRICE_DAILY -> last < lastCutoff(THRICE_CUTOFF_HOURS, now)
+                else -> last < lastCutoff(listOf(0), now)
+            }
         }
 
-        private fun lastCutoff(mode: Int, now: Long): Long {
-            val hours = if (mode == SettingsRepository.REFRESH_TWICE_DAILY) {
-                listOf(EVENING_CUTOFF_HOUR, DAILY_CUTOFF_HOUR)
-            } else listOf(DAILY_CUTOFF_HOUR)
+        /** Automática: pasaron [AUTO_INTERVAL_MS] desde la última. */
+        fun autoDue(last: Long, now: Long = System.currentTimeMillis()): Boolean =
+            last <= 0L || last > now || now - last >= AUTO_INTERVAL_MS
+
+        private fun lastCutoff(hours: List<Int>, now: Long): Long {
             val cal = Calendar.getInstance().apply {
                 timeInMillis = now
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            for (hour in hours) {
+            for (hour in hours.sortedDescending()) {
                 cal.set(Calendar.HOUR_OF_DAY, hour)
                 if (cal.timeInMillis <= now) return cal.timeInMillis
             }
             cal.add(Calendar.DAY_OF_YEAR, -1)
-            cal.set(Calendar.HOUR_OF_DAY, hours.first())
+            cal.set(Calendar.HOUR_OF_DAY, hours.max())
             return cal.timeInMillis
         }
     }

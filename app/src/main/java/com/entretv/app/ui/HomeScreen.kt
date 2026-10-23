@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.items
@@ -106,7 +107,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -161,6 +166,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import com.entretv.app.R
 import com.entretv.app.data.local.PlaybackProgressEntity
@@ -194,6 +200,23 @@ import kotlinx.coroutines.launch
 /** Si la tira de íconos recibe el foco dentro de este tiempo tras una flecha izquierda, la llevó el usuario. */
 private const val STRIP_KEY_WINDOW_MS = 700L
 
+/** Separación mínima entre repeticiones de una flecha mantenida en TV. */
+private const val KEY_REPEAT_GAP_MS = 70L
+private const val KEY_REPEAT_GAP_LOW_RAM_MS = 110L
+private val DPAD_KEYS = setOf(Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight)
+
+/** Pósters de la fila siguiente que se arman (y bajan) antes de llegar a ella. */
+private const val ROW_PREFETCH = 8
+private const val ROW_PREFETCH_LOW_RAM = 4
+private val DeviceProfile.rowPrefetch get() = if (lowRam) ROW_PREFETCH_LOW_RAM else ROW_PREFETCH
+
+private val TMDB_BIG = Regex("/t/p/(original|w1280|w780|w500)/")
+
+/** Los pósters de TMDB que manda el servidor suelen venir en tamaño original: para una tarjeta basta w342. */
+private fun cardImage(url: String): String = if ("image.tmdb.org" in url) TMDB_BIG.replace(url, "/t/p/w342/") else url
+
+private val LIVE_CARD_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, coil.annotation.ExperimentalCoilApi::class)
 @Composable
 fun HomeScreen(
@@ -214,7 +237,8 @@ fun HomeScreen(
     val ui by viewModel.uiState.collectAsState()
     val content by viewModel.content.collectAsState()
     val continueWatching by viewModel.continueWatching.collectAsState()
-    val favorites by viewModel.favoriteKeySet.collectAsState()
+    // Se pasa el estado y no el valor: cambiar un favorito solo redibuja el póster que cambió.
+    val favorites = viewModel.favoriteKeySet.collectAsState()
     val account by viewModel.account.collectAsState()
     val accountSaving by viewModel.accountSaving.collectAsState()
     val accountError by viewModel.accountError.collectAsState()
@@ -233,8 +257,12 @@ fun HomeScreen(
     val hiddenItems by viewModel.hiddenItems.collectAsState()
     val organizeList by viewModel.organizeList.collectAsState()
     val organizingSection by viewModel.organizingSection.collectAsState()
-    // Si la app quedó abierta desde ayer, al volver a ella después de las 9:00 también se actualiza.
+    // Si la app quedó abierta desde ayer, al volver a ella después del corte también se actualiza.
     LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refreshIfDue() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.autoRefreshLoop() }
+    }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var showAccount by rememberSaveable { mutableStateOf(false) }
@@ -265,6 +293,8 @@ fun HomeScreen(
         else -> ui.section
     }
     var railExpanded by rememberSaveable { mutableStateOf(false) }
+    // Se abrió el menú de TV: al cerrarlo el foco vuelve un paso (ver el efecto de foco de abajo).
+    var railWasOpen by remember { mutableStateOf(false) }
     val pillVisible = rememberSaveable { mutableStateOf(true) }
     val catalogFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
@@ -290,6 +320,15 @@ fun HomeScreen(
     var lastLeftKeyAt by remember { mutableStateOf(0L) }
     var menuItem by remember { mutableStateOf<BrowseItem?>(null) }
     var focusedItem by remember { mutableStateOf<BrowseItem?>(null) }
+    var focusedContinue by remember { mutableStateOf<ContinueItem?>(null) }
+    val onFocusItem: (BrowseItem) -> Unit = {
+        focusedItem = it
+        focusedContinue = null
+    }
+    val onFocusContinue: (ContinueItem) -> Unit = {
+        focusedContinue = it
+        focusedItem = null
+    }
     // Póster enfocado al salir a la ficha: al volver (Inicio se recrea) se le devuelve el foco en TV.
     // No es un estado observable: cambiar de póster no debe recomponer el catálogo entero.
     val focusHolder = rememberSaveable(saver = FocusHolder.Saver) { FocusHolder() }
@@ -311,6 +350,7 @@ fun HomeScreen(
     }
 
     fun setRailExpanded(value: Boolean) {
+        if (value) railWasOpen = true
         railExpanded = value
     }
 
@@ -363,14 +403,24 @@ fun HomeScreen(
     // Al volver de otra pantalla además se espera a que termine la transición (RESUMED): al
     // quitarse la pantalla anterior Android le devuelve el foco a la vista y el catálogo queda
     // "con foco" sin ningún póster enfocado, así que esa primera vez no se confía en catalogHasFocus.
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val summaryReady = if (showSummary) viewModel.summaryContent.collectAsState().value.ready else false
     val shownStale = if (showSummary) !summaryReady else contentStale
     LaunchedEffect(railExpanded, shownStale, showSummary) {
         if (!railExpanded && !shownStale && profile.isTv) {
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
             withFrameNanos { }
-            if (focusRestored && catalogHasFocus) return@LaunchedEffect
+            if (focusRestored && catalogHasFocus) {
+                railWasOpen = false
+                return@LaunchedEffect
+            }
+            // Derecha o Atrás en el menú de TV vuelven un paso: a la columna de categorías si la hay.
+            if (railWasOpen) {
+                railWasOpen = false
+                if (focusRestored && tvCategoryColumn) {
+                    tvCatsFocusRequests++
+                    return@LaunchedEffect
+                }
+            }
             // Recorriendo la columna de categorías el contenido cambia solo: el foco se queda en ella.
             if (focusRestored && tvCatsHaveFocus && !contentFocusPending) return@LaunchedEffect
             contentFocusPending = false
@@ -447,15 +497,23 @@ fun HomeScreen(
         viewModel.showSummary()
     }
 
-    fun goHome() {
+    /** TV: muestra Inicio detrás del menú, que sigue abierto. */
+    fun showTvHome() {
         if (searchOpen) searchOpen = false
         tvHomeChosen = true
-        setRailExpanded(false)
         viewModel.showSummary()
     }
 
+    fun goHome() {
+        showTvHome()
+        setRailExpanded(false)
+    }
+
     val onItemClick: (BrowseItem) -> Unit = onOpen
-    val onItemLongClick: (BrowseItem) -> Unit = { menuItem = it }
+    // Dejar presionado agrega o quita de Mi lista; el menú completo va con la tecla Menú.
+    val onItemLongClick: (BrowseItem) -> Unit = viewModel::toggleFavorite
+    // En "Seguir viendo" dejar presionado abre el menú: ahí sirve quitarlo o empezar de nuevo.
+    val openContinueMenu: (ContinueItem) -> Unit = { item -> viewModel.browseItemFor(item) { menuItem = it } }
 
     /** Las categorías de adultos bloqueadas piden el PIN antes de abrirse. */
     fun openCategory(name: String?) {
@@ -509,15 +567,25 @@ fun HomeScreen(
         }
     }
 
+    val lastRepeatAt = remember { longArrayOf(0L) }
+    val repeatGapMs = if (profile.lowRam) KEY_REPEAT_GAP_LOW_RAM_MS else KEY_REPEAT_GAP_MS
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) }
-    ) { padding ->
+    ) { padding -> CompositionLocalProvider(LocalFavoriteKeys provides favorites) {
         Box(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .onPreviewKeyEvent { e ->
+                    // Con la flecha apretada el control repite unas 20 veces por segundo, más de lo
+                    // que un TV alcanza a dibujar: las pulsaciones se acumulan y el foco se pasa de largo.
+                    if (profile.isTv && e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount > 0 && e.key in DPAD_KEYS) {
+                        val at = e.nativeKeyEvent.eventTime
+                        if (at - lastRepeatAt[0] < repeatGapMs) return@onPreviewKeyEvent true
+                        lastRepeatAt[0] = at
+                    }
                     if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft) lastLeftKeyAt = SystemClock.uptimeMillis()
                     false
                 }
@@ -549,7 +617,7 @@ fun HomeScreen(
                     headerFocus = headerFocus,
                     showClock = showClock,
                     lastUpdate = lastUpdateLabel(lastRefreshAt),
-                    sortOptions = if (profile.isTv && content.grid && !contentStale && content.rows.sumOf { it.items.size } > 1) {
+                    sortOptions = if (content.grid && !contentStale && content.rows.sumOf { it.items.size } > 1) {
                         content.sortOptions
                     } else emptyList(),
                     sort = ui.sort,
@@ -651,7 +719,8 @@ fun HomeScreen(
                             locked = content.lockedCategories,
                             myListCount = if (fresh) content.myListCount else 0,
                             selected = ui.category,
-                            focusRequests = tvCatsFocusRequests,
+                            // Con el menú abierto la sección puede cambiar detrás: la que aparece no se lleva el foco.
+                            focusRequests = if (railExpanded) 0 else tvCatsFocusRequests,
                             onSelect = viewModel::selectCategory,
                             onOpenLocked = ::openCategory,
                             onRight = ::focusTvContent,
@@ -698,8 +767,10 @@ fun HomeScreen(
                         .onPreviewKeyEvent { event ->
                             when {
                                 // Tecla Menú del control: abre el menú del póster enfocado.
-                                event.type == KeyEventType.KeyUp && event.key == Key.Menu -> {
-                                    focusedItem?.let { menuItem = it }
+                                event.key == Key.Menu -> {
+                                    if (event.type == KeyEventType.KeyUp) {
+                                        focusedContinue?.let(openContinueMenu) ?: focusedItem?.let { menuItem = it }
+                                    }
                                     true
                                 }
                                 tvNav != null && tvNav.handles(event.key) -> {
@@ -734,11 +805,13 @@ fun HomeScreen(
                                 bottomSpace = bottomSpace,
                                 focusMemory = focusMemory,
                                 tvNav = tvNav,
-                                onFocusItem = { focusedItem = it },
+                                onFocusItem = onFocusItem,
                                 onClick = onItemClick,
                                 onLongClick = onItemLongClick,
                                 onPlayContinue = ::playContinue,
                                 onRemoveContinue = viewModel::removeFromContinue,
+                                onContinueMenu = openContinueMenu,
+                                onFocusContinue = onFocusContinue,
                                 onSeeAll = { row ->
                                     when (row.title) {
                                         SUMMARY_MOVIES -> viewModel.openSection(Section.MOVIES, RECENT_ROW)
@@ -764,7 +837,7 @@ fun HomeScreen(
                             onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
                             onFullscreen = { onPlayLiveFullscreen(it.id) },
                             canTakeFocus = !railExpanded,
-                            focusRequests = liveFocusRequests,
+                            focusRequests = if (railExpanded) 0 else liveFocusRequests,
                             onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } },
                             onOpenGuide = { category -> ui.selectedPlaylistId?.let { onOpenGuide(it, category) } },
                             onCategoryShown = { liveCategory = it },
@@ -795,18 +868,16 @@ fun HomeScreen(
                             },
                             showBack = ui.category != null && !tvCategoryColumn,
                             onBack = { viewModel.selectCategory(null) },
-                            // TV: sin título ni chips; el orden va en el botón de la cabecera.
+                            // El orden va en el botón de la cabecera; en TV tampoco hay título.
                             showTitle = !profile.isTv || !tvCategoryColumn,
-                            showSortChips = !profile.isTv,
                             stateKey = "${ui.section}|${ui.category}|${ui.query.trim()}",
                             sort = ui.sort,
-                            onSort = viewModel::selectSort,
                             bottomSpace = bottomSpace,
                             focusMemory = focusMemory,
                             tvNav = tvNav,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
-                            onFocusItem = { focusedItem = it },
+                            onFocusItem = onFocusItem,
                             modifier = catalogModifier,
                             listView = if (profile.isTv) null else gridSection.name in listViewSections,
                             onListViewChange = { viewModel.setListView(gridSection, it) },
@@ -825,9 +896,11 @@ fun HomeScreen(
                             tvNav = tvNav,
                             onClick = onItemClick,
                             onLongClick = onItemLongClick,
-                            onFocusItem = { focusedItem = it },
+                            onFocusItem = onFocusItem,
                             onPlayContinue = ::playContinue,
                             onRemoveContinue = viewModel::removeFromContinue,
+                                onContinueMenu = openContinueMenu,
+                                onFocusContinue = onFocusContinue,
                             onSeeAll = { row -> openCategory(row.title) },
                             modifier = catalogModifier
                         )
@@ -850,14 +923,13 @@ fun HomeScreen(
                     selectedCategory = ui.category,
                     showCategories = !searching && !showSummary,
                     myListCount = if (contentStale) 0 else content.myListCount,
-                    // En TV cada sección trae sus categorías en pantalla: el menú es solo de secciones.
-                    tvMenuOnlySections = if (profile.isTv) Section.entries.toSet() else emptySet(),
                     expanded = railExpanded,
                     pillVisible = pillVisible.value,
                     onExpandedChange = ::setRailExpanded,
                     onSearch = ::openSearch,
                     summaryActive = showSummary,
                     onHome = ::goHome,
+                    onHomePreview = ::showTvHome,
                     onSection = {
                         if (searchOpen) {
                             viewModel.onQueryChange("")
@@ -893,10 +965,10 @@ fun HomeScreen(
                 )
             }
         }
-    }
+    } }
 
     menuItem?.let { item ->
-        val inList = item.key in favorites
+        val inList = item.key in favorites.value
         val inProgress = continueWatching.any { it.key == item.key }
         val actions = buildList {
             add(ContentAction(Icons.Default.PlayArrow, stringResource(if (inProgress) R.string.home_continue_watching else R.string.home_action_play)) {
@@ -1324,6 +1396,8 @@ private fun CatalogRows(
     onFocusItem: (BrowseItem) -> Unit,
     onPlayContinue: (ContinueItem) -> Unit,
     onRemoveContinue: (ContinueItem) -> Unit,
+    onContinueMenu: (ContinueItem) -> Unit,
+    onFocusContinue: (ContinueItem) -> Unit,
     onSeeAll: (ContentRow) -> Unit,
     modifier: Modifier
 ) {
@@ -1363,6 +1437,8 @@ private fun CatalogRows(
                     focusMemory = focusMemory,
                     onPlay = onPlayContinue,
                     onRemove = onRemoveContinue,
+                    onMenu = onContinueMenu,
+                    onFocusItem = onFocusContinue,
                     tvNav = tvNav,
                     navKey = "continue"
                 )
@@ -1431,6 +1507,8 @@ private fun PhoneSummary(
     onLongClick: (BrowseItem) -> Unit,
     onPlayContinue: (ContinueItem) -> Unit,
     onRemoveContinue: (ContinueItem) -> Unit,
+    onContinueMenu: (ContinueItem) -> Unit,
+    onFocusContinue: (ContinueItem) -> Unit,
     onSeeAll: (ContentRow) -> Unit,
     modifier: Modifier
 ) {
@@ -1463,6 +1541,8 @@ private fun PhoneSummary(
                             focusMemory = focusMemory,
                             onPlay = onPlayContinue,
                             onRemove = onRemoveContinue,
+                            onMenu = onContinueMenu,
+                            onFocusItem = onFocusContinue,
                             tvNav = tvNav,
                             navKey = "continue"
                         )
@@ -1501,10 +1581,8 @@ private fun CatalogGrid(
     showBack: Boolean,
     onBack: () -> Unit,
     showTitle: Boolean,
-    showSortChips: Boolean,
     stateKey: String,
     sort: SortOrder?,
-    onSort: (SortOrder) -> Unit,
     bottomSpace: Dp,
     focusMemory: FocusMemory,
     tvNav: TvCatalogNav?,
@@ -1522,9 +1600,8 @@ private fun CatalogGrid(
     val total = content.rows.sumOf { it.items.size }
     val multiSection = content.rows.count { it.items.isNotEmpty() } > 1
     val list = listView == true
-    val sortChips = showSortChips && content.sortOptions.size > 1 && total > 1
     // Cada encabezado ocupa un renglón entero: la primera fila de pósters va después de ellos.
-    val firstItemLine = listOf(showTitle, sortChips, multiSection).count { it }
+    val firstItemLine = listOf(showTitle, multiSection).count { it }
     LazyVerticalGrid(
         columns = if (list) GridCells.Fixed(1) else GridCells.Adaptive(minSize = profile.posterWidth),
         state = gridState,
@@ -1562,23 +1639,6 @@ private fun CatalogGrid(
                         Icon(
                             if (listView) Icons.Default.GridView else Icons.AutoMirrored.Filled.ViewList,
                             contentDescription = stringResource(if (listView) R.string.home_view_grid else R.string.home_view_list)
-                        )
-                    }
-                }
-            }
-        }
-        if (sortChips) {
-            item(key = "sort", span = { GridItemSpan(maxLineSpan) }) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, tint = EntreBrand.TextDim, modifier = Modifier.size(18.dp))
-                    content.sortOptions.forEach { order ->
-                        FilterChip(
-                            selected = sort == order,
-                            onClick = { onSort(order) },
-                            label = { Text(order.label) },
-                            leadingIcon = if (sort == order) {
-                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null
                         )
                     }
                 }
@@ -1667,7 +1727,7 @@ private fun Top10Row(
     tvNav: TvCatalogNav? = null,
     navKey: String = ""
 ) {
-    val rowState = rememberTvRowState(tvNav, navKey)
+    val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
         RowHeader(title, profile, onSeeAll = null)
         LazyRow(
@@ -1755,7 +1815,7 @@ private fun HomeHeader(
     headerFocus: FocusRequester = remember { FocusRequester() },
     showClock: Boolean = false,
     lastUpdate: String = "",
-    /** TV: órdenes de la cuadrícula visible; vacío = sin botón de ordenar. */
+    /** Órdenes de la cuadrícula visible; vacío = sin botón de ordenar. */
     sortOptions: List<SortOrder> = emptyList(),
     sort: SortOrder? = null,
     onSort: (SortOrder) -> Unit = {}
@@ -1877,10 +1937,12 @@ private fun ContinueWatchingRow(
     focusMemory: FocusMemory,
     onPlay: (ContinueItem) -> Unit,
     onRemove: (ContinueItem) -> Unit,
+    onMenu: (ContinueItem) -> Unit,
+    onFocusItem: (ContinueItem) -> Unit,
     tvNav: TvCatalogNav? = null,
     navKey: String = ""
 ) {
-    val rowState = rememberTvRowState(tvNav, navKey)
+    val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
         RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = null)
         LazyRow(
@@ -1894,9 +1956,13 @@ private fun ContinueWatchingRow(
                     profile = profile,
                     item = item,
                     modifier = focusMemory.modifierFor(memoryKey).tvNavItem(tvNav, navKey, index),
-                    onFocused = { focusMemory.onFocused(memoryKey) },
+                    onFocused = {
+                        focusMemory.onFocused(memoryKey)
+                        onFocusItem(item)
+                    },
                     onPlay = { onPlay(item) },
-                    onRemove = { onRemove(item) }
+                    onRemove = { onRemove(item) },
+                    onMenu = { onMenu(item) }
                 )
             }
         }
@@ -1910,6 +1976,7 @@ private fun remainingLabel(ms: Long): String {
     else stringResource(R.string.home_remaining_hours, minutes / 60, minutes % 60)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ContinueCard(
     profile: DeviceProfile,
@@ -1917,22 +1984,29 @@ private fun ContinueCard(
     modifier: Modifier,
     onFocused: () -> Unit,
     onPlay: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onMenu: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val scale by animateFocusScale(focused, 1.05f, "continueScale")
     LaunchedEffect(focused) { if (focused) onFocused() }
 
+    val shape = RoundedCornerShape(12.dp)
     Card(
-        onClick = onPlay,
-        shape = RoundedCornerShape(12.dp),
+        shape = shape,
         colors = CardDefaults.cardColors(containerColor = EntreBrand.Panel),
         border = if (focused) BorderStroke(3.dp, EntreBrand.Accent) else null,
-        interactionSource = source,
         modifier = modifier
             .width(profile.continueWidth)
             .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(shape)
+            .combinedClickable(
+                interactionSource = source,
+                indication = LocalIndication.current,
+                onLongClick = onMenu,
+                onClick = onPlay
+            )
     ) {
         Box(
             Modifier
@@ -2020,7 +2094,7 @@ private fun CatalogRow(
     tvNav: TvCatalogNav? = null,
     navKey: String = ""
 ) {
-    val rowState = rememberTvRowState(tvNav, navKey)
+    val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
         // En TV "Ver todo" va como tarjeta al final de la fila: en el encabezado atraía el foco.
         RowHeader(row.label.asString(), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
@@ -2067,10 +2141,15 @@ private fun CatalogRow(
     }
 }
 
-/** Estado horizontal de una fila, registrado en [tvNav] para las flechas arriba/abajo. */
+/**
+ * Estado horizontal de una fila, registrado en [tvNav] para las flechas arriba/abajo. Cuando la
+ * lista de filas arma por adelantado la fila siguiente, arma también sus primeros [prefetch]
+ * pósters: las imágenes empiezan a bajar antes de llegar.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun rememberTvRowState(tvNav: TvCatalogNav?, navKey: String): LazyListState {
-    val state = rememberLazyListState()
+private fun rememberTvRowState(tvNav: TvCatalogNav?, navKey: String, prefetch: Int): LazyListState {
+    val state = rememberLazyListState(prefetchStrategy = remember(prefetch) { LazyListPrefetchStrategy(nestedPrefetchItemCount = prefetch) })
     if (tvNav != null) {
         DisposableEffect(tvNav, navKey, state) {
             tvNav.registerRow(navKey, state)
@@ -2206,16 +2285,16 @@ private fun PosterCard(
         Box(
             imageBox
                 .clip(shape)
-                .background(
-                    if (isLive) Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
-                    else Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.PanelHigh))
+                .then(
+                    if (isLive && !profile.lowRam) Modifier.background(LIVE_CARD_BRUSH)
+                    else Modifier.background(EntreBrand.PanelHigh)
                 )
                 .then(if (focused) Modifier.border(3.dp, EntreBrand.Accent, shape) else Modifier),
             contentAlignment = Alignment.Center
         ) {
             if (item.imageUrl.isNotEmpty()) {
                 AsyncImage(
-                    model = item.imageUrl,
+                    model = remember(item.imageUrl) { cardImage(item.imageUrl) },
                     contentDescription = item.title,
                     modifier = if (isLive) Modifier.fillMaxSize().padding(8.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop
@@ -2237,6 +2316,7 @@ private fun PosterCard(
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
+            if (rememberIsFavorite(item.key)) FavoriteBadge(Modifier.align(Alignment.TopEnd).padding(6.dp))
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -2289,7 +2369,7 @@ private fun ListItemCard(
         ) {
             if (item.imageUrl.isNotEmpty()) {
                 AsyncImage(
-                    model = item.imageUrl,
+                    model = remember(item.imageUrl) { cardImage(item.imageUrl) },
                     contentDescription = null,
                     modifier = if (isLive) Modifier.fillMaxSize().padding(4.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop
@@ -2311,6 +2391,34 @@ private fun ListItemCard(
                 Text(it, style = MaterialTheme.typography.labelSmall, color = EntreBrand.TextDim)
             }
         }
+        if (rememberIsFavorite(item.key)) FavoriteBadge(Modifier.padding(horizontal = 8.dp))
+    }
+}
+
+/** Favoritos del perfil como estado: cada póster lee solo si el suyo está. */
+val LocalFavoriteKeys = staticCompositionLocalOf<State<Set<String>>> { mutableStateOf(emptySet()) }
+
+@Composable
+private fun rememberIsFavorite(key: String): Boolean {
+    val favorites = LocalFavoriteKeys.current
+    return remember(key, favorites) { derivedStateOf { key in favorites.value } }.value
+}
+
+/** Corazón rojo pequeño sobre un círculo oscuro. */
+@Composable
+private fun FavoriteBadge(modifier: Modifier = Modifier) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(24.dp)
+            .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+    ) {
+        Icon(
+            Icons.Default.Favorite,
+            contentDescription = stringResource(R.string.home_in_my_list),
+            tint = Color(0xFFE53935),
+            modifier = Modifier.size(14.dp)
+        )
     }
 }
 

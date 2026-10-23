@@ -258,6 +258,7 @@ private fun ProfileGrid(
                     kids = p.isKids,
                     locked = p.hasPin,
                     editing = manage,
+                    current = !manage && p.id == focusId,
                     size = tile,
                     modifier = if (p.id == focusId) Modifier.focusRequester(focus) else Modifier,
                     onClick = { if (manage) onEdit(p) else onChoose(p) }
@@ -293,11 +294,14 @@ private fun ProfileTile(
     editing: Boolean,
     size: Dp,
     modifier: Modifier = Modifier,
+    /** Último perfil usado: en el celular no hay foco que lo señale. */
+    current: Boolean = false,
     onClick: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val scale by animateFocusScale(focused, 1.08f, "profileTile")
+    val highlighted = focused || current
     val shape = RoundedCornerShape(18.dp)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -313,7 +317,13 @@ private fun ProfileTile(
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(shape)
                 .background(profileColor(avatar))
-                .then(if (focused) Modifier.border(3.dp, Color.White, shape) else Modifier)
+                .then(
+                    when {
+                        focused -> Modifier.border(3.dp, Color.White, shape)
+                        current -> Modifier.border(3.dp, EntreBrand.Accent, shape)
+                        else -> Modifier
+                    }
+                )
         ) {
             Text(initialOf(name), color = Color.White, fontSize = (size.value * 0.42f).sp, fontWeight = FontWeight.Black)
             if (editing) {
@@ -332,9 +342,9 @@ private fun ProfileTile(
         Spacer(Modifier.height(10.dp))
         Text(
             name,
-            color = if (focused) Color.White else EntreBrand.TextDim,
+            color = if (highlighted) Color.White else EntreBrand.TextDim,
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
+            fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )

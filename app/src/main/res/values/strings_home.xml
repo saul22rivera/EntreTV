@@ -160,4 +160,19 @@
     <string name="home_refresh_reason_http">error %1$d del servidor</string>
     <string name="home_refresh_reason_offline">sin conexión con el servidor</string>
     <string name="home_refresh_reason_unknown">error desconocido</string>
+    <string name="home_catalog_updated">Lista actualizada</string>
+    <string name="home_catalog_updated_news">Lista actualizada: %1$s</string>
+    <plurals name="home_new_movies">
+        <item quantity="one">+%1$d película</item>
+        <item quantity="other">+%1$d películas</item>
+    </plurals>
+    <plurals name="home_new_series">
+        <item quantity="one">+%1$d serie</item>
+        <item quantity="other">+%1$d series</item>
+    </plurals>
+    <plurals name="home_new_channels">
+        <item quantity="one">+%1$d canal</item>
+        <item quantity="other">+%1$d canales</item>
+    </plurals>
+    <string name="home_in_my_list">En Mi lista</string>
 </resources>

@@ -2,6 +2,7 @@ package com.entretv.app.data.profile
 
 import androidx.room.withTransaction
 import com.entretv.app.data.local.AppDatabase
+import com.entretv.app.data.local.DEFAULT_PROFILE_ID
 import com.entretv.app.data.local.FavoriteDao
 import com.entretv.app.data.local.ProfileDao
 import com.entretv.app.data.local.ProfileEntity
@@ -103,6 +104,20 @@ class ProfileRepository @Inject constructor(
             if (id == session.activeId.value) session.activate(updated)
             updated
         }
+
+    /**
+     * El perfil creado al actualizar (o con la instalación) toma el nombre escrito al iniciar
+     * sesión. Un perfil que ya tiene nombre no se toca.
+     */
+    suspend fun nameDefaultProfile(name: String) = withContext(Dispatchers.IO) {
+        val clean = name.trim().take(NAME_MAX)
+        if (clean.isEmpty()) return@withContext
+        val current = dao.get(DEFAULT_PROFILE_ID) ?: return@withContext
+        if (current.name.isNotBlank()) return@withContext
+        val updated = current.copy(name = clean)
+        dao.upsert(updated)
+        if (updated.id == session.activeId.value) session.activate(updated)
+    }
 
     /** Borra el perfil con su progreso y Mi lista. El último no se puede borrar. */
     suspend fun delete(id: String): Boolean = withContext(Dispatchers.IO) {

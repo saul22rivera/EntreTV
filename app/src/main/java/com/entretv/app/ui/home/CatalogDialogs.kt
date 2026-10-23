@@ -307,9 +307,10 @@ fun SettingsPanel(
             SectionTitle(stringResource(R.string.settings_section_catalog))
             SettingLabel(stringResource(R.string.settings_refresh), stringResource(R.string.settings_refresh_desc))
             listOf(
-                SettingsRepository.REFRESH_ALWAYS to R.string.settings_refresh_always,
                 SettingsRepository.REFRESH_DAILY to R.string.settings_refresh_daily,
-                SettingsRepository.REFRESH_TWICE_DAILY to R.string.settings_refresh_twice
+                SettingsRepository.REFRESH_THRICE_DAILY to R.string.settings_refresh_thrice,
+                SettingsRepository.REFRESH_AUTO to R.string.settings_refresh_auto,
+                SettingsRepository.REFRESH_MANUAL to R.string.settings_refresh_manual
             ).forEach { (mode, label) ->
                 RadioLine(stringResource(label), refreshMode == mode) { onRefreshModeChange(mode) }
             }

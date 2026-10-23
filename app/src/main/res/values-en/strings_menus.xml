@@ -75,11 +75,12 @@
     <string name="settings_max_buffer_60">60 s · unstable connections; live TV runs a bit further behind</string>
 
     <string name="settings_section_catalog">Catalog</string>
-    <string name="settings_refresh">Refresh the catalog on open</string>
-    <string name="settings_refresh_desc">Downloading the full list takes a while and can make video stutter meanwhile.</string>
-    <string name="settings_refresh_always">Every time you open the app</string>
-    <string name="settings_refresh_daily">Once a day (the first time you open it after 9:00 AM)</string>
-    <string name="settings_refresh_twice">Twice a day (after 9:00 AM and after 9:00 PM)</string>
+    <string name="settings_refresh">Refresh the catalog</string>
+    <string name="settings_refresh_desc">It refreshes in the background while you keep watching; nothing unchanged is saved again.</string>
+    <string name="settings_refresh_daily">Once a day (the first time you open it)</string>
+    <string name="settings_refresh_thrice">Three times a day (12:00 AM, 8:00 AM and 9:00 AM)</string>
+    <string name="settings_refresh_auto">Automatic and quiet (every 3 h on Wi‑Fi, without interrupting what you watch)</string>
+    <string name="settings_refresh_manual">Manual only</string>
     <string name="settings_refresh_now">Refresh now</string>
     <string name="settings_default_sort">Default order</string>
     <string name="settings_default_sort_desc">“Original” keeps the order your provider sends.</string>

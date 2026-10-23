@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 
@@ -88,9 +89,12 @@ class TvLiveViewModel @Inject constructor(
     }
 
     /** Canal que suena en el mini reproductor (o el que quedó al volver de pantalla completa). */
-    val playing: StateFlow<ChannelEntity?> = combine(playerManager.currentKey, channels) { key, all ->
-        key?.let { all.byId[it] }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val playing: StateFlow<ChannelEntity?> = combine(playerManager.currentKey, channels) { key, all -> key to all }
+        .scan(null as ChannelEntity?) { prev, (key, all) ->
+            // Si una actualización de la lista quita el canal que suena, el mini reproductor lo sigue mostrando.
+            key?.let { all.byId[it] ?: prev?.takeIf { p -> p.id == it } }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val focused = MutableStateFlow<ChannelEntity?>(null)
 

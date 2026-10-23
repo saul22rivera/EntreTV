@@ -43,6 +43,9 @@ interface ChannelDao {
     @Query("SELECT COUNT(*) FROM channels WHERE playlistId = :playlistId")
     suspend fun count(playlistId: String): Int
 
+    @Query("SELECT id FROM channels WHERE playlistId = :playlistId")
+    suspend fun ids(playlistId: String): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(channels: List<ChannelEntity>)
 
@@ -80,6 +83,12 @@ interface VodDao {
 
     @Query("SELECT COUNT(*) FROM series WHERE playlistId = :playlistId")
     suspend fun countSeries(playlistId: String): Int
+
+    @Query("SELECT id FROM vod_movies WHERE playlistId = :playlistId")
+    suspend fun movieIds(playlistId: String): List<String>
+
+    @Query("SELECT id FROM series WHERE playlistId = :playlistId")
+    suspend fun seriesIds(playlistId: String): List<String>
 
     @Query("SELECT * FROM series WHERE playlistId = :playlistId")
     suspend fun getSeriesList(playlistId: String): List<SeriesEntity>

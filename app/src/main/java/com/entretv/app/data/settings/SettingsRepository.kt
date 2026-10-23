@@ -17,6 +17,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -117,10 +118,18 @@ class SettingsRepository @Inject constructor(
         const val FRAME_RATE_OFF = 0
         const val FRAME_RATE_AUTO = 1
 
-        /** Actualización del catálogo al entrar a la app. */
-        const val REFRESH_ALWAYS = 0
+        /** Actualización del catálogo: la primera vez que se entra cada día (corte a medianoche). */
         const val REFRESH_DAILY = 1
-        const val REFRESH_TWICE_DAILY = 2
+        /** Primera vez del día y otra vez después de cada corte de [PlaylistRepository.THRICE_CUTOFF_HOURS]. */
+        const val REFRESH_THRICE_DAILY = 3
+        /** Primera vez del día y cada 3 h con la app abierta, sin reproducir y con Wi‑Fi o cable. */
+        const val REFRESH_AUTO = 4
+        /** Solo con el botón Actualizar. */
+        const val REFRESH_MANUAL = 5
+        val REFRESH_MODES = listOf(REFRESH_DAILY, REFRESH_THRICE_DAILY, REFRESH_AUTO, REFRESH_MANUAL)
+        // Opciones de la 1.3.0: "Siempre" (0) y "Dos veces al día" (2) pasan a la automática.
+        private const val LEGACY_ALWAYS = 0
+        private const val LEGACY_TWICE_DAILY = 2
 
         private val KEY_REFRESH_MODE = intPreferencesKey("refresh_mode")
         private val KEY_BUFFER_SECONDS = intPreferencesKey("start_buffer_seconds")
@@ -197,7 +206,13 @@ class SettingsRepository @Inject constructor(
     fun lastRefreshFlow(playlistId: String): Flow<Long> =
         context.settingsStore.data.map { it[lastRefreshKey(playlistId)] ?: 0L }
 
-    val refreshMode: Flow<Int> = context.settingsStore.data.map { it[KEY_REFRESH_MODE] ?: REFRESH_DAILY }
+    val refreshMode: Flow<Int> = context.settingsStore.data.map {
+        when (val mode = it[KEY_REFRESH_MODE]) {
+            LEGACY_ALWAYS, LEGACY_TWICE_DAILY -> REFRESH_AUTO
+            in REFRESH_MODES -> mode!!
+            else -> REFRESH_DAILY
+        }
+    }.distinctUntilChanged()
 
     suspend fun setRefreshMode(mode: Int) {
         context.settingsStore.edit { it[KEY_REFRESH_MODE] = mode }

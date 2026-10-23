@@ -2,6 +2,9 @@ package com.entretv.app.ui.home
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -65,12 +68,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -78,6 +83,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -102,6 +108,7 @@ import com.entretv.app.ui.label
 import com.entretv.app.ui.rowLabel
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
+import kotlinx.coroutines.delay
 
 /** Ancho de la tira de íconos siempre visible en TV y tablet. */
 val RAIL_COLLAPSED_WIDTH = 64.dp
@@ -150,8 +157,8 @@ fun NavRail(
     onStrayStripFocus: () -> Unit = {},
     summaryActive: Boolean = false,
     onHome: () -> Unit = {},
-    /** TV: secciones sin panel de categorías (En vivo las trae en pantalla); abren el menú principal. */
-    tvMenuOnlySections: Set<Section> = emptySet(),
+    /** TV: quedarse sobre Inicio en el menú lo muestra detrás, sin cerrar el menú. */
+    onHomePreview: () -> Unit = {},
     /** "Perfil: …" en el menú; null = sin perfiles. */
     profileLabel: String? = null,
     profileTint: Color? = null,
@@ -161,7 +168,8 @@ fun NavRail(
     BackHandler(enabled = expanded) { onExpandedChange(false) }
 
     Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible = expanded, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
+        // En TV sin velo: el contenido sigue a la vista mientras se recorre el menú.
+        AnimatedVisibility(visible = expanded && !profile.isTv, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -199,31 +207,24 @@ fun NavRail(
             )
         }
 
+        // En TV el panel se descubre solo (ver TvExpandedPanel) y se quita al instante.
         AnimatedVisibility(
             visible = expanded,
             modifier = Modifier.align(Alignment.CenterStart),
-            enter = slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 3 } + fadeIn(tween(200)),
-            exit = slideOutHorizontally(tween(200, easing = FastOutSlowInEasing)) { -it / 3 } + fadeOut(tween(160))
+            enter = if (profile.isTv) EnterTransition.None
+            else slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 3 } + fadeIn(tween(200)),
+            exit = if (profile.isTv) ExitTransition.None
+            else slideOutHorizontally(tween(200, easing = FastOutSlowInEasing)) { -it / 3 } + fadeOut(tween(160))
         ) {
             if (profile.isTv) TvExpandedPanel(
-                menuOnlySections = tvMenuOnlySections,
                 section = section,
                 searchActive = searchActive,
                 summaryActive = summaryActive,
                 onHome = { onExpandedChange(false); onHome() },
-                categories = categories,
-                categoryCounts = categoryCounts,
-                categoryLabels = categoryLabels,
-                lockedCategories = lockedCategories,
-                selectedCategory = selectedCategory,
-                showCategories = showCategories,
-                myListCount = myListCount,
+                onHomePreview = onHomePreview,
                 onCollapse = { onExpandedChange(false) },
                 onSearch = { onExpandedChange(false); onSearch() },
                 onSection = onSection,
-                onCategory = { onExpandedChange(false); onCategory(it) },
-                onCategoryMenu = { onExpandedChange(false); onCategoryMenu(it) },
-                onOrganize = { onExpandedChange(false); onOrganize() },
                 onSettings = { onExpandedChange(false); onSettings() },
                 onDownloads = onDownloads,
                 profileLabel = profileLabel,
@@ -508,84 +509,71 @@ private fun ExpandedPanel(
     }
 }
 
-private enum class TvLevel { CATEGORIES, MENU }
+/** Ancho del menú de TV ya abierto: la tira con los nombres al lado. */
+private val TV_PANEL_WIDTH = 252.dp
+private const val TV_REVEAL_MS = 140
+
+/** Tiempo quieto sobre una sección del menú de TV antes de mostrarla detrás. */
+private const val SECTION_DWELL_MS = 250L
 
 /**
- * Panel de TV en dos niveles para no amontonar todo: la izquierda desde el catálogo abre el
- * menú principal (Buscar, Inicio, secciones, Descargas y Configuración) y la derecha vuelve
- * siempre al contenido; sobre otra sección, la abre. OK sobre una sección (o "Categorías")
- * abre sus categorías con el foco en "Todas"; izquierda o Atrás desde ahí vuelve al menú.
+ * Menú de TV: la tira de íconos se ensancha para mostrar los nombres, sin velo encima del
+ * contenido. Quedarse sobre Inicio o una sección la muestra detrás, sin OK (como Google TV);
+ * derecha o Atrás vuelven. Las categorías no se repiten aquí: cada sección las trae en pantalla.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun TvExpandedPanel(
-    menuOnlySections: Set<Section>,
     section: Section,
     searchActive: Boolean,
     summaryActive: Boolean,
     onHome: () -> Unit,
-    categories: List<String>,
-    categoryCounts: Map<String, Int>,
-    categoryLabels: Map<String, String>,
-    lockedCategories: Set<String>,
-    selectedCategory: String?,
-    showCategories: Boolean,
-    myListCount: Int,
+    onHomePreview: () -> Unit,
     onCollapse: () -> Unit,
     onSearch: () -> Unit,
     onSection: (Section) -> Unit,
-    onCategory: (String?) -> Unit,
-    onCategoryMenu: (String) -> Unit,
-    onOrganize: () -> Unit,
     onSettings: () -> Unit,
     onDownloads: () -> Unit,
     profileLabel: String?,
     profileTint: Color?,
     onProfile: () -> Unit
 ) {
-    val hasCategories = showCategories && !summaryActive && section !in menuOnlySections
-    var level by remember { mutableStateOf(TvLevel.MENU) }
-    var focusAll by remember { mutableStateOf(false) }
-    // Mientras cambia de nivel el foco pasa por el botón de cerrar: si quedara en un elemento
-    // que desaparece, el panel creería que el foco salió y se cerraría.
-    var switching by remember { mutableStateOf(true) }
+    // Hasta que el foco llega al elemento elegido, perderlo no cierra el panel.
+    var settled by remember { mutableStateOf(false) }
     var hadFocus by remember { mutableStateOf(false) }
-    val anchor = remember { FocusRequester() }
-    val levelFocus = remember { FocusRequester() }
+    val firstFocus = remember { FocusRequester() }
+    val reveal = remember { Animatable(0f) }
 
-    LaunchedEffect(level) {
-        // Dos frames: la lista de categorías se desplaza al elemento antes de enfocarlo.
+    LaunchedEffect(Unit) {
         withFrameNanos { }
+        runCatching { firstFocus.requestFocus() }
         withFrameNanos { }
-        runCatching { levelFocus.requestFocus() }
-        withFrameNanos { }
-        switching = false
+        settled = true
     }
-
-    fun go(to: TvLevel) {
-        if (level == to) return
-        switching = true
-        runCatching { anchor.requestFocus() }
-        level = to
-    }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, tween(TV_REVEAL_MS, easing = FastOutSlowInEasing)) }
 
     var focusedSection by remember { mutableStateOf<Section?>(null) }
     var homeFocused by remember { mutableStateOf(false) }
+    val shown by rememberUpdatedState(section)
+    val summary by rememberUpdatedState(summaryActive)
+    val search by rememberUpdatedState(searchActive)
 
-    fun openSection(s: Section) {
-        onSection(s)
-        if (showCategories && s !in menuOnlySections) {
-            focusAll = true
-            go(TvLevel.CATEGORIES)
-        } else onCollapse()
+    LaunchedEffect(focusedSection, homeFocused) {
+        val target = focusedSection
+        if (target == null && !homeFocused) return@LaunchedEffect
+        delay(SECTION_DWELL_MS)
+        when {
+            homeFocused -> if (!summary || search) onHomePreview()
+            target != null && (target != shown || summary || search) -> onSection(target)
+        }
     }
 
-    /** Derecha en el menú: al contenido de lo enfocado; si es lo que ya se ve, solo cierra. */
+    /** Derecha: al contenido de lo enfocado; si es lo que ya se ve, solo cierra. */
     fun goRight() {
         val target = focusedSection
         when {
-            homeFocused && (!summaryActive || searchActive) -> onHome()
-            target != null && (target != section || summaryActive || searchActive) -> {
+            homeFocused && (!summary || search) -> onHome()
+            target != null && (target != shown || summary || search) -> {
                 onSection(target)
                 onCollapse()
             }
@@ -593,17 +581,22 @@ private fun TvExpandedPanel(
         }
     }
 
+    val stripPx = with(LocalDensity.current) { RAIL_COLLAPSED_WIDTH.toPx() }
     Surface(
-        color = EntreBrand.Panel.copy(alpha = 0.98f),
+        color = EntreBrand.Panel,
         shape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp),
-        shadowElevation = 24.dp,
         modifier = Modifier
-            .width(300.dp)
+            .width(TV_PANEL_WIDTH)
             .fillMaxHeight()
-            .pointerInput(Unit) { detectTapGestures { } }
+            // Se descubre desde el ancho de la tira solo al dibujar: el panel no se vuelve a medir.
+            .drawWithContent {
+                clipRect(right = stripPx + (size.width - stripPx) * reveal.value) {
+                    this@drawWithContent.drawContent()
+                }
+            }
             .onFocusChanged {
                 if (it.hasFocus) hadFocus = true
-                else if (hadFocus && !switching) {
+                else if (hadFocus && settled) {
                     hadFocus = false
                     onCollapse()
                 }
@@ -615,22 +608,16 @@ private fun TvExpandedPanel(
             .onPreviewKeyEvent { event ->
                 val down = event.type == KeyEventType.KeyDown
                 when (event.key) {
-                    Key.DirectionLeft -> {
-                        if (down && level == TvLevel.CATEGORIES) go(TvLevel.MENU)
-                        true
-                    }
+                    // Del otro lado está la tira de íconos, que volvería a abrir el panel.
+                    Key.DirectionLeft -> true
                     // Derecha nunca se deja a la búsqueda por geometría: mandaba el foco al campo
-                    // de búsqueda o a ningún lado. El catálogo recupera su último póster al cerrar.
+                    // de búsqueda o a ningún lado.
                     Key.DirectionRight -> {
-                        if (down) {
-                            if (level == TvLevel.MENU) goRight() else onCollapse()
-                        }
+                        if (down) goRight()
                         true
                     }
                     Key.Back, Key.Escape -> {
-                        if (down) {
-                            if (level == TvLevel.CATEGORIES) go(TvLevel.MENU) else onCollapse()
-                        }
+                        if (down) onCollapse()
                         true
                     }
                     else -> false
@@ -646,7 +633,6 @@ private fun TvExpandedPanel(
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
-                        .focusRequester(anchor)
                         .clickable(onClick = onCollapse)
                 ) {
                     Icon(Icons.AutoMirrored.Filled.MenuOpen, contentDescription = stringResource(R.string.menu_close), tint = EntreBrand.TextDim)
@@ -656,132 +642,42 @@ private fun TvExpandedPanel(
                 icon = Icons.Default.Search,
                 label = stringResource(R.string.menu_search),
                 selected = searchActive,
-                modifier = if (level == TvLevel.MENU && searchActive) Modifier.focusRequester(levelFocus) else Modifier,
+                modifier = if (searchActive) Modifier.focusRequester(firstFocus) else Modifier,
                 onClick = onSearch
             )
-            when (level) {
-                TvLevel.MENU -> {
-                    val homeSelected = summaryActive && !searchActive
-                    PanelItem(
-                        icon = Icons.Default.Home,
-                        label = stringResource(R.string.menu_home),
-                        selected = homeSelected,
-                        modifier = (if (homeSelected) Modifier.focusRequester(levelFocus) else Modifier)
-                            .onFocusChanged { homeFocused = it.isFocused },
-                        onClick = onHome
-                    )
-                    Section.entries.forEach { s ->
-                        val selected = !searchActive && !summaryActive && s == section
-                        PanelItem(
-                            icon = s.icon(),
-                            label = s.label,
-                            selected = selected,
-                            modifier = (if (selected) Modifier.focusRequester(levelFocus) else Modifier)
-                                .onFocusChanged {
-                                    if (it.isFocused) focusedSection = s
-                                    else if (focusedSection == s) focusedSection = null
-                                },
-                            onClick = { openSection(s) }
-                        )
+            val homeSelected = summaryActive && !searchActive
+            PanelItem(
+                icon = Icons.Default.Home,
+                label = stringResource(R.string.menu_home),
+                selected = homeSelected,
+                modifier = (if (homeSelected) Modifier.focusRequester(firstFocus) else Modifier)
+                    .onFocusChanged { homeFocused = it.isFocused },
+                onClick = onHome
+            )
+            Section.entries.forEach { s ->
+                val selected = !searchActive && !summaryActive && s == section
+                PanelItem(
+                    icon = s.icon(),
+                    label = s.label,
+                    selected = selected,
+                    modifier = (if (selected) Modifier.focusRequester(firstFocus) else Modifier)
+                        .onFocusChanged {
+                            if (it.isFocused) focusedSection = s
+                            else if (focusedSection == s) focusedSection = null
+                        },
+                    onClick = {
+                        onSection(s)
+                        onCollapse()
                     }
-                    if (hasCategories) {
-                        PanelItem(
-                            icon = Icons.Default.Menu,
-                            label = stringResource(R.string.menu_categories),
-                            selected = false,
-                            onClick = {
-                                focusAll = false
-                                go(TvLevel.CATEGORIES)
-                            }
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 6.dp))
-                    if (profileLabel != null) {
-                        PanelItem(icon = Icons.Default.AccountCircle, label = profileLabel, selected = false, iconTint = profileTint, onClick = onProfile)
-                    }
-                    PanelItem(icon = Icons.Default.Download, label = stringResource(R.string.menu_downloads), selected = false, onClick = onDownloads)
-                    PanelItem(icon = Icons.Default.Settings, label = stringResource(R.string.menu_settings), selected = false, onClick = onSettings)
-                }
-                TvLevel.CATEGORIES -> {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(start = 12.dp, top = 10.dp, bottom = 4.dp)
-                    ) {
-                        Icon(section.icon(), contentDescription = null, tint = EntreBrand.Accent, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            section.label.uppercase(),
-                            color = EntreBrand.Accent,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            stringResource(R.string.menu_organize),
-                            color = EntreBrand.TextDim,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onOrganize)
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                    val focusTarget = when {
-                        focusAll -> ALL_ROW
-                        selectedCategory == null -> null
-                        selectedCategory == ALL_ROW || selectedCategory == MY_LIST_ROW || selectedCategory in categories -> selectedCategory
-                        else -> null
-                    }
-                    val listState = rememberLazyListState()
-                    LaunchedEffect(Unit) {
-                        val index = when (focusTarget) {
-                            null, ALL_ROW, MY_LIST_ROW -> 0
-                            else -> categories.indexOf(focusTarget) + 3
-                        }
-                        if (index > 0) listState.scrollToItem(index)
-                    }
-                    fun Modifier.target(name: String?): Modifier =
-                        if (name == focusTarget) this.focusRequester(levelFocus) else this
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(bottom = 8.dp)
-                    ) {
-                        item(key = "__home") {
-                            CategoryRow(
-                                stringResource(R.string.menu_featured), 0, selectedCategory == null, icon = Icons.Default.Home,
-                                modifier = Modifier.target(null)
-                            ) { onCategory(null) }
-                        }
-                        item(key = "__all") {
-                            CategoryRow(
-                                stringResource(R.string.menu_all), categoryCounts.values.sum(), selectedCategory == ALL_ROW,
-                                modifier = Modifier.target(ALL_ROW)
-                            ) { onCategory(ALL_ROW) }
-                        }
-                        item(key = "__mylist") {
-                            CategoryRow(
-                                label = stringResource(R.string.menu_my_list),
-                                count = myListCount,
-                                selected = selectedCategory == MY_LIST_ROW,
-                                icon = Icons.Default.Favorite,
-                                modifier = Modifier.target(MY_LIST_ROW)
-                            ) { onCategory(MY_LIST_ROW) }
-                        }
-                        items(categories, key = { it }) { c ->
-                            CategoryRow(
-                                label = categoryLabels[c] ?: rowLabel(c).asString(),
-                                count = categoryCounts[c] ?: 0,
-                                selected = c == selectedCategory,
-                                locked = c in lockedCategories,
-                                onMenu = { onCategoryMenu(c) },
-                                modifier = Modifier.target(c)
-                            ) { onCategory(c) }
-                        }
-                    }
-                }
+                )
             }
+            Spacer(Modifier.weight(1f))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 6.dp))
+            if (profileLabel != null) {
+                PanelItem(icon = Icons.Default.AccountCircle, label = profileLabel, selected = false, iconTint = profileTint, onClick = onProfile)
+            }
+            PanelItem(icon = Icons.Default.Download, label = stringResource(R.string.menu_downloads), selected = false, onClick = onDownloads)
+            PanelItem(icon = Icons.Default.Settings, label = stringResource(R.string.menu_settings), selected = false, onClick = onSettings)
         }
     }
 }

@@ -17,10 +17,10 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 /**
- * Actualiza el catálogo poco después del corte de la mañana (y del de la noche), con la app
- * cerrada: al abrirla ya está al día y no hace falta bajar nada. Usa la misma regla que al
- * entrar, así que si ya se actualizó después del corte no vuelve a bajar. En Android TV
- * después renueva el canal de EntreTV del inicio (una vez por día como mucho).
+ * Actualiza el catálogo con la app cerrada, a las 9:30 y a las 21:30 y solo con Wi‑Fi o cable:
+ * al abrirla ya está al día y no hace falta bajar nada. Usa la misma regla que al entrar
+ * (con "Solo manual" no baja nada), así que si ya se actualizó después del corte no vuelve
+ * a bajar. En Android TV después renueva el canal de EntreTV del inicio (una vez por día como mucho).
  */
 @HiltWorker
 class CatalogSyncWorker @AssistedInject constructor(
@@ -31,7 +31,7 @@ class CatalogSyncWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result =
-        repository.refreshAll(force = false).fold(
+        repository.refreshAll(force = false, light = true).fold(
             onSuccess = {
                 tvHome.refreshChannel(force = false)
                 Result.success()
@@ -40,7 +40,9 @@ class CatalogSyncWorker @AssistedInject constructor(
         )
 
     companion object {
-        private const val WORK_NAME = "catalog-sync"
+        private const val WORK_NAME = "catalog-sync-v2"
+        private const val LEGACY_WORK_NAME = "catalog-sync"
+        private const val RUN_HOUR = 9
         private const val MAX_ATTEMPTS = 3
         private const val RUN_MINUTE = 30
 
@@ -48,16 +50,17 @@ class CatalogSyncWorker @AssistedInject constructor(
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<CatalogSyncWorker>(12, TimeUnit.HOURS)
                 .setInitialDelay(delayToNextRun(System.currentTimeMillis()), TimeUnit.MILLISECONDS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
                 .build()
-            WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+            val work = WorkManager.getInstance(context)
+            work.cancelUniqueWork(LEGACY_WORK_NAME)
+            work.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
         }
 
         private fun delayToNextRun(now: Long): Long {
             val next = Calendar.getInstance().apply {
                 timeInMillis = now
-                set(Calendar.HOUR_OF_DAY, PlaylistRepository.DAILY_CUTOFF_HOUR)
+                set(Calendar.HOUR_OF_DAY, RUN_HOUR)
                 set(Calendar.MINUTE, RUN_MINUTE)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)

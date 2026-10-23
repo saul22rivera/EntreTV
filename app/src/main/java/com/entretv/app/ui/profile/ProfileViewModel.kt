@@ -83,6 +83,16 @@ class ProfileViewModel @Inject constructor(
     /** Un PIN de adultos recién puesto alcanza para lo que sigue (Configuración › Perfiles) por un rato. */
     private var adultGrantedAt = Long.MIN_VALUE / 2
 
+    init {
+        // Quien ya tenía sesión antes de los perfiles: el perfil por defecto toma el nombre de la cuenta
+        // (si al iniciar sesión no se escribió nombre, la cuenta quedó con el usuario y no sirve).
+        if (!session.defaultNameChecked) viewModelScope.launch {
+            val account = playlists.currentPlaylist() ?: return@launch
+            if (account.name != account.username) repo.nameDefaultProfile(account.name)
+            session.defaultNameChecked = true
+        }
+    }
+
     /** Con un perfil y sin PIN no se abre nada ni se lee la base: entra directo. */
     private fun startupState(): ProfileUiState {
         if (session.startupHandled) return ProfileUiState()

@@ -158,4 +158,19 @@
     <string name="home_refresh_reason_http">server error %1$d</string>
     <string name="home_refresh_reason_offline">no connection to the server</string>
     <string name="home_refresh_reason_unknown">unknown error</string>
+    <string name="home_catalog_updated">List updated</string>
+    <string name="home_catalog_updated_news">List updated: %1$s</string>
+    <plurals name="home_new_movies">
+        <item quantity="one">+%1$d movie</item>
+        <item quantity="other">+%1$d movies</item>
+    </plurals>
+    <plurals name="home_new_series">
+        <item quantity="one">+%1$d series</item>
+        <item quantity="other">+%1$d series</item>
+    </plurals>
+    <plurals name="home_new_channels">
+        <item quantity="one">+%1$d channel</item>
+        <item quantity="other">+%1$d channels</item>
+    </plurals>
+    <string name="home_in_my_list">In My List</string>
 </resources>

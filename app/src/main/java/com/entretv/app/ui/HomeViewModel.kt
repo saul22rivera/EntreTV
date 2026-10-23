@@ -1,6 +1,8 @@
 package com.entretv.app.ui
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -30,6 +32,7 @@ import com.entretv.app.data.settings.CatalogPrefs
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.text.Normalizer
@@ -41,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -151,6 +155,7 @@ const val SUMMARY_SERIES = "summary:series"
 const val SUMMARY_EVENTS = "summary:events"
 private const val SUMMARY_ROW_SIZE = 20
 private const val EVENTS_ROW_SIZE = 40
+private const val AUTO_CHECK_MS = 5 * 60_000L
 
 /** Resumen al abrir la app en el celular: lo último agregado y los eventos de hoy. */
 @Immutable
@@ -251,8 +256,17 @@ private data class RawCatalog(
     val filter: CatalogFilter,
     val channels: List<ChannelEntity> = emptyList(),
     val movies: List<VodMovieEntity> = emptyList(),
-    val series: List<SeriesEntity> = emptyList(),
-    val favoriteKeys: List<String> = emptyList()
+    val series: List<SeriesEntity> = emptyList()
+)
+
+/**
+ * Vista armada sin "Mi lista": agregar o quitar un favorito solo rearma esa fila, no las
+ * miles de entradas de la sección. [visible] son los títulos que se pueden mostrar, por clave.
+ */
+private class SectionBase(
+    val content: SectionContent,
+    val order: SortOrder,
+    val visible: Lazy<Map<String, BrowseItem>>
 )
 
 /** Vista ya armada y con qué datos se armó; las listas se comparan por identidad. */
@@ -261,12 +275,11 @@ private class BuiltContent(
     val options: CatalogOptions,
     val order: SortOrder,
     val trending: Trending,
-    val content: SectionContent
+    val base: SectionBase
 ) {
     fun matches(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): Boolean =
         raw.channels === r.channels && raw.movies === r.movies && raw.series === r.series &&
-            raw.favoriteKeys == r.favoriteKeys && this.order == order && trending === t &&
-            (options === o || options == o)
+            this.order == order && trending === t && (options === o || options == o)
 }
 
 /** Lo que el usuario decidió sobre el catálogo. */
@@ -301,9 +314,11 @@ class HomeViewModel @Inject constructor(
     private val parental: ParentalControl,
     private val downloads: DownloadRepository,
     private val metadata: MetadataRepository,
-    private val profiles: ProfileSession
+    private val profiles: ProfileSession,
+    private val player: dagger.Lazy<PlayerManager>
 ) : ViewModel() {
     private val lowRam = isLowRamDevice(context)
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
 
     val downloadWifiOnly: StateFlow<Boolean> = settings.downloadWifiOnly
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -637,50 +652,71 @@ class HomeViewModel @Inject constructor(
                         channelTable.of(pid), movieTable.of(pid), seriesTable.of(pid)
                     ) { channels, movies, series -> RawCatalog(f, channels, movies, series) }
 
-                    f.section == Section.LIVE -> combine(channelTable.of(pid), favoriteKeys) { list, keys ->
-                        RawCatalog(f, channels = list, favoriteKeys = keys)
-                    }
-                    f.section == Section.MOVIES -> combine(movieTable.of(pid), favoriteKeys) { list, keys ->
-                        RawCatalog(f, movies = list, favoriteKeys = keys)
-                    }
-                    else -> combine(seriesTable.of(pid), favoriteKeys) { list, keys ->
-                        RawCatalog(f, series = list, favoriteKeys = keys)
-                    }
+                    f.section == Section.LIVE -> channelTable.of(pid).map { RawCatalog(f, channels = it) }
+                    f.section == Section.MOVIES -> movieTable.of(pid).map { RawCatalog(f, movies = it) }
+                    else -> seriesTable.of(pid).map { RawCatalog(f, series = it) }
                 }
             }
             .let { raw ->
                 combine(raw, options, effectiveSort, trending) { r, o, order, t ->
                     val cached = synchronized(builtCache) { builtCache[r.filter] }?.takeIf { it.matches(r, o, order, t) }
-                    cached?.content ?: build(r, o, order, t).copy(
-                        playlistId = r.filter.playlistId,
-                        section = r.filter.section,
-                        category = r.filter.category
-                    ).also { built ->
-                        synchronized(builtCache) { builtCache[r.filter] = BuiltContent(r, o, order, t, built) }
+                    cached?.base ?: buildBase(r, o, order, t).also { base ->
+                        synchronized(builtCache) { builtCache[r.filter] = BuiltContent(r, o, order, t, base) }
                     }
                 }
             }
+            .let { base -> combine(base, favoriteKeys) { b, keys -> withMyList(b, keys) } }
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SectionContent())
 
-    private fun build(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): SectionContent {
+    private fun buildBase(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): SectionBase {
+        val base = build(r, o, order, t)
+        return SectionBase(
+            base.content.copy(playlistId = r.filter.playlistId, section = r.filter.section, category = r.filter.category),
+            base.order,
+            base.visible
+        )
+    }
+
+    private fun build(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): SectionBase {
         val f = r.filter
-        if (f.playlistId == null) return SectionContent()
+        if (f.playlistId == null) return SectionBase(SectionContent(), order, lazyOf(emptyMap()))
         val c = o.cleanNames
         return when {
-            f.query.isNotEmpty() -> searchAll(r, o, order)
+            f.query.isNotEmpty() -> SectionBase(searchAll(r, o, order), order, lazyOf(emptyMap()))
             f.section == Section.LIVE -> buildContent(
-                r.channels, PlaylistRepository.SECTION_LIVE, f, r.favoriteKeys, o, order, trending = null,
+                r.channels, PlaylistRepository.SECTION_LIVE, f, o, order, trending = null,
                 ::liveGroup, { it.id }
             ) { BrowseItem.Live(it, clean(it.name, c)) }
             f.section == Section.MOVIES -> buildContent(
-                r.movies, PlaylistRepository.SECTION_MOVIES, f, r.favoriteKeys, o, order, trending = t.movies,
+                r.movies, PlaylistRepository.SECTION_MOVIES, f, o, order, trending = t.movies,
                 ::movieGroup, { it.id }
             ) { BrowseItem.Movie(it, clean(it.name, c)) }
             else -> buildContent(
-                r.series, PlaylistRepository.SECTION_SERIES, f, r.favoriteKeys, o, order, trending = t.series,
+                r.series, PlaylistRepository.SECTION_SERIES, f, o, order, trending = t.series,
                 ::seriesGroup, { it.id }
             ) { BrowseItem.Show(it, clean(it.name, c)) }
+        }
+    }
+
+    /** Suma "Mi lista" (fila, cuadrícula o solo la cuenta) a la vista ya armada. */
+    private fun withMyList(base: SectionBase, favoriteKeys: List<String>): SectionContent {
+        val content = base.content
+        if (content.isSearch || content.playlistId == null) return content
+        val mine = if (favoriteKeys.isEmpty()) emptyList() else {
+            val visible = base.visible.value
+            favoriteKeys.mapNotNull { visible[it] }
+        }
+        return when (content.category) {
+            MY_LIST_ROW -> content.copy(
+                rows = content.rows.map { it.copy(items = if (base.order == SortOrder.ORIGINAL) mine else sortItems(mine, base.order)) },
+                myListCount = mine.size
+            )
+            null -> content.copy(
+                rows = listOfNotNull(mine.takeIf { it.isNotEmpty() }?.let { ContentRow(MY_LIST_ROW, it.take(30), rowLabel(MY_LIST_ROW)) }) + content.rows,
+                myListCount = mine.size
+            )
+            else -> content.copy(myListCount = mine.size)
         }
     }
 
@@ -884,7 +920,6 @@ class HomeViewModel @Inject constructor(
         items: List<T>,
         sectionKey: String,
         f: CatalogFilter,
-        favoriteKeys: List<String>,
         o: CatalogOptions,
         requestedOrder: SortOrder,
         /** null = sección sin Top 10 (En vivo). */
@@ -892,7 +927,7 @@ class HomeViewModel @Inject constructor(
         groupOf: (T) -> String,
         keyOf: (T) -> String,
         wrap: (T) -> BrowseItem
-    ): SectionContent {
+    ): SectionBase {
         val order = orderFor(sectionKey, requestedOrder)
         val allGroups = items.groupBy(groupOf)
         val names = orderedCategories(sectionKey, allGroups.keys, o, order).filter { it in allGroups }
@@ -929,26 +964,27 @@ class HomeViewModel @Inject constructor(
             sectionKey == PlaylistRepository.SECTION_LIVE -> listOf(SortOrder.ORIGINAL, SortOrder.AZ)
             else -> SortOrder.entries.toList()
         }
-        val byKey = visibleRaw.values.flatten().associateBy(keyOf)
-        val mine = favoriteKeys.mapNotNull { byKey[it] }.map(wrap)
+        val visible = lazy { wrapped.associateBy { it.key } }
 
         if (f.category != null) {
             val list = when (f.category) {
                 ALL_ROW -> if (order == SortOrder.ORIGINAL) wrapped else sortItems(wrapped, order)
-                MY_LIST_ROW -> if (order == SortOrder.ORIGINAL) mine else sortItems(mine, order)
+                MY_LIST_ROW -> emptyList()
                 RECENT_ROW -> if (order == SortOrder.ORIGINAL) recent else sortItems(recent, order)
                 TOP_RATED_ROW -> if (order == SortOrder.ORIGINAL) topRated else sortItems(topRated, order)
                 else -> groupItems(f.category, Int.MAX_VALUE)
             }
-            return SectionContent(
-                categories = shown,
-                categoryCounts = counts,
-                categoryLabels = labels,
-                lockedCategories = locked,
-                rows = listOf(ContentRow(f.category, list, labels[f.category]?.let { UiText.Raw(it) } ?: rowLabel(f.category))),
-                grid = true,
-                myListCount = mine.size,
-                sortOptions = sortOptions
+            return SectionBase(
+                SectionContent(
+                    categories = shown,
+                    categoryCounts = counts,
+                    categoryLabels = labels,
+                    lockedCategories = locked,
+                    rows = listOf(ContentRow(f.category, list, labels[f.category]?.let { UiText.Raw(it) } ?: rowLabel(f.category))),
+                    grid = true,
+                    sortOptions = sortOptions
+                ),
+                order, visible
             )
         }
         val top10 = if (trending != null && wrapped.isNotEmpty()) topTen(wrapped, trending, topRated + recent) else emptyList<BrowseItem>() to false
@@ -962,16 +998,18 @@ class HomeViewModel @Inject constructor(
             }
         }
         val sectionName = uiText(if (sectionKey == PlaylistRepository.SECTION_SERIES) R.string.section_series else R.string.section_movies)
-        return SectionContent(
-            categories = shown,
-            categoryCounts = counts,
-            categoryLabels = labels,
-            lockedCategories = locked,
-            rows = listOfNotNull(mine.takeIf { it.isNotEmpty() }?.let { ContentRow(MY_LIST_ROW, it.take(30), rowLabel(MY_LIST_ROW)) }) + rows,
-            top10 = top10.first.takeIf { it.size >= 3 }.orEmpty(),
-            top10Label = if (top10.second) uiText(R.string.home_top10_today, sectionName) else uiText(R.string.home_top10_catalog, sectionName),
-            myListCount = mine.size,
-            sortOptions = sortOptions
+        return SectionBase(
+            SectionContent(
+                categories = shown,
+                categoryCounts = counts,
+                categoryLabels = labels,
+                lockedCategories = locked,
+                rows = rows,
+                top10 = top10.first.takeIf { it.size >= 3 }.orEmpty(),
+                top10Label = if (top10.second) uiText(R.string.home_top10_today, sectionName) else uiText(R.string.home_top10_catalog, sectionName),
+                sortOptions = sortOptions
+            ),
+            order, visible
         )
     }
 
@@ -1272,6 +1310,15 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /** Película o serie de una tarjeta de "Seguir viendo", para abrir su menú. */
+    fun browseItemFor(item: ContinueItem, onReady: (BrowseItem) -> Unit) {
+        viewModelScope.launch {
+            val found = if (item.isSeries) repository.seriesById(item.key)?.let { BrowseItem.Show(it, item.title) }
+            else repository.movieById(item.key)?.let { BrowseItem.Movie(it, item.title) }
+            found?.let(onReady)
+        }
+    }
+
     fun toggleFavorite(item: BrowseItem) {
         val favorite = when (item) {
             is BrowseItem.Live -> FavoriteEntity(item.channel.id, "LIVE", item.channel.playlistId, item.title, item.imageUrl)
@@ -1338,16 +1385,15 @@ class HomeViewModel @Inject constructor(
                 searchNames(movieNames, movies) { it.name }
                 searchNames(seriesNames, series) { it.name }
                 // La primera entrada a Películas o Series ya encuentra sus filas armadas.
-                val keys = favoriteKeys.first()
                 val o = options.first { it.playlistId == pid }
                 val order = effectiveSort.first()
                 val t = trending.value
                 listOf(
-                    RawCatalog(CatalogFilter(pid, Section.MOVIES, null, ""), movies = movies, favoriteKeys = keys),
-                    RawCatalog(CatalogFilter(pid, Section.SERIES, null, ""), series = series, favoriteKeys = keys)
+                    RawCatalog(CatalogFilter(pid, Section.MOVIES, null, ""), movies = movies),
+                    RawCatalog(CatalogFilter(pid, Section.SERIES, null, ""), series = series)
                 ).forEach { r ->
                     if (synchronized(builtCache) { builtCache[r.filter] } != null) return@forEach
-                    val built = build(r, o, order, t).copy(playlistId = pid, section = r.filter.section, category = null)
+                    val built = buildBase(r, o, order, t)
                     synchronized(builtCache) { builtCache.putIfAbsent(r.filter, BuiltContent(r, o, order, t, built)) }
                 }
             }
@@ -1361,6 +1407,19 @@ class HomeViewModel @Inject constructor(
                     selectedPlaylistId.value = list.first().id
                     refreshIfDue()
                 }
+            }
+        }
+        // Aviso al terminar una actualización que cambió algo: con novedades, o siempre si fue a mano.
+        viewModelScope.launch {
+            repository.updates.collect { u ->
+                val news = listOfNotNull(
+                    u.newMovies.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_movies, it, it) },
+                    u.newSeries.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_series, it, it) },
+                    u.newChannels.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_channels, it, it) }
+                )
+                if (news.isEmpty() && !refreshing.value) return@collect
+                message.value = if (news.isEmpty()) uiText(R.string.home_catalog_updated)
+                else uiText(R.string.home_catalog_updated_news, news.reduce { acc, item -> uiText(R.string.home_refresh_list_join, acc, item) })
             }
         }
         // Otro perfil: lo abierto (categoría, búsqueda) puede no existir para él.
@@ -1390,8 +1449,8 @@ class HomeViewModel @Inject constructor(
     private var autoRefresh: Job? = null
 
     /**
-     * Al entrar o al volver a la app: baja el catálogo solo si pasó el corte de la mañana (o
-     * lo pide Configuración). Lo guardado sigue a la vista mientras tanto.
+     * Al entrar o al volver a la app: baja el catálogo solo si pasó el corte de la frecuencia
+     * de Configuración. Lo guardado sigue a la vista mientras tanto.
      */
     fun refreshIfDue() {
         if (selectedPlaylistId.value == null || autoRefresh?.isActive == true) return
@@ -1500,7 +1559,7 @@ class HomeViewModel @Inject constructor(
             val pid = selectedPlaylistId.value
             val first = pid != null && repository.needsFirstSync(pid)
             if (first) firstSync.value = true
-            repository.refreshAll(force = manual)
+            repository.refreshAll(force = manual, light = playerBusy())
                 .onSuccess { failed ->
                     if (failed.isNotEmpty() && (manual || first)) {
                         val list = failed.reduce { acc, item -> uiText(R.string.home_refresh_list_join, acc, item) }
@@ -1513,6 +1572,29 @@ class HomeViewModel @Inject constructor(
             refreshing.value = false
             firstSync.value = false
         }
+
+    /** Hay algo cargado en el reproductor (también el mini reproductor de En vivo). */
+    private fun playerBusy() = player.get().currentKey.value != null
+
+    private fun unmeteredNetwork(): Boolean {
+        val caps = connectivity?.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
+    /**
+     * Actualización automática y discreta: mientras la app está a la vista revisa cada
+     * [AUTO_CHECK_MS] si pasaron las 3 h. Nunca con algo cargado en el reproductor ni con
+     * datos móviles, y en un solo hilo de prioridad baja.
+     */
+    suspend fun autoRefreshLoop() {
+        while (true) {
+            delay(AUTO_CHECK_MS)
+            if (refreshMode.value != SettingsRepository.REFRESH_AUTO) continue
+            if (autoRefresh?.isActive == true || refreshing.value || selectedPlaylistId.value == null) continue
+            if (playerBusy() || !unmeteredNetwork()) continue
+            repository.refreshAll(force = false, light = true, auto = true)
+        }
+    }
 
     fun episodesFor(seriesKey: String) = repository.episodes(seriesKey)
 

@@ -75,6 +75,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -360,7 +361,10 @@ fun DetailsScreen(
                                 color = EntreBrand.Text,
                                 maxLines = if (plotExpanded) Int.MAX_VALUE else 6,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.clickable { plotExpanded = !plotExpanded }
+                                // Arriba vuelve a los botones: por geometría ganaba la flecha de Atrás.
+                                modifier = Modifier
+                                    .focusProperties { up = primaryFocus }
+                                    .clickable { plotExpanded = !plotExpanded }
                             )
                             loading -> Text(stringResource(R.string.details_loading_plot), color = EntreBrand.TextDim, style = plotStyle)
                             else -> Text(stringResource(R.string.details_no_plot), color = EntreBrand.TextDim, style = plotStyle)
@@ -495,6 +499,8 @@ fun DetailsScreen(
                 modifier = Modifier
                     .statusBarsPadding()
                     .padding(8.dp)
+                    // Encima de la lista: sin esto, Abajo no encontraba nada y el foco quedaba atorado.
+                    .focusProperties { down = primaryFocus }
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.45f))
             ) {
