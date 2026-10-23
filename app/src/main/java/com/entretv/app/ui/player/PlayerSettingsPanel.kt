@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -53,9 +54,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -78,7 +81,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.media3.common.Tracks
 import com.entretv.app.R
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
@@ -88,11 +90,13 @@ import kotlinx.coroutines.delay
 
 /** Lo que el panel puede cambiar; lo implementa el PlayerViewModel. */
 interface PlayerSettingsActions {
-    fun selectAudio(option: TrackOption)
+    /** null = sin audio. */
+    fun selectAudio(option: TrackOption?)
     /** null = subtítulos desactivados. */
     fun selectSubtitle(option: TrackOption?)
-    /** null = calidad automática. */
-    fun selectQuality(option: TrackOption?)
+    /** null = video automático. */
+    fun selectVideo(option: TrackOption?)
+    fun disableVideo()
     fun setSubtitleSize(size: Int)
     fun setSubtitleColor(color: Int)
     fun setSubtitleBackground(background: Int)
@@ -109,14 +113,14 @@ private enum class Page(@StringRes val title: Int) {
     MAIN(R.string.player_settings_short),
     AUDIO(R.string.player_audio),
     SUBTITLES(R.string.player_subtitles),
-    QUALITY(R.string.player_quality),
+    VIDEO(R.string.player_video),
     SCREEN(R.string.player_screen),
     SPEED(R.string.player_speed),
     SLEEP(R.string.player_sleep_timer),
     INFO(R.string.player_tech_info)
 }
 
-private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
 private val SLEEP_OPTIONS = listOf(15, 30, 60)
 
 @StringRes
@@ -127,21 +131,27 @@ fun resizeLabelRes(mode: Int): Int = when (mode) {
 }
 
 @Composable
-private fun speedLabel(speed: Float): String =
+fun speedLabel(speed: Float): String =
     if (speed == 1f) stringResource(R.string.player_speed_normal) else "${speed.toString().removeSuffix(".0")}x"
 
+/**
+ * [light] (TV y poca memoria): aparece con un fundido corto, sin deslizar, sin velo a pantalla
+ * completa y sin animación entre páginas; sobre el video eso es lo que traba en equipos lentos.
+ */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PlayerSettingsPanel(
     visible: Boolean,
-    tracks: Tracks,
+    menu: TrackMenu,
     prefs: PlayerPrefs,
+    resizeMode: Int,
     speed: Float,
     isLive: Boolean,
     sleepMinutes: Int,
     sleepEndsAt: Long,
     techInfo: () -> TechInfo,
     actions: PlayerSettingsActions,
+    light: Boolean,
     onDismiss: () -> Unit
 ) {
     val wide = LocalConfiguration.current.screenWidthDp >= 600
@@ -150,19 +160,29 @@ fun PlayerSettingsPanel(
     BackHandler(enabled = visible) { if (page != Page.MAIN) page = Page.MAIN else onDismiss() }
 
     Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.35f))
-                    .pointerInput(Unit) { detectTapGestures { onDismiss() } }
-            )
+        if (!light) {
+            AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f))
+                        .pointerInput(Unit) { detectTapGestures { onDismiss() } }
+                )
+            }
         }
         AnimatedVisibility(
             visible = visible,
             modifier = Modifier.align(if (wide) Alignment.CenterEnd else Alignment.BottomCenter),
-            enter = if (wide) slideInHorizontally { it } + fadeIn() else slideInVertically { it } + fadeIn(),
-            exit = if (wide) slideOutHorizontally { it } + fadeOut() else slideOutVertically { it } + fadeOut()
+            enter = when {
+                light -> fadeIn(tween(LIGHT_FADE_MS))
+                wide -> slideInHorizontally { it } + fadeIn()
+                else -> slideInVertically { it } + fadeIn()
+            },
+            exit = when {
+                light -> fadeOut(tween(LIGHT_FADE_MS))
+                wide -> slideOutHorizontally { it } + fadeOut()
+                else -> slideOutVertically { it } + fadeOut()
+            }
         ) {
             Surface(
                 color = EntreBrand.Panel.copy(alpha = 0.97f),
@@ -190,19 +210,12 @@ fun PlayerSettingsPanel(
                         }
                     }
             ) {
-                AnimatedContent(
-                    targetState = page,
-                    transitionSpec = {
-                        val forward = targetState != Page.MAIN
-                        (slideInHorizontally { if (forward) it / 3 else -it / 3 } + fadeIn()) togetherWith
-                            (slideOutHorizontally { if (forward) -it / 3 else it / 3 } + fadeOut())
-                    },
-                    label = "settingsPage"
-                ) { current ->
+                val content: @Composable (Page) -> Unit = { current ->
                     PageContent(
                         page = current,
-                        tracks = tracks,
+                        menu = menu,
                         prefs = prefs,
+                        resizeMode = resizeMode,
                         speed = speed,
                         isLive = isLive,
                         sleepMinutes = sleepMinutes,
@@ -213,16 +226,33 @@ fun PlayerSettingsPanel(
                         onClose = onDismiss
                     )
                 }
+                if (light) {
+                    // key: cada página arranca con su propio foco inicial.
+                    key(page) { content(page) }
+                } else {
+                    AnimatedContent(
+                        targetState = page,
+                        transitionSpec = {
+                            val forward = targetState != Page.MAIN
+                            (slideInHorizontally { if (forward) it / 3 else -it / 3 } + fadeIn()) togetherWith
+                                (slideOutHorizontally { if (forward) -it / 3 else it / 3 } + fadeOut())
+                        },
+                        label = "settingsPage"
+                    ) { current -> content(current) }
+                }
             }
         }
     }
 }
 
+private const val LIGHT_FADE_MS = 120
+
 @Composable
 private fun PageContent(
     page: Page,
-    tracks: Tracks,
+    menu: TrackMenu,
     prefs: PlayerPrefs,
+    resizeMode: Int,
     speed: Float,
     isLive: Boolean,
     sleepMinutes: Int,
@@ -233,12 +263,15 @@ private fun PageContent(
     onClose: () -> Unit
 ) {
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    LaunchedEffect(Unit) {
+        // Un cuadro de margen: la fila enfocable de una LazyColumn recién creada aún no está puesta.
+        withFrameNanos { }
+        runCatching { focus.requestFocus() }
+    }
 
-    val context = LocalContext.current
-    val audio = tracks.audioOptions(context)
-    val subtitles = tracks.subtitleOptions(context)
-    val qualities = tracks.qualityOptions(context)
+    val audio = menu.audio
+    val subtitles = menu.subtitles
+    val videos = menu.video
     val back = { onNavigate(Page.MAIN) }
 
     LazyColumn(
@@ -259,8 +292,11 @@ private fun PageContent(
                 item {
                     PanelRow(
                         title = stringResource(R.string.player_audio),
-                        value = audio.firstOrNull { it.selected }?.label
-                            ?: stringResource(if (audio.isEmpty()) R.string.player_no_tracks else R.string.player_audio_auto),
+                        value = when {
+                            menu.audioOff -> stringResource(R.string.player_audio_off)
+                            else -> audio.firstOrNull { it.selected }?.label
+                                ?: stringResource(if (audio.isEmpty()) R.string.player_no_tracks else R.string.player_audio_auto)
+                        },
                         icon = Icons.AutoMirrored.Filled.VolumeUp,
                         chevron = true,
                         modifier = Modifier.focusRequester(focus),
@@ -279,24 +315,21 @@ private fun PageContent(
                         onClick = { onNavigate(Page.SUBTITLES) }
                     )
                 }
-                if (qualities.size > 1) {
+                if (videos.isNotEmpty()) {
                     item {
-                        val current = qualities.firstOrNull { it.selected }
                         PanelRow(
-                            title = stringResource(R.string.player_quality),
-                            value = if (tracks.hasFixedQuality() && current != null) current.label
-                            else if (current != null) stringResource(R.string.player_quality_auto_height, current.format.height)
-                            else stringResource(R.string.player_quality_auto),
+                            title = stringResource(R.string.player_video),
+                            value = videoValue(menu),
                             icon = Icons.Default.HighQuality,
                             chevron = true,
-                            onClick = { onNavigate(Page.QUALITY) }
+                            onClick = { onNavigate(Page.VIDEO) }
                         )
                     }
                 }
                 item {
                     PanelRow(
                         title = stringResource(R.string.player_screen),
-                        value = stringResource(resizeLabelRes(prefs.resizeMode)),
+                        value = stringResource(resizeLabelRes(resizeMode)),
                         icon = Icons.Default.AspectRatio,
                         chevron = true,
                         onClick = { onNavigate(Page.SCREEN) }
@@ -341,8 +374,18 @@ private fun PageContent(
                         PanelRow(
                             title = option.label,
                             selected = option.selected,
-                            modifier = if (i == initial) Modifier.focusRequester(focus) else Modifier,
+                            modifier = if (i == initial && !menu.audioOff) Modifier.focusRequester(focus) else Modifier,
                             onClick = { actions.selectAudio(option); back() }
+                        )
+                    }
+                }
+                if (audio.isNotEmpty()) {
+                    item {
+                        PanelRow(
+                            title = stringResource(R.string.player_audio_off),
+                            selected = menu.audioOff,
+                            modifier = if (menu.audioOff) Modifier.focusRequester(focus) else Modifier,
+                            onClick = { actions.selectAudio(null); back() }
                         )
                     }
                 }
@@ -378,29 +421,38 @@ private fun PageContent(
                 item { PanelHint(stringResource(R.string.player_subtitle_style_hint)) }
             }
 
-            Page.QUALITY -> {
+            Page.VIDEO -> {
                 backHeader(page, back)
-                val fixed = tracks.hasFixedQuality()
+                val auto = !menu.videoOff && !menu.videoFixed
                 item {
                     PanelRow(
-                        title = stringResource(R.string.player_quality_auto),
+                        title = stringResource(R.string.player_video_auto),
                         value = stringResource(R.string.player_quality_auto_hint),
-                        selected = !fixed,
-                        modifier = if (!fixed) Modifier.focusRequester(focus) else Modifier,
-                        onClick = { actions.selectQuality(null); back() }
+                        selected = auto,
+                        modifier = if (auto) Modifier.focusRequester(focus) else Modifier,
+                        onClick = { actions.selectVideo(null); back() }
                     )
                 }
-                qualities.forEach { option ->
-                    val selected = fixed && option.selected
+                videos.forEach { option ->
+                    val selected = menu.videoFixed && !menu.videoOff && option.selected
                     item {
                         PanelRow(
                             title = option.label,
                             selected = selected,
                             modifier = if (selected) Modifier.focusRequester(focus) else Modifier,
-                            onClick = { actions.selectQuality(option); back() }
+                            onClick = { actions.selectVideo(option); back() }
                         )
                     }
                 }
+                item {
+                    PanelRow(
+                        title = stringResource(R.string.player_video_off),
+                        selected = menu.videoOff,
+                        modifier = if (menu.videoOff) Modifier.focusRequester(focus) else Modifier,
+                        onClick = { actions.disableVideo(); back() }
+                    )
+                }
+                item { PanelHint(stringResource(R.string.player_video_hint)) }
             }
 
             Page.SCREEN -> {
@@ -410,7 +462,7 @@ private fun PageContent(
                     SettingsRepository.RESIZE_ZOOM to R.string.player_resize_zoom_hint,
                     SettingsRepository.RESIZE_FILL to R.string.player_resize_fill_hint
                 ).forEach { (mode, hint) ->
-                    val selected = prefs.resizeMode == mode
+                    val selected = resizeMode == mode
                     item {
                         PanelRow(
                             title = stringResource(resizeLabelRes(mode)),
@@ -477,6 +529,17 @@ private fun PageContent(
                 item { TechInfoBlock(techInfo) }
             }
         }
+    }
+}
+
+@Composable
+fun videoValue(menu: TrackMenu): String {
+    val current = menu.selectedVideo
+    return when {
+        menu.videoOff -> stringResource(R.string.player_video_off)
+        menu.videoFixed && current != null -> current.label
+        menu.videoHeight > 0 -> stringResource(R.string.player_video_auto_height, menu.videoHeight)
+        else -> stringResource(R.string.player_video_auto)
     }
 }
 
@@ -590,7 +653,7 @@ private fun PanelHint(text: String) {
 }
 
 @Composable
-private fun PanelRow(
+internal fun PanelRow(
     title: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,

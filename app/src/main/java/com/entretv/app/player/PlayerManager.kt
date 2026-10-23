@@ -9,6 +9,7 @@ import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
@@ -16,6 +17,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
@@ -29,6 +31,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
@@ -61,7 +64,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+
+/** Imagen fija metida como pista de video (portada en MKV/MP4): no es la película. */
+fun Format.isCoverArt(): Boolean =
+    MimeTypes.isImage(sampleMimeType) || sampleMimeType == MimeTypes.VIDEO_MJPEG
 
 /**
  * Motor de reproducción EntreTV: único reproductor de la app.
@@ -102,6 +110,13 @@ class PlayerManager @Inject constructor(
         private const val LIVE_MAX_SPEED = 1.03f
         /** ~3 s de una película 1080p típica: alcanza para la cabecera y el primer cuadro. */
         private const val PRELOAD_BYTES = 2L * 1024 * 1024
+        /** Lo que "Reproducir" espera a que la precarga suelte la conexión y la caché. */
+        private const val PRELOAD_RELEASE_WAIT_MS = 250L
+        /** Sonido avanzando sin ningún cuadro de video durante esto = imagen trabada. */
+        private const val NO_PICTURE_MS = 3_000L
+        private const val MAX_PICTURE_FIXES = 3
+        /** Pausa entre quitar y volver a poner la pista de video: si no, el cambio no llega a soltar el decodificador. */
+        private const val VIDEO_RESTART_GAP_MS = 300L
         private val XTREAM_LIVE = Regex("/live/[^/]+/[^/]+/\\d+\\.(m3u8|ts)$", RegexOption.IGNORE_CASE)
     }
 
@@ -166,6 +181,21 @@ class PlayerManager @Inject constructor(
 
     private val errorPolicy = DefaultLoadErrorHandlingPolicy(LOAD_RETRIES)
 
+    // Cliente propio para poder cortar su conexión al instante: interrumpir el hilo no
+    // desbloquea una lectura de red y la línea quedaría ocupada al abrir el reproductor.
+    private val preloadClient: OkHttpClient by lazy {
+        streamClient.newBuilder().dispatcher(Dispatcher()).build()
+    }
+
+    private val preloadDataFactory: CacheDataSource.Factory by lazy {
+        CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(
+                DefaultDataSource.Factory(context, OkHttpDataSource.Factory(preloadClient).setUserAgent(USER_AGENT))
+            )
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
     private val preloadExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "EntrePreload").apply {
             isDaemon = true
@@ -175,6 +205,9 @@ class PlayerManager @Inject constructor(
     @Volatile
     private var preloadWriter: CacheWriter? = null
     private var preloadTask: Future<*>? = null
+    /** Cambia en cada precarga o cancelación; una tarea vieja que despierta tarde no hace nada. */
+    @Volatile
+    private var preloadGeneration = 0
 
     private val liveSourceFactory by lazy {
         DefaultMediaSourceFactory(httpFactory).setLoadErrorHandlingPolicy(errorPolicy)
@@ -238,6 +271,10 @@ class PlayerManager @Inject constructor(
     private val _tracks = MutableStateFlow(Tracks.EMPTY)
     val tracks: StateFlow<Tracks> = _tracks
 
+    /** Lo elegido a mano (pistas fijas, audio o video apagados) además de lo que trae [tracks]. */
+    private val _trackParams = MutableStateFlow(TrackSelectionParameters.DEFAULT)
+    val trackParams: StateFlow<TrackSelectionParameters> = _trackParams
+
     private val _speed = MutableStateFlow(1f)
     val speed: StateFlow<Float> = _speed
 
@@ -261,6 +298,18 @@ class PlayerManager @Inject constructor(
     private var lastProgressAt = 0L
     private var recoveredAt = 0L
 
+    // Vigilante de imagen, por contenido.
+    private var firstFrameShown = false
+    private var pictureWaitFromMs = C.TIME_UNSET
+    private var pictureFixes = 0
+    private var coverArtChecked = false
+    /** Cuenta los reinicios de video: uno pendiente de otro contenido no se aplica. */
+    private var videoRestartToken = 0
+
+    // Lo lee el hilo de reproducción al crear cada decodificador.
+    @Volatile
+    private var softwareVideo = false
+
     private val reconnect = Runnable {
         reconnectPending = false
         recover()
@@ -269,6 +318,7 @@ class PlayerManager @Inject constructor(
     private val watchdog = object : Runnable {
         override fun run() {
             checkStall()
+            checkPicture()
             mainHandler.postDelayed(this, WATCHDOG_TICK_MS)
         }
     }
@@ -363,12 +413,30 @@ class PlayerManager @Inject constructor(
 
             override fun onTracksChanged(tracks: Tracks) {
                 _tracks.value = tracks
+                skipCoverArt(tracks)
+            }
+
+            override fun onTrackSelectionParametersChanged(parameters: TrackSelectionParameters) {
+                _trackParams.value = parameters
+            }
+
+            override fun onRenderedFirstFrame() {
+                firstFrameShown = true
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) pictureWaitFromMs = C.TIME_UNSET
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 _speed.value = playbackParameters.speed
             }
         })
+        _trackParams.value = exoPlayer.trackSelectionParameters
 
         runCatching {
             context.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkCallback)
@@ -384,9 +452,13 @@ class PlayerManager @Inject constructor(
      */
     private fun applyPreferences() {
         val p = prefs
+        // Las imágenes del contenedor (portadas) nunca se muestran: solo taparían el video.
         val builder = player.trackSelectionParameters.buildUpon()
             .clearOverrides()
             .setPreferredAudioLanguages(p.contentLanguage)
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            .setTrackTypeDisabled(C.TRACK_TYPE_IMAGE, true)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !p.subtitlesByDefault)
         if (p.subtitlesByDefault) {
             builder.setPreferredTextLanguages(p.contentLanguage).setSelectUndeterminedTextLanguage(false)
@@ -426,11 +498,14 @@ class PlayerManager @Inject constructor(
 
     /**
      * Decodificadores de video en el orden del ajuste: hardware o software primero. Los otros
-     * quedan detrás para que el video igual arranque si el preferido no puede.
+     * quedan detrás para que el video igual arranque si el preferido no puede (con
+     * setEnableDecoderFallback, uno que falla al iniciar pasa al siguiente de esta lista).
+     * [softwareVideo] lo pone el vigilante de imagen o un error del decodificador.
      */
     private fun decoderInfos(mimeType: String, secure: Boolean, tunneling: Boolean): List<MediaCodecInfo> {
         val infos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
         if (!MimeTypes.isVideo(mimeType)) return infos
+        if (softwareVideo) return infos.sortedByDescending { it.softwareOnly }
         return when (prefs.decoder) {
             SettingsRepository.DECODER_HARDWARE -> infos.sortedByDescending { it.hardwareAccelerated }
             SettingsRepository.DECODER_SOFTWARE -> infos.sortedByDescending { it.softwareOnly }
@@ -438,7 +513,7 @@ class PlayerManager @Inject constructor(
         }
     }
 
-    /** Fija una pista concreta de audio, subtítulos o video. */
+    /** Fija una pista concreta de audio o subtítulos. */
     fun selectTrack(group: Tracks.Group, trackIndex: Int) {
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(group.type, false)
@@ -453,11 +528,134 @@ class PlayerManager @Inject constructor(
             .build()
     }
 
-    /** Calidad automática: vuelve a adaptar la resolución a la conexión. */
-    fun autoQuality() {
+    fun disableAudio() {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .build()
+    }
+
+    /**
+     * Fija una pista de video. Elegir la que ya se ve la reinicia (suelta y vuelve a crear el
+     * decodificador): es el arreglo a mano de "se oye pero no se ve".
+     */
+    fun selectVideoTrack(group: Tracks.Group, trackIndex: Int) {
+        val override = TrackSelectionOverride(group.mediaTrackGroup, trackIndex)
+        val params = player.trackSelectionParameters
+        val alreadyShown = C.TRACK_TYPE_VIDEO !in params.disabledTrackTypes &&
+            player.currentTracks.groups.any { it.mediaTrackGroup == group.mediaTrackGroup && it.isTrackSelected(trackIndex) }
+        resetPictureWait()
+        if (alreadyShown) restartVideo(override)
+        else player.trackSelectionParameters = params.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+            .setOverrideForType(override)
+            .build()
+    }
+
+    /** Video automático: vuelve a adaptar la resolución a la conexión. */
+    fun autoVideo() {
+        resetPictureWait()
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
             .build()
+    }
+
+    fun disableVideo() {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build()
+    }
+
+    /**
+     * Quita la pista de video y la vuelve a poner ([override] si se pasa) un momento después.
+     * Los dos cambios juntos se resolverían en uno solo y el decodificador no se soltaría.
+     */
+    private fun restartVideo(override: TrackSelectionOverride? = null) {
+        val token = ++videoRestartToken
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build()
+        mainHandler.postDelayed({
+            if (token != videoRestartToken || currentItem == null) return@postDelayed
+            resetPictureWait()
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                .apply { if (override != null) setOverrideForType(override) }
+                .build()
+        }, VIDEO_RESTART_GAP_MS)
+    }
+
+    private fun resetPictureWait() {
+        firstFrameShown = false
+        pictureWaitFromMs = C.TIME_UNSET
+    }
+
+    /**
+     * Si el reproductor eligió una portada (imagen fija) y el archivo trae una pista de video
+     * de verdad, se cambia a esa. Una vez por contenido: lo que elija el usuario después manda.
+     */
+    private fun skipCoverArt(tracks: Tracks) {
+        if (coverArtChecked) return
+        val video = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        if (video.isEmpty()) return
+        coverArtChecked = true
+        val shown = video.firstOrNull { it.isSelected } ?: return
+        val shownIndex = (0 until shown.length).firstOrNull { shown.isTrackSelected(it) } ?: return
+        if (!shown.getTrackFormat(shownIndex).isCoverArt()) return
+        val real = realVideoTrack(video, exclude = shown) ?: return
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setOverrideForType(real)
+            .build()
+    }
+
+    /** La pista de video soportada de mayor resolución que no sea una imagen fija. */
+    private fun realVideoTrack(video: List<Tracks.Group>, exclude: Tracks.Group?): TrackSelectionOverride? =
+        video.asSequence()
+            .filter { it !== exclude && it.mediaTrackGroup != exclude?.mediaTrackGroup }
+            .flatMap { group -> (0 until group.length).asSequence().map { group to it } }
+            .filter { (group, i) -> group.isTrackSupported(i) && !group.getTrackFormat(i).isCoverArt() }
+            .maxWithOrNull(
+                compareBy({ (group, i) -> group.getTrackFormat(i).height }, { (group, i) -> group.getTrackFormat(i).bitrate })
+            )
+            ?.let { (group, i) -> TrackSelectionOverride(group.mediaTrackGroup, i) }
+
+    /**
+     * Vigilante de "se oye pero no se ve": el sonido avanzó [NO_PICTURE_MS] con una pista de
+     * video elegida y una pantalla donde dibujar, y no llegó ningún cuadro. Escala: reiniciar la
+     * pista → otra pista de video si la hay → decodificador por software (y sin modo túnel).
+     */
+    private fun checkPicture() {
+        if (firstFrameShown || currentItem == null || pictureFixes >= MAX_PICTURE_FIXES) return
+        if (!player.isPlaying || _error.value != null || reconnectPending) {
+            pictureWaitFromMs = C.TIME_UNSET
+            return
+        }
+        val surface = player.surfaceSize
+        if (surface.width <= 0 || surface.height <= 0) return
+        if (!player.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) return
+        val position = player.currentPosition
+        val from = pictureWaitFromMs
+        if (from == C.TIME_UNSET || position < from) {
+            pictureWaitFromMs = position
+            return
+        }
+        if (position - from < NO_PICTURE_MS) return
+        fixPicture()
+    }
+
+    private fun fixPicture() {
+        pictureFixes++
+        val video = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        val other = if (pictureFixes == 2) realVideoTrack(video, exclude = video.firstOrNull { it.isSelected }) else null
+        if (pictureFixes >= 2 && other == null) {
+            softwareVideo = true
+            if (trackSelector.parameters.tunnelingEnabled) {
+                trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
+            }
+        }
+        restartVideo(other)
     }
 
     fun setSpeed(speed: Float) {
@@ -500,6 +698,15 @@ class PlayerManager @Inject constructor(
         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
             player.seekToDefaultPosition()
             player.prepare()
+            return
+        }
+        // Película que el decodificador de video no pudo seguir: un reintento con el de software
+        // (el fallback de Media3 solo cubre el arranque del decodificador, no fallas a mitad).
+        if (!currentIsLive && !softwareVideo && error is ExoPlaybackException &&
+            error.type == ExoPlaybackException.TYPE_RENDERER && MimeTypes.isVideo(error.rendererFormat?.sampleMimeType)
+        ) {
+            softwareVideo = true
+            scheduleRecovery()
             return
         }
         if (currentIsLive) {
@@ -666,13 +873,18 @@ class PlayerManager @Inject constructor(
             player.playWhenReady = true
             return
         }
-        cancelPreload()
+        cancelPreload(PRELOAD_RELEASE_WAIT_MS)
         cancelRecovery()
         reconnectAttempts = 0
         _reconnectAttempt.value = 0
         _reconnecting.value = false
         _error.value = null
         currentIsLive = isLive
+        videoRestartToken++
+        resetPictureWait()
+        pictureFixes = 0
+        coverArtChecked = false
+        softwareVideo = false
         val url = target
         currentUrl = url
         _currentKey.value = contentKey.ifEmpty { null }
@@ -729,21 +941,30 @@ class PlayerManager @Inject constructor(
         if (lowRam) return
         cancelPreload()
         val spec = DataSpec.Builder().setUri(url).setPosition(0).setLength(PRELOAD_BYTES).build()
+        val generation = ++preloadGeneration
         preloadTask = preloadExecutor.submit(Runnable {
+            if (generation != preloadGeneration) return@Runnable
             // La caché se abre aquí y no en el hilo principal.
-            val writer = CacheWriter(vodDataFactory.createDataSource(), spec, null, null)
+            val writer = CacheWriter(preloadDataFactory.createDataSource(), spec, null, null)
             preloadWriter = writer
-            if (Thread.currentThread().isInterrupted) return@Runnable
+            if (generation != preloadGeneration) return@Runnable
             runCatching { writer.cache() }
         })
     }
 
-    /** Corta la precarga: al reproducir (libera la conexión) o al salir de la ficha. */
-    fun cancelPreload() {
+    /**
+     * Corta la precarga: al reproducir (libera la conexión) o al salir de la ficha. Sin
+     * interrumpir el hilo: se cierra la conexión y la escritura termina sola, soltando la
+     * caché. Con [waitMs] espera ese tope a que suelte la caché y la línea del proveedor.
+     */
+    fun cancelPreload(waitMs: Long = 0L) {
+        val task = preloadTask ?: return
+        preloadTask = null
+        preloadGeneration++
         preloadWriter?.cancel()
         preloadWriter = null
-        preloadTask?.cancel(true)
-        preloadTask = null
+        preloadClient.dispatcher.cancelAll()
+        if (waitMs > 0 && !task.isDone) runCatching { task.get(waitMs, TimeUnit.MILLISECONDS) }
     }
 
     fun stop() {

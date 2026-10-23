@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Video and audio tracks, player quick options -->
+    <string name="player_video_auto">Automatic</string>
+    <string name="player_video_auto_height">Automatic · %1$dp</string>
+    <string name="player_video_off">No video</string>
+    <string name="player_video_cover">Cover image</string>
+    <string name="player_video_hint">Sound but no picture? Pick the same video track again or try another one.</string>
+    <string name="player_audio_off">No audio</string>
+    <string name="player_more_options">More options</string>
+</resources>

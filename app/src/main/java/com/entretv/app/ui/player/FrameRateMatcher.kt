@@ -38,46 +38,87 @@ private const val MAX_FPS = 121f
  * pantalla a 60 Hz avanza a saltitos (cada cuadro dura 2 o 3 refrescos).
  *
  *  - Se decide una sola vez por contenido, con el primer formato de video que trae sus cuadros
- *    por segundo; si no los trae, se miden en los primeros ~3 s. Si no dan una cifra estándar
+ *    por segundo (llega antes del primer cuadro, así que el cambio ocurre al arrancar); si no
+ *    los trae, se miden en los primeros ~3 s. Si no dan una cifra estándar
  *    (23,976, 24, 25, 29,97, 30, 48, 50, 59,94 o 60), no se toca nada.
+ *  - Lo medido no se aplica mientras [hold] (controles, panel o listas abiertas): la TV se
+ *    queda en negro un momento al cambiar y en medio de un menú parece un cierre.
  *  - Solo modos con la misma resolución que la actual; si la actual ya sirve, no se cambia.
+ *    Con la misma resolución la configuración no cambia y la actividad no se reinicia.
  *  - Al salir se devuelve la preferencia que tenía la ventana.
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun FrameRateMatchEffect(player: ExoPlayer, activity: Activity?, enabled: Boolean, contentKey: String?) {
+fun FrameRateMatchEffect(player: ExoPlayer, activity: Activity?, enabled: Boolean, contentKey: String?, hold: Boolean) {
     val key by rememberUpdatedState(contentKey)
+    val holding by rememberUpdatedState(hold)
     val estimator = remember { FrameRateEstimator() }
-    LaunchedEffect(contentKey) { estimator.restart() }
+    val pending = remember { PendingMatch() }
+    LaunchedEffect(contentKey) {
+        estimator.restart()
+        pending.clear()
+    }
+    LaunchedEffect(hold, contentKey) {
+        if (!hold) pending.flush(contentKey)
+    }
     DisposableEffect(player, activity, enabled) {
         if (!enabled || activity == null) return@DisposableEffect onDispose {}
         val switcher = DisplayModeSwitcher(activity.window, displayOf(activity))
+        pending.switcher = switcher
         val mainHandler = Handler(Looper.getMainLooper())
-        fun match(fps: Float) {
+        fun match(fps: Float, measured: Boolean) {
             val content = key ?: return
-            if (fps > 0f) switcher.match(content, fps)
+            if (fps <= 0f) return
+            if (measured && holding) pending.set(content, fps) else switcher.match(content, fps)
         }
         val formatListener = object : AnalyticsListener {
             override fun onVideoInputFormatChanged(
                 eventTime: AnalyticsListener.EventTime,
                 format: Format,
                 decoderReuseEvaluation: DecoderReuseEvaluation?
-            ) = match(format.frameRate)
+            ) = match(format.frameRate, measured = false)
         }
         // Muchos MKV y TS no declaran sus cuadros por segundo: se miden en los primeros cuadros.
         val frameListener = VideoFrameMetadataListener { presentationTimeUs, _, format, _ ->
             if (format.frameRate > 0f) return@VideoFrameMetadataListener
-            estimator.add(presentationTimeUs)?.let { fps -> mainHandler.post { match(fps) } }
+            estimator.add(presentationTimeUs)?.let { fps -> mainHandler.post { match(fps, measured = true) } }
         }
         player.addAnalyticsListener(formatListener)
         player.setVideoFrameMetadataListener(frameListener)
-        player.videoFormat?.let { match(it.frameRate) }
+        player.videoFormat?.let { match(it.frameRate, measured = false) }
         onDispose {
             player.removeAnalyticsListener(formatListener)
             player.clearVideoFrameMetadataListener(frameListener)
             mainHandler.removeCallbacksAndMessages(null)
+            pending.switcher = null
+            pending.clear()
             switcher.restore()
         }
+    }
+}
+
+/** Frecuencia medida que espera a que se cierren los menús. Solo hilo principal. */
+private class PendingMatch {
+    var switcher: DisplayModeSwitcher? = null
+    private var content: String? = null
+    private var fps = 0f
+
+    fun set(content: String, fps: Float) {
+        this.content = content
+        this.fps = fps
+    }
+
+    fun clear() {
+        content = null
+        fps = 0f
+    }
+
+    fun flush(current: String?) {
+        val target = content
+        val rate = fps
+        clear()
+        if (target == null || target != current || rate <= 0f) return
+        switcher?.match(target, rate)
     }
 }
 

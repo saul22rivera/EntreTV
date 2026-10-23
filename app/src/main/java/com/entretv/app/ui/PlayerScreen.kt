@@ -50,17 +50,21 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Forward30
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,6 +79,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -83,6 +88,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -90,6 +97,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -128,14 +137,23 @@ import com.entretv.app.ui.player.ChannelBrowser
 import com.entretv.app.ui.player.ChannelBrowserState
 import com.entretv.app.ui.player.FrameRateMatchEffect
 import com.entretv.app.ui.player.LiveChannelList
+import com.entretv.app.ui.player.PlayerSettingsActions
 import com.entretv.app.ui.player.PlayerSettingsPanel
+import com.entretv.app.ui.player.QuickItem
+import com.entretv.app.ui.player.QuickList
+import com.entretv.app.ui.player.SPEEDS
+import com.entretv.app.ui.player.TrackMenu
 import com.entretv.app.ui.player.applyUserStyle
 import com.entretv.app.ui.player.resizeLabelRes
+import com.entretv.app.ui.player.speedLabel
+import com.entretv.app.ui.player.trackMenu
+import com.entretv.app.ui.player.videoValue
 import com.entretv.app.ui.theme.EntreBrand
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 private const val AUTO_HIDE_MS = 4_000L
 /** Créditos: la tarjeta "Siguiente episodio en N" cuenta lo que falta y al llegar a 0 pasa sola. */
@@ -145,6 +163,18 @@ private const val SCRUB_COMMIT_MS = 1_200L
 
 /** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen, formato de imagen. */
 private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null, val durationMs: Long = 900)
+
+/** Listas rápidas de las pastillas de TV. */
+private enum class QuickKind { AUDIO, SUBTITLES, VIDEO, SPEED }
+
+/** Lista rápida abierta; [x] y [top] son la esquina de la pastilla en px del contenedor del video. */
+private class QuickOpen(val kind: QuickKind, val x: Int, val top: Int)
+
+/** Lugares en pantalla que no hace falta redibujar: se leen solo al abrir una lista. */
+private class PlayerAnchors {
+    var stackOrigin: Offset = Offset.Zero
+    val pills = HashMap<QuickKind, Rect>()
+}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -167,6 +197,7 @@ fun PlayerScreen(
     val offline by manager.offline.collectAsState()
     val playError by manager.error.collectAsState()
     val tracks by manager.tracks.collectAsState()
+    val trackParams by manager.trackParams.collectAsState()
     val speed by manager.speed.collectAsState()
     val notice by viewModel.notice.collectAsState()
     val isFavorite by viewModel.isFavorite.collectAsState()
@@ -189,10 +220,19 @@ fun PlayerScreen(
     var panelOpen by rememberSaveable { mutableStateOf(false) }
     var channelsOpen by rememberSaveable { mutableStateOf(false) }
     var liveTab by rememberSaveable { mutableIntStateOf(0) }
+    // Solo se lee en lambdas y efectos: si se leyera aquí, cada tecla redibujaría todo el reproductor.
     var interaction by remember { mutableIntStateOf(0) }
-    var position by remember { mutableLongStateOf(0L) }
+    // La posición cambia cada medio segundo: la leen la barra de avance y estados derivados, nunca
+    // esta función, para que el panel y el resto no se redibujen con cada avance.
+    val positionState = remember { mutableLongStateOf(0L) }
     var dragging by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<Feedback?>(null) }
+    var quick by remember { mutableStateOf<QuickOpen?>(null) }
+    var restorePillFocus by remember { mutableStateOf<QuickKind?>(null) }
+    val anchors = remember { PlayerAnchors() }
+    // Formato de imagen local: se aplica al instante y se guarda en Configuración por detrás.
+    var resizeMode by remember { mutableIntStateOf(prefs.resizeMode) }
+    LaunchedEffect(prefs.resizeMode) { resizeMode = prefs.resizeMode }
 
     val isLive = playable?.kind == "LIVE"
     val portrait = !profile.isTv && configuration.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -205,9 +245,37 @@ fun PlayerScreen(
     val nextFocus = remember { FocusRequester() }
     val skipIntroFocus = remember { FocusRequester() }
     val seekFocus = remember { FocusRequester() }
+    val pillFocus = remember { QuickKind.entries.associateWith { FocusRequester() } }
+    val menu = remember(tracks, trackParams, context) { trackMenu(context, tracks, trackParams) }
+
+    val panelActions = remember(viewModel) {
+        object : PlayerSettingsActions by viewModel {
+            override fun setResizeMode(mode: Int) {
+                resizeMode = mode
+                viewModel.setResizeMode(mode)
+            }
+        }
+    }
 
     fun showControls() {
         controlsVisible = true
+        interaction++
+    }
+
+    fun openQuick(kind: QuickKind) {
+        val pill = anchors.pills[kind] ?: return
+        quick = QuickOpen(
+            kind,
+            x = (pill.left - anchors.stackOrigin.x).toInt(),
+            top = (pill.top - anchors.stackOrigin.y).toInt()
+        )
+        interaction++
+    }
+
+    fun closeQuick() {
+        val open = quick ?: return
+        quick = null
+        restorePillFocus = open.kind
         interaction++
     }
 
@@ -221,7 +289,7 @@ fun PlayerScreen(
         val p = manager.player
         val target = (p.currentPosition + deltaMs).coerceIn(0L, if (duration > 0) duration else Long.MAX_VALUE)
         viewModel.seekTo(target)
-        position = target
+        positionState.longValue = target
         feedback = Feedback(
             if (deltaMs < 0) Icons.Default.FastRewind else Icons.Default.FastForward,
             context.getString(
@@ -233,6 +301,7 @@ fun PlayerScreen(
     }
 
     fun openPanel() {
+        quick = null
         channelsOpen = false
         controlsVisible = false
         panelOpen = true
@@ -240,18 +309,19 @@ fun PlayerScreen(
 
     fun openChannels() {
         viewModel.resetBrowse()
+        quick = null
         panelOpen = false
         controlsVisible = false
         channelsOpen = true
     }
 
     fun cycleAspect() {
-        val next = when (prefs.resizeMode) {
+        val next = when (resizeMode) {
             SettingsRepository.RESIZE_FIT -> SettingsRepository.RESIZE_ZOOM
             SettingsRepository.RESIZE_ZOOM -> SettingsRepository.RESIZE_FILL
             else -> SettingsRepository.RESIZE_FIT
         }
-        viewModel.setResizeMode(next)
+        panelActions.setResizeMode(next)
         val detail = when (next) {
             SettingsRepository.RESIZE_ZOOM -> R.string.player_resize_detail_zoom
             SettingsRepository.RESIZE_FILL -> R.string.player_resize_detail_fill
@@ -276,7 +346,8 @@ fun PlayerScreen(
         activity = activity,
         enabled = profile.isTv && playable != null && !isLive &&
             prefs.frameRateMode == SettingsRepository.FRAME_RATE_AUTO,
-        contentKey = currentKey
+        contentKey = currentKey,
+        hold = controlsVisible || overlayOpen || quick != null
     )
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -295,17 +366,33 @@ fun PlayerScreen(
         }
     }
 
-    // Se ocultan solos mientras reproduce y nadie toca nada.
-    LaunchedEffect(controlsVisible, interaction, overlayOpen, isPlaying, dragging) {
-        if (controlsVisible && isPlaying && !overlayOpen && !dragging) {
+    // Se ocultan solos mientras reproduce y nadie toca nada (ni hay una lista rápida abierta).
+    val portraitLiveNow by rememberUpdatedState(portraitLive)
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            val overlay = panelOpen || (channelsOpen && !portraitLiveNow)
+            if (controlsVisible && isPlaying && !overlay && !dragging && quick == null) interaction else -1
+        }.collectLatest { tick ->
+            if (tick < 0) return@collectLatest
             delay(AUTO_HIDE_MS)
             controlsVisible = false
         }
     }
 
+    LaunchedEffect(controlsVisible) {
+        if (!controlsVisible) quick = null
+    }
+
+    LaunchedEffect(restorePillFocus) {
+        val kind = restorePillFocus ?: return@LaunchedEffect
+        withFrameNanos { }
+        if (controlsVisible) runCatching { pillFocus.getValue(kind).requestFocus() }
+        restorePillFocus = null
+    }
+
     LaunchedEffect(playable) {
         while (true) {
-            if (!dragging) position = manager.player.currentPosition.coerceAtLeast(0L)
+            if (!dragging) positionState.longValue = manager.player.currentPosition.coerceAtLeast(0L)
             delay(500)
         }
     }
@@ -317,17 +404,20 @@ fun PlayerScreen(
         }
     }
 
-    val remaining = duration - position
-    val showNextEpisode = nextEpisode != null && duration > 0 && !autoNextCanceled &&
-        remaining in 1..NEXT_EPISODE_WINDOW_MS && !overlayOpen && !inPip
+    val nearEnd by remember(duration) {
+        derivedStateOf { duration > 0 && (duration - positionState.longValue) in 1..NEXT_EPISODE_WINDOW_MS }
+    }
+    val showNextEpisode = nextEpisode != null && !autoNextCanceled && nearEnd && !overlayOpen && !inPip
     val introLimit = introEnd?.let { it - PlayerViewModel.INTRO_END_MARGIN_MS } ?: PlayerViewModel.INTRO_WINDOW_MS
-    val showSkipIntro = prefs.skipIntroButton && playable is Playable.Episode && !introDone &&
-        position in PlayerViewModel.INTRO_SHOW_FROM_MS until introLimit &&
+    val inIntro by remember(introLimit) {
+        derivedStateOf { positionState.longValue in PlayerViewModel.INTRO_SHOW_FROM_MS until introLimit }
+    }
+    val showSkipIntro = prefs.skipIntroButton && playable is Playable.Episode && !introDone && inIntro &&
         !showNextEpisode && !overlayOpen && !inPip && playError == null
 
     // En TV el foco va a Play al mostrar controles y vuelve a la raíz al ocultarlos.
     LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro) {
-        if (overlayOpen) return@LaunchedEffect
+        if (overlayOpen || quick != null) return@LaunchedEffect
         delay(60)
         runCatching {
             when {
@@ -340,26 +430,41 @@ fun PlayerScreen(
     }
 
     BackHandler(enabled = profile.isTv && controlsVisible && !overlayOpen) { controlsVisible = false }
+    BackHandler(enabled = quick != null) { closeQuick() }
 
-    val browserState = ChannelBrowserState(
-        categories = liveCategories,
-        category = browseCategory,
-        query = browseQuery,
-        channels = browseChannels,
-        currentId = playable?.contentKey,
-        nowPlaying = viewModel::nowPlaying,
-        onCategory = viewModel::browse,
-        onQuery = viewModel::searchChannels,
-        onSelect = { channel ->
-            viewModel.playChannel(channel)
-            if (!portraitLive) channelsOpen = false
-        }
-    )
+    val currentId = playable?.contentKey
+    val browserState = remember(liveCategories, browseCategory, browseQuery, browseChannels, currentId, portraitLive) {
+        ChannelBrowserState(
+            categories = liveCategories,
+            category = browseCategory,
+            query = browseQuery,
+            channels = browseChannels,
+            currentId = currentId,
+            nowPlaying = viewModel::nowPlaying,
+            onCategory = viewModel::browse,
+            onQuery = viewModel::searchChannels,
+            onSelect = { channel ->
+                viewModel.playChannel(channel)
+                if (!portraitLive) channelsOpen = false
+            }
+        )
+    }
+
+    // Solo lo que cambia el aspecto de los subtítulos: el resto de Configuración no los reaplica.
+    val subtitleLook = listOf(prefs.subtitleSize, prefs.subtitleColor, prefs.subtitleBackground, prefs.subtitlePosition)
+
+    // Alto de los controles de abajo: las tarjetas flotantes se ponen encima.
+    val controlsBottom = when {
+        portrait -> 170.dp
+        profile.isTv -> 160.dp
+        else -> 110.dp
+    }
 
     val videoStack: @Composable (Modifier) -> Unit = { modifier ->
         Box(
             modifier.onGloballyPositioned { coords ->
                 val r = coords.boundsInWindow()
+                anchors.stackOrigin = r.topLeft
                 PipController.videoBounds = android.graphics.Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt())
             }
         ) {
@@ -372,12 +477,16 @@ fun PlayerScreen(
                 },
                 update = { view ->
                     view.keepScreenOn = isPlaying || buffering || reconnecting
-                    view.resizeMode = when (prefs.resizeMode) {
+                    val mode = when (resizeMode) {
                         SettingsRepository.RESIZE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         SettingsRepository.RESIZE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
-                    view.subtitleView?.applyUserStyle(prefs)
+                    if (view.resizeMode != mode) view.resizeMode = mode
+                    if (view.tag != subtitleLook) {
+                        view.subtitleView?.applyUserStyle(prefs)
+                        view.tag = subtitleLook
+                    }
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -443,7 +552,8 @@ fun PlayerScreen(
                             },
                             isLive = isLive,
                             isFavorite = isFavorite,
-                            showActions = !portrait,
+                            // En TV esas acciones están en las pastillas de abajo.
+                            showActions = !portrait && !profile.isTv,
                             showChannels = isLive && !portraitLive,
                             onBack = onBack,
                             onChannels = ::openChannels,
@@ -509,7 +619,7 @@ fun PlayerScreen(
                             if (portrait && !portraitLive) {
                                 ActionPills(
                                     isFavorite = isFavorite,
-                                    resizeMode = prefs.resizeMode,
+                                    resizeMode = resizeMode,
                                     pipSupported = pipSupported,
                                     onFavorite = { viewModel.toggleFavorite(); interaction++ },
                                     onAspect = ::cycleAspect,
@@ -521,21 +631,48 @@ fun PlayerScreen(
                             if (!portraitLive) {
                                 BottomBar(
                                     isLive = isLive,
-                                    position = position,
+                                    position = { positionState.longValue },
                                     duration = duration,
                                     speed = speed,
                                     epg = epg,
                                     tv = profile.isTv,
                                     seekFocus = seekFocus,
                                     onSeekChange = {
-                                        dragging = true; position = it; interaction++
+                                        dragging = true; positionState.longValue = it; interaction++
                                     },
                                     onSeekDone = {
-                                        dragging = false; viewModel.seekTo(position)
+                                        dragging = false; viewModel.seekTo(positionState.longValue)
                                     },
                                     modifier = if (portrait) Modifier.navigationBarsPadding() else Modifier
-                                )
+                                ) {
+                                    if (profile.isTv) {
+                                        TvQuickPills(
+                                            menu = menu,
+                                            isLive = isLive,
+                                            resizeMode = resizeMode,
+                                            speed = speed,
+                                            isFavorite = isFavorite,
+                                            anchors = anchors,
+                                            pillFocus = pillFocus,
+                                            onQuick = ::openQuick,
+                                            onAspect = ::cycleAspect,
+                                            onFavorite = { viewModel.toggleFavorite(); interaction++ },
+                                            onMore = ::openPanel
+                                        )
+                                    }
+                                }
                             }
+                        }
+
+                        quick?.let { open ->
+                            val (title, items) = quickItems(open.kind, menu, speed, panelActions)
+                            QuickList(
+                                title = title,
+                                items = items,
+                                anchorX = open.x,
+                                anchorTop = open.top,
+                                onDismiss = ::closeQuick
+                            )
                         }
                     }
                 }
@@ -546,13 +683,13 @@ fun PlayerScreen(
                     exit = slideOutVertically { it } + fadeOut(),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 24.dp, bottom = if (controlsVisible) (if (portrait) 170.dp else 110.dp) else 32.dp)
+                        .padding(end = 24.dp, bottom = if (controlsVisible) controlsBottom else 32.dp)
                 ) {
                     nextEpisode?.let { next ->
                         NextEpisodeCard(
                             next = next,
                             fallbackImage = (playable as? Playable.Episode)?.seriesCover.orEmpty(),
-                            secondsLeft = ((remaining + 999) / 1000).coerceAtLeast(0).toInt(),
+                            secondsLeft = { ((duration - positionState.longValue + 999) / 1000).coerceAtLeast(0).toInt() },
                             compact = portrait,
                             playFocus = nextFocus,
                             onPlayNow = viewModel::playNextEpisode,
@@ -567,7 +704,7 @@ fun PlayerScreen(
                     exit = fadeOut(),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 24.dp, bottom = if (controlsVisible) (if (portrait) 170.dp else 110.dp) else 32.dp)
+                        .padding(end = 24.dp, bottom = if (controlsVisible) controlsBottom else 32.dp)
                 ) {
                     // Fondo oscuro debajo: el botón translúcido se pierde en escenas claras.
                     Box(Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))) {
@@ -734,14 +871,16 @@ fun PlayerScreen(
 
             PlayerSettingsPanel(
                 visible = panelOpen,
-                tracks = tracks,
+                menu = menu,
                 prefs = prefs,
+                resizeMode = resizeMode,
                 speed = speed,
                 isLive = isLive,
                 sleepMinutes = sleepMinutes,
                 sleepEndsAt = sleepEndsAt,
                 techInfo = manager::techInfo,
-                actions = viewModel,
+                actions = panelActions,
+                light = profile.isTv || profile.lowRam,
                 onDismiss = { panelOpen = false }
             )
         }
@@ -754,12 +893,13 @@ fun PlayerScreen(
 private fun NextEpisodeCard(
     next: EpisodeEntity,
     fallbackImage: String,
-    secondsLeft: Int,
+    secondsLeft: () -> Int,
     compact: Boolean,
     playFocus: FocusRequester,
     onPlayNow: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val seconds = secondsLeft()
     Surface(color = Color.Black.copy(alpha = 0.82f), shape = RoundedCornerShape(14.dp)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -778,7 +918,7 @@ private fun NextEpisodeCard(
             }
             Column(Modifier.width(if (compact) 240.dp else 300.dp)) {
                 Text(
-                    stringResource(R.string.player_up_next_in, secondsLeft),
+                    stringResource(R.string.player_up_next_in, seconds),
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
@@ -871,11 +1011,100 @@ private fun ActionPills(
     }
 }
 
+/**
+ * Pastillas de TV debajo de la barra de avance: Audio, Subtítulos y Video abren una lista corta
+ * encima; Formato cambia al instante; Más opciones abre el panel completo.
+ */
+@Composable
+private fun TvQuickPills(
+    menu: TrackMenu,
+    isLive: Boolean,
+    resizeMode: Int,
+    speed: Float,
+    isFavorite: Boolean,
+    anchors: PlayerAnchors,
+    pillFocus: Map<QuickKind, FocusRequester>,
+    onQuick: (QuickKind) -> Unit,
+    onAspect: () -> Unit,
+    onFavorite: () -> Unit,
+    onMore: () -> Unit
+) {
+    @Composable
+    fun quickPill(kind: QuickKind, icon: ImageVector, label: String) {
+        ActionPill(
+            icon = icon,
+            label = label,
+            large = true,
+            onClick = { onQuick(kind) },
+            modifier = Modifier
+                .focusRequester(pillFocus.getValue(kind))
+                .onGloballyPositioned { anchors.pills[kind] = it.boundsInWindow() }
+        )
+    }
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 10.dp)
+    ) {
+        quickPill(QuickKind.AUDIO, Icons.AutoMirrored.Filled.VolumeUp, stringResource(R.string.player_audio))
+        quickPill(QuickKind.SUBTITLES, Icons.Default.ClosedCaption, stringResource(R.string.player_subtitles))
+        if (menu.video.isNotEmpty()) {
+            quickPill(QuickKind.VIDEO, Icons.Default.HighQuality, stringResource(R.string.player_video))
+        }
+        ActionPill(Icons.Default.AspectRatio, stringResource(resizeLabelRes(resizeMode)), large = true, onClick = onAspect)
+        if (!isLive) {
+            quickPill(
+                QuickKind.SPEED,
+                Icons.Default.Speed,
+                if (speed == 1f) stringResource(R.string.player_speed) else speedLabel(speed)
+            )
+        }
+        ActionPill(
+            icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            label = stringResource(if (isFavorite) R.string.player_in_my_list else R.string.player_my_list),
+            tint = if (isFavorite) EntreBrand.Accent else Color.White,
+            large = true,
+            onClick = onFavorite
+        )
+        ActionPill(Icons.Default.MoreHoriz, stringResource(R.string.player_more_options), large = true, onClick = onMore)
+    }
+}
+
+/** Título y opciones de una lista rápida; cada opción hace lo mismo que en el panel. */
+@Composable
+private fun quickItems(
+    kind: QuickKind,
+    menu: TrackMenu,
+    speed: Float,
+    actions: PlayerSettingsActions
+): Pair<String, List<QuickItem>> = when (kind) {
+    QuickKind.AUDIO -> stringResource(R.string.player_audio) to buildList {
+        menu.audio.forEach { add(QuickItem(it.label, it.selected && !menu.audioOff) { actions.selectAudio(it) }) }
+        if (menu.audio.isEmpty()) add(QuickItem(stringResource(R.string.player_no_tracks), false) {})
+        else add(QuickItem(stringResource(R.string.player_audio_off), menu.audioOff) { actions.selectAudio(null) })
+    }
+    QuickKind.SUBTITLES -> stringResource(R.string.player_subtitles) to buildList {
+        add(QuickItem(stringResource(R.string.player_subtitles_off), menu.subtitles.none { it.selected }) { actions.selectSubtitle(null) })
+        menu.subtitles.forEach { add(QuickItem(it.label, it.selected) { actions.selectSubtitle(it) }) }
+    }
+    QuickKind.VIDEO -> stringResource(R.string.player_video) to buildList {
+        val auto = !menu.videoOff && !menu.videoFixed
+        add(QuickItem(if (auto) videoValue(menu) else stringResource(R.string.player_video_auto), auto) { actions.selectVideo(null) })
+        menu.video.forEach { add(QuickItem(it.label, menu.videoFixed && !menu.videoOff && it.selected) { actions.selectVideo(it) }) }
+        add(QuickItem(stringResource(R.string.player_video_off), menu.videoOff) { actions.disableVideo() })
+    }
+    QuickKind.SPEED -> stringResource(R.string.player_speed) to SPEEDS.map { value ->
+        QuickItem(speedLabel(value), value == speed) { actions.setSpeed(value) }
+    }
+}
+
 @Composable
 private fun ActionPill(
     icon: ImageVector,
     label: String,
     tint: Color = Color.White,
+    large: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -888,16 +1117,24 @@ private fun ActionPill(
         modifier = modifier
             .clip(shape)
             .background(Color.Black.copy(alpha = if (focused) 0.8f else 0.55f))
-            .border(1.dp, Color.White.copy(alpha = if (focused) 0.9f else 0.2f), shape)
+            .border(
+                if (focused && large) 2.dp else 1.dp,
+                when {
+                    focused && large -> EntreBrand.Accent
+                    focused -> Color.White.copy(alpha = 0.9f)
+                    else -> Color.White.copy(alpha = 0.2f)
+                },
+                shape
+            )
             .clickable(interactionSource = source, indication = null, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp)
+            .padding(horizontal = if (large) 14.dp else 10.dp, vertical = if (large) 8.dp else 9.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(5.dp))
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(if (large) 20.dp else 16.dp))
+        Spacer(Modifier.width(if (large) 7.dp else 5.dp))
         Text(
             label,
             color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
+            style = if (large) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1135,7 +1372,7 @@ private fun TopBar(
 @Composable
 private fun BottomBar(
     isLive: Boolean,
-    position: Long,
+    position: () -> Long,
     duration: Long,
     speed: Float,
     epg: List<EpgEntity>,
@@ -1143,7 +1380,8 @@ private fun BottomBar(
     seekFocus: FocusRequester,
     onSeekChange: (Long) -> Unit,
     onSeekDone: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    extra: @Composable () -> Unit = {}
 ) {
     Column(
         modifier = modifier
@@ -1151,142 +1389,160 @@ private fun BottomBar(
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))))
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
-        if (!isLive && duration > 0) {
-            val barSource = remember { MutableInteractionSource() }
-            val barFocused by barSource.collectIsFocusedAsState()
-            var scrubbing by remember { mutableStateOf(false) }
-            var target by remember { mutableLongStateOf(0L) }
-            var moves by remember { mutableIntStateOf(0) }
-            val commit by rememberUpdatedState(onSeekDone)
+        if (!isLive && duration > 0) SeekBar(position, duration, speed, tv, seekFocus, onSeekChange, onSeekDone)
+        else if (isLive && epg.isNotEmpty()) LiveNowNext(epg)
+        extra()
+    }
+}
 
-            fun finishScrub() {
-                if (!scrubbing) return
-                scrubbing = false
-                commit()
-            }
+/** Aparte para que el avance de cada medio segundo redibuje solo esto. */
+@Composable
+private fun SeekBar(
+    positionOf: () -> Long,
+    duration: Long,
+    speed: Float,
+    tv: Boolean,
+    seekFocus: FocusRequester,
+    onSeekChange: (Long) -> Unit,
+    onSeekDone: () -> Unit
+) {
+    val position = positionOf()
+    val barSource = remember { MutableInteractionSource() }
+    val barFocused by barSource.collectIsFocusedAsState()
+    var scrubbing by remember { mutableStateOf(false) }
+    var target by remember { mutableLongStateOf(0L) }
+    var moves by remember { mutableIntStateOf(0) }
+    val commit by rememberUpdatedState(onSeekDone)
 
-            // Mantener pulsado avanza cada vez más rápido; al soltar, el salto se aplica solo.
-            LaunchedEffect(moves) {
-                if (!scrubbing) return@LaunchedEffect
-                delay(SCRUB_COMMIT_MS)
-                finishScrub()
-            }
+    fun finishScrub() {
+        if (!scrubbing) return
+        scrubbing = false
+        commit()
+    }
 
-            val barModifier = if (!tv) Modifier else Modifier
-                .focusRequester(seekFocus)
-                .onFocusChanged { if (!it.isFocused) finishScrub() }
-                .onPreviewKeyEvent { event ->
-                    when (event.key) {
-                        Key.DirectionLeft, Key.DirectionRight -> {
-                            if (event.type == KeyEventType.KeyDown) {
-                                if (!scrubbing) {
-                                    target = position
-                                    scrubbing = true
-                                }
-                                val repeat = event.nativeKeyEvent.repeatCount
-                                val step = when {
-                                    repeat < 5 -> 10_000L
-                                    repeat < 15 -> 30_000L
-                                    else -> maxOf(60_000L, duration / 50)
-                                }
-                                target = (target + if (event.key == Key.DirectionLeft) -step else step).coerceIn(0L, duration)
-                                onSeekChange(target)
-                                moves++
-                            }
-                            true
+    // Mantener pulsado avanza cada vez más rápido; al soltar, el salto se aplica solo.
+    LaunchedEffect(moves) {
+        if (!scrubbing) return@LaunchedEffect
+        delay(SCRUB_COMMIT_MS)
+        finishScrub()
+    }
+
+    val barModifier = if (!tv) Modifier else Modifier
+        .focusRequester(seekFocus)
+        .onFocusChanged { if (!it.isFocused) finishScrub() }
+        .onPreviewKeyEvent { event ->
+            when (event.key) {
+                Key.DirectionLeft, Key.DirectionRight -> {
+                    if (event.type == KeyEventType.KeyDown) {
+                        if (!scrubbing) {
+                            target = positionOf()
+                            scrubbing = true
                         }
-                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                            if (event.type == KeyEventType.KeyDown) finishScrub()
-                            true
+                        val repeat = event.nativeKeyEvent.repeatCount
+                        val step = when {
+                            repeat < 5 -> 10_000L
+                            repeat < 15 -> 30_000L
+                            else -> maxOf(60_000L, duration / 50)
                         }
-                        else -> false
+                        target = (target + if (event.key == Key.DirectionLeft) -step else step).coerceIn(0L, duration)
+                        onSeekChange(target)
+                        moves++
                     }
+                    true
                 }
-                .focusable(interactionSource = barSource)
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (barFocused) Color.White.copy(alpha = 0.14f) else Color.Transparent)
-                .padding(horizontal = 8.dp)
+                Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                    if (event.type == KeyEventType.KeyDown) finishScrub()
+                    true
+                }
+                else -> false
+            }
+        }
+        .focusable(interactionSource = barSource)
+        .clip(RoundedCornerShape(12.dp))
+        .background(if (barFocused) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+        .padding(horizontal = 8.dp)
 
-            Box(barModifier) {
-                Slider(
-                    value = position.toFloat().coerceIn(0f, duration.toFloat()),
-                    valueRange = 0f..duration.toFloat(),
-                    onValueChange = { onSeekChange(it.toLong()) },
-                    onValueChangeFinished = onSeekDone,
-                    colors = SliderDefaults.colors(
-                        thumbColor = if (barFocused) Color.White else EntreBrand.Accent,
-                        activeTrackColor = EntreBrand.Accent,
-                        inactiveTrackColor = Color.White.copy(alpha = if (barFocused) 0.4f else 0.25f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                        .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
-                )
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    PlayerViewModel.formatMs(position),
-                    color = if (scrubbing) EntreBrand.Accent else Color.White,
-                    style = if (barFocused) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium,
-                    fontWeight = if (scrubbing) FontWeight.Bold else null
-                )
-                if (barFocused) {
-                    Spacer(Modifier.width(16.dp))
-                    Text(
-                        stringResource(R.string.player_seek_hint),
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                if (speed != 1f) {
-                    Text(
-                        "${speed.toString().removeSuffix(".0")}x",
-                        color = EntreBrand.Accent,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.width(12.dp))
-                }
-                Text(
-                    "−" + PlayerViewModel.formatMs((duration - position).coerceAtLeast(0L)),
-                    color = Color.White.copy(alpha = 0.75f),
-                    style = MaterialTheme.typography.labelMedium
-                )
-            }
-        } else if (isLive && epg.isNotEmpty()) {
-            val now = System.currentTimeMillis() / 1000
-            val current = epg.first()
-            if (current.start <= now && current.end > now) {
-                Text(
-                    stringResource(R.string.player_now_program, current.title),
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { ((now - current.start).toFloat() / (current.end - current.start).coerceAtLeast(1)).coerceIn(0f, 1f) },
-                    color = EntreBrand.Accent,
-                    trackColor = Color.White.copy(alpha = 0.2f),
-                    modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape)
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-            epg.filter { it.start > now }.take(2).forEach { program ->
-                Row(Modifier.padding(vertical = 1.dp)) {
-                    Text(timeFormat(program.start), color = EntreBrand.Accent, style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        program.title,
-                        color = Color.White.copy(alpha = 0.85f),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
+    Box(barModifier) {
+        Slider(
+            value = position.toFloat().coerceIn(0f, duration.toFloat()),
+            valueRange = 0f..duration.toFloat(),
+            onValueChange = { onSeekChange(it.toLong()) },
+            onValueChangeFinished = onSeekDone,
+            colors = SliderDefaults.colors(
+                thumbColor = if (barFocused) Color.White else EntreBrand.Accent,
+                activeTrackColor = EntreBrand.Accent,
+                inactiveTrackColor = Color.White.copy(alpha = if (barFocused) 0.4f else 0.25f)
+            ),
+            modifier = Modifier.fillMaxWidth()
+                .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
+        )
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            PlayerViewModel.formatMs(position),
+            color = if (scrubbing) EntreBrand.Accent else Color.White,
+            style = if (barFocused) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium,
+            fontWeight = if (scrubbing) FontWeight.Bold else null
+        )
+        if (barFocused) {
+            Spacer(Modifier.width(16.dp))
+            Text(
+                stringResource(R.string.player_seek_hint),
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        if (speed != 1f) {
+            Text(
+                "${speed.toString().removeSuffix(".0")}x",
+                color = EntreBrand.Accent,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.width(12.dp))
+        }
+        Text(
+            "−" + PlayerViewModel.formatMs((duration - position).coerceAtLeast(0L)),
+            color = Color.White.copy(alpha = 0.75f),
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+@Composable
+private fun LiveNowNext(epg: List<EpgEntity>) {
+    val now = System.currentTimeMillis() / 1000
+    val current = epg.first()
+    if (current.start <= now && current.end > now) {
+        Text(
+            stringResource(R.string.player_now_program, current.title),
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(
+            progress = { ((now - current.start).toFloat() / (current.end - current.start).coerceAtLeast(1)).coerceIn(0f, 1f) },
+            color = EntreBrand.Accent,
+            trackColor = Color.White.copy(alpha = 0.2f),
+            modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape)
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+    epg.filter { it.start > now }.take(2).forEach { program ->
+        Row(Modifier.padding(vertical = 1.dp)) {
+            Text(timeFormat(program.start), color = EntreBrand.Accent, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.width(12.dp))
+            Text(
+                program.title,
+                color = Color.White.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

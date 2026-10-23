@@ -210,8 +210,9 @@ class PlayerViewModel @Inject constructor(
     // ============================ Panel de ajustes ============================
 
     // Audio y subtítulos elegidos aquí valen solo para este video; el siguiente arranca con Configuración.
-    override fun selectAudio(option: TrackOption) {
-        playerManager.selectTrack(option.group, option.index)
+    override fun selectAudio(option: TrackOption?) {
+        if (option == null) playerManager.disableAudio()
+        else playerManager.selectTrack(option.group, option.index)
     }
 
     override fun selectSubtitle(option: TrackOption?) {
@@ -219,9 +220,13 @@ class PlayerViewModel @Inject constructor(
         else playerManager.selectTrack(option.group, option.index)
     }
 
-    override fun selectQuality(option: TrackOption?) {
-        if (option == null) playerManager.autoQuality()
-        else playerManager.selectTrack(option.group, option.index)
+    override fun selectVideo(option: TrackOption?) {
+        if (option == null) playerManager.autoVideo()
+        else playerManager.selectVideoTrack(option.group, option.index)
+    }
+
+    override fun disableVideo() {
+        playerManager.disableVideo()
     }
 
     override fun setSubtitleSize(size: Int) {

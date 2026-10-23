@@ -8,9 +8,11 @@ import androidx.compose.runtime.Immutable
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import com.entretv.app.R
+import com.entretv.app.player.isCoverArt
 import java.util.Locale
 
 /** Una pista elegible en el panel ("Español · 5.1 · Dolby Digital"). */
@@ -27,22 +29,57 @@ data class TrackOption(
 /** Idioma en que se muestran los textos: el de [context] (la actividad sigue el idioma de la app). */
 private fun Context.displayLocale(): Locale = resources.configuration.locales[0]
 
+/**
+ * Pistas listas para el panel y las opciones rápidas. Se arma solo cuando cambian las pistas o
+ * lo elegido a mano, no en cada redibujo.
+ */
+@Immutable
+class TrackMenu(
+    val audio: List<TrackOption>,
+    val subtitles: List<TrackOption>,
+    val video: List<TrackOption>,
+    val audioOff: Boolean,
+    val videoOff: Boolean,
+    /** El usuario fijó una pista de video (no está en automático). */
+    val videoFixed: Boolean,
+    /** Altura de la pista que se ve ahora; 0 si no se sabe. */
+    val videoHeight: Int
+) {
+    val selectedVideo: TrackOption? get() = video.firstOrNull { it.selected }
+}
+
+fun trackMenu(context: Context, tracks: Tracks, params: TrackSelectionParameters): TrackMenu {
+    val video = tracks.videoOptions(context)
+    val shown = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
+    val shownHeight = shown?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { g.getTrackFormat(it).height } }
+    return TrackMenu(
+        audio = tracks.audioOptions(context),
+        subtitles = tracks.subtitleOptions(context),
+        video = video,
+        audioOff = C.TRACK_TYPE_AUDIO in params.disabledTrackTypes,
+        videoOff = C.TRACK_TYPE_VIDEO in params.disabledTrackTypes,
+        videoFixed = params.overrides.keys.any { it.type == C.TRACK_TYPE_VIDEO },
+        videoHeight = shownHeight?.takeIf { it > 0 } ?: 0
+    )
+}
+
 fun Tracks.audioOptions(context: Context): List<TrackOption> = options(C.TRACK_TYPE_AUDIO) { audioLabel(context, it) }
     .distinctBy { it.label }
 
 fun Tracks.subtitleOptions(context: Context): List<TrackOption> = options(C.TRACK_TYPE_TEXT) { subtitleLabel(context, it) }
 
-/** Una opción por resolución (la de mayor bitrate), de mayor a menor. */
-fun Tracks.qualityOptions(context: Context): List<TrackOption> = options(C.TRACK_TYPE_VIDEO) { videoLabel(context, it) }
-    .filter { it.format.height > 0 }
-    .sortedWith(compareByDescending<TrackOption> { it.format.height }.thenByDescending { it.format.bitrate })
-    .distinctBy { it.format.height }
-
-/** True si el usuario fijó una resolución (no está en automático). */
-fun Tracks.hasFixedQuality(): Boolean = groups.any { group ->
-    group.type == C.TRACK_TYPE_VIDEO && group.length > 1 &&
-        (0 until group.length).count { group.isTrackSelected(it) } == 1
-}
+/**
+ * Cada pista de video del archivo; dentro de una pista adaptable (HLS), una opción por
+ * resolución (la de mayor bitrate), de mayor a menor.
+ */
+fun Tracks.videoOptions(context: Context): List<TrackOption> =
+    groups.filter { it.type == C.TRACK_TYPE_VIDEO }.flatMap { group ->
+        (0 until group.length)
+            .filter { group.isTrackSupported(it) }
+            .map { i -> TrackOption(group, i, videoLabel(context, group.getTrackFormat(i)), group.isTrackSelected(i)) }
+            .sortedWith(compareByDescending<TrackOption> { it.format.height }.thenByDescending { it.format.bitrate })
+            .distinctBy { if (it.format.height > 0) it.format.height else -1 - it.index }
+    }
 
 private fun Tracks.options(type: Int, label: (Format) -> String): List<TrackOption> =
     groups.filter { it.type == type }.flatMap { group ->
@@ -77,16 +114,26 @@ fun subtitleLabel(context: Context, format: Format): String {
 }
 
 fun videoLabel(context: Context, format: Format): String {
+    val height = format.height
+    if (format.isCoverArt()) {
+        return listOfNotNull(
+            context.getString(R.string.player_video_cover),
+            height.takeIf { it > 0 }?.let { "${it}p" }
+        ).joinToString(" · ")
+    }
     val name = when {
-        format.height >= 2000 -> "4K · ${format.height}p"
-        format.height >= 1400 -> "2K · ${format.height}p"
-        format.height >= 1000 -> "Full HD · ${format.height}p"
-        format.height >= 700 -> "HD · ${format.height}p"
-        format.height > 0 -> "${format.height}p"
+        height >= 2000 -> "4K · ${height}p"
+        height >= 1400 -> "2K · ${height}p"
+        height >= 1000 -> "Full HD · ${height}p"
+        height >= 700 -> "HD · ${height}p"
+        height > 0 -> "${height}p"
         else -> context.getString(R.string.player_video)
     }
-    val rate = format.bitrate.takeIf { it > 0 }?.let { " · ${bitrateLabel(it)}" }.orEmpty()
-    return name + rate
+    return listOfNotNull(
+        name,
+        videoCodecLabel(format.sampleMimeType),
+        format.bitrate.takeIf { it > 0 }?.let { bitrateLabel(it) }
+    ).joinToString(" · ")
 }
 
 fun channelsLabel(context: Context, count: Int): String? = when (count) {

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Pistas de video y audio, opciones rápidas del reproductor -->
+    <string name="player_video_auto">Automático</string>
+    <string name="player_video_auto_height">Automático · %1$dp</string>
+    <string name="player_video_off">Sin video</string>
+    <string name="player_video_cover">Imagen de portada</string>
+    <string name="player_video_hint">¿Se oye pero no se ve? Elige otra vez la misma pista de video o prueba otra.</string>
+    <string name="player_audio_off">Sin audio</string>
+    <string name="player_more_options">Más opciones</string>
+</resources>
