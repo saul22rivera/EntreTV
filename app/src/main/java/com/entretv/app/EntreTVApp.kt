@@ -21,6 +21,8 @@ import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 
 @HiltAndroidApp
 class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
@@ -28,6 +30,7 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var downloads: DownloadRepository
     @Inject lateinit var tvHome: dagger.Lazy<TvHomePublisher>
+    @Inject lateinit var httpClient: dagger.Lazy<OkHttpClient>
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -80,10 +83,18 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
                     }
                     .build()
             }
+            // Cliente de la app con despachador propio: el de fábrica deja 5 descargas por servidor
+            // y los pósters vienen casi todos del mismo. Sin caché HTTP: Coil ya guarda en disco.
+            .okHttpClient {
+                httpClient.get().newBuilder()
+                    .cache(null)
+                    .dispatcher(Dispatcher().apply { maxRequests = 32; maxRequestsPerHost = 12 })
+                    .build()
+            }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("entre_coil"))
-                    .maxSizeBytes(64L * 1024 * 1024)
+                    .maxSizeBytes((if (lowRam) 128L else 256L) * 1024 * 1024)
                     .build()
             }
             .respectCacheHeaders(false)

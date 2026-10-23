@@ -256,8 +256,12 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch { settings.setSubtitlePosition(position) }
     }
 
+    /** Formato de imagen: vale solo para el video actual, cada uno arranca en Ajustar. */
+    private val _resizeMode = MutableStateFlow(SettingsRepository.RESIZE_FIT)
+    val resizeMode: StateFlow<Int> = _resizeMode
+
     override fun setResizeMode(mode: Int) {
-        viewModelScope.launch { settings.setResizeMode(mode) }
+        _resizeMode.value = mode
     }
 
     override fun setSpeed(speed: Float) {
@@ -488,6 +492,7 @@ class PlayerViewModel @Inject constructor(
 
     private suspend fun startPlayable(p: Playable) {
         _playable.value = p
+        _resizeMode.value = SettingsRepository.RESIZE_FIT
         _autoNextCanceled.value = false
         _introDone.value = false
         introLearnJob?.cancel()

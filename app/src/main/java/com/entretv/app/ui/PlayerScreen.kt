@@ -230,9 +230,7 @@ fun PlayerScreen(
     var quick by remember { mutableStateOf<QuickOpen?>(null) }
     var restorePillFocus by remember { mutableStateOf<QuickKind?>(null) }
     val anchors = remember { PlayerAnchors() }
-    // Formato de imagen local: se aplica al instante y se guarda en Configuración por detrás.
-    var resizeMode by remember { mutableIntStateOf(prefs.resizeMode) }
-    LaunchedEffect(prefs.resizeMode) { resizeMode = prefs.resizeMode }
+    val resizeMode by viewModel.resizeMode.collectAsState()
 
     val isLive = playable?.kind == "LIVE"
     val portrait = !profile.isTv && configuration.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -247,15 +245,6 @@ fun PlayerScreen(
     val seekFocus = remember { FocusRequester() }
     val pillFocus = remember { QuickKind.entries.associateWith { FocusRequester() } }
     val menu = remember(tracks, trackParams, context) { trackMenu(context, tracks, trackParams) }
-
-    val panelActions = remember(viewModel) {
-        object : PlayerSettingsActions by viewModel {
-            override fun setResizeMode(mode: Int) {
-                resizeMode = mode
-                viewModel.setResizeMode(mode)
-            }
-        }
-    }
 
     fun showControls() {
         controlsVisible = true
@@ -321,7 +310,7 @@ fun PlayerScreen(
             SettingsRepository.RESIZE_ZOOM -> SettingsRepository.RESIZE_FILL
             else -> SettingsRepository.RESIZE_FIT
         }
-        panelActions.setResizeMode(next)
+        viewModel.setResizeMode(next)
         val detail = when (next) {
             SettingsRepository.RESIZE_ZOOM -> R.string.player_resize_detail_zoom
             SettingsRepository.RESIZE_FILL -> R.string.player_resize_detail_fill
@@ -419,7 +408,7 @@ fun PlayerScreen(
     LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro) {
         if (overlayOpen || quick != null) return@LaunchedEffect
         delay(60)
-        val agentResult = runCatching {
+        runCatching {
             when {
                 controlsVisible -> playFocus.requestFocus()
                 showNextEpisode && profile.isTv -> nextFocus.requestFocus()
@@ -427,13 +416,6 @@ fun PlayerScreen(
                 else -> rootFocus.requestFocus()
             }
         }
-        // #region agent log
-        com.entretv.app.player.AgentDebugLog.log("F", "PlayerScreen:focusEffect", "initial focus request", mapOf(
-            "controlsVisible" to controlsVisible, "playableLoaded" to (playable != null), "isPlaying" to isPlaying,
-            "buffering" to buffering, "playError" to (playError != null), "result" to agentResult.getOrNull(),
-            "failure" to agentResult.exceptionOrNull()?.javaClass?.simpleName
-        ))
-        // #endregion
     }
 
     BackHandler(enabled = profile.isTv && controlsVisible && !overlayOpen) { controlsVisible = false }
@@ -484,7 +466,8 @@ fun PlayerScreen(
                 },
                 update = { view ->
                     view.keepScreenOn = isPlaying || buffering || reconnecting
-                    val mode = when (resizeMode) {
+                    // En vertical no hay botón de formato: rellenar o estirar ahí deforman el video.
+                    val mode = when (if (portrait) SettingsRepository.RESIZE_FIT else resizeMode) {
                         SettingsRepository.RESIZE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         SettingsRepository.RESIZE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -620,10 +603,8 @@ fun PlayerScreen(
                             if (portrait && !portraitLive) {
                                 ActionPills(
                                     isFavorite = isFavorite,
-                                    resizeMode = resizeMode,
                                     pipSupported = pipSupported,
                                     onFavorite = { viewModel.toggleFavorite(); interaction++ },
-                                    onAspect = ::cycleAspect,
                                     onPip = ::enterPip,
                                     onSettings = ::openPanel,
                                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
@@ -666,7 +647,7 @@ fun PlayerScreen(
                         }
 
                         quick?.let { open ->
-                            val (title, items) = quickItems(open.kind, menu, speed, panelActions)
+                            val (title, items) = quickItems(open.kind, menu, speed, viewModel)
                             QuickList(
                                 title = title,
                                 items = items,
@@ -824,10 +805,8 @@ fun PlayerScreen(
                     )
                     ActionPills(
                         isFavorite = isFavorite,
-                        resizeMode = prefs.resizeMode,
                         pipSupported = pipSupported,
                         onFavorite = viewModel::toggleFavorite,
-                        onAspect = ::cycleAspect,
                         onPip = ::enterPip,
                         onSettings = ::openPanel,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -875,12 +854,13 @@ fun PlayerScreen(
                 menu = menu,
                 prefs = prefs,
                 resizeMode = resizeMode,
+                showScreen = !portrait,
                 speed = speed,
                 isLive = isLive,
                 sleepMinutes = sleepMinutes,
                 sleepEndsAt = sleepEndsAt,
                 techInfo = manager::techInfo,
-                actions = panelActions,
+                actions = viewModel,
                 light = profile.isTv || profile.lowRam,
                 onDismiss = { panelOpen = false }
             )
@@ -979,19 +959,20 @@ private fun ReconnectPill(offline: Boolean, attempt: Int, modifier: Modifier = M
     }
 }
 
-/** Pastillas translúcidas del celular: Mi lista, formato de imagen, ventana flotante y ajustes. */
+/**
+ * Pastillas translúcidas del celular en vertical: Mi lista, ventana flotante y ajustes. Sin
+ * formato de imagen: en vertical rellenar o estirar deforman el video.
+ */
 @Composable
 private fun ActionPills(
     isFavorite: Boolean,
-    resizeMode: Int,
     pipSupported: Boolean,
     onFavorite: () -> Unit,
-    onAspect: () -> Unit,
     onPip: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Cada pastilla toma a lo sumo una parte igual del ancho: en un celular angosto entran las cuatro.
+    // Cada pastilla toma a lo sumo una parte igual del ancho: en un celular angosto entran todas.
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         modifier = modifier.fillMaxWidth()
@@ -1004,7 +985,6 @@ private fun ActionPills(
             onClick = onFavorite,
             modifier = share
         )
-        ActionPill(Icons.Default.AspectRatio, stringResource(resizeLabelRes(resizeMode)), onClick = onAspect, modifier = share)
         if (pipSupported) {
             ActionPill(Icons.Default.PictureInPictureAlt, stringResource(R.string.player_pip_short), onClick = onPip, modifier = share)
         }

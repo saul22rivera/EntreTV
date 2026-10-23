@@ -311,10 +311,6 @@ class PlayerManager @Inject constructor(
     private var softwareVideo = false
     private var manualRepairs = 0
 
-    // #region agent log
-    private var agentNoVideoLogged = false
-    // #endregion
-
     private val reconnect = Runnable {
         reconnectPending = false
         recover()
@@ -413,26 +409,10 @@ class PlayerManager @Inject constructor(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                // #region agent log
-                AgentDebugLog.log("A,C", "PlayerManager:onPlayerError", "player error", mapOf(
-                    "code" to error.errorCodeName, "cause" to error.cause?.javaClass?.simpleName,
-                    "causeMsg" to error.cause?.message?.take(200)
-                ))
-                // #endregion
                 handleError(error)
             }
 
             override fun onTracksChanged(tracks: Tracks) {
-                // #region agent log
-                tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }.forEachIndexed { g, group ->
-                    for (i in 0 until group.length) {
-                        AgentDebugLog.log("A", "PlayerManager:onTracksChanged", "video track", agentFormat(group.getTrackFormat(i)) + mapOf(
-                            "group" to g, "index" to i, "support" to group.getTrackSupport(i),
-                            "selected" to group.isTrackSelected(i)
-                        ))
-                    }
-                }
-                // #endregion
                 _tracks.value = tracks
                 skipCoverArt(tracks)
             }
@@ -457,64 +437,6 @@ class PlayerManager @Inject constructor(
                 _speed.value = playbackParameters.speed
             }
         })
-        // #region agent log
-        exoPlayer.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
-            override fun onVideoDecoderInitialized(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                decoderName: String,
-                initializedTimestampMs: Long,
-                initializationDurationMs: Long
-            ) {
-                AgentDebugLog.log("B,C", "PlayerManager:decoderInit", "video decoder", mapOf(
-                    "decoder" to decoderName, "initMs" to initializationDurationMs,
-                    "softwareVideo" to softwareVideo, "tunneling" to trackSelector.parameters.tunnelingEnabled
-                ))
-            }
-
-            override fun onVideoInputFormatChanged(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                format: Format,
-                decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
-            ) {
-                AgentDebugLog.log("A,B", "PlayerManager:videoFormat", "video input format", agentFormat(format))
-            }
-
-            override fun onRenderedFirstFrame(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                output: Any,
-                renderTimeMs: Long
-            ) {
-                AgentDebugLog.log("B,C", "PlayerManager:firstFrame", "first frame rendered", mapOf(
-                    "output" to output.javaClass.simpleName, "posMs" to exoPlayer.currentPosition,
-                    "videoSize" to "${exoPlayer.videoSize.width}x${exoPlayer.videoSize.height}",
-                    "surface" to "${exoPlayer.surfaceSize.width}x${exoPlayer.surfaceSize.height}"
-                ))
-            }
-
-            override fun onVideoCodecError(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                videoCodecError: Exception
-            ) {
-                AgentDebugLog.log("C", "PlayerManager:codecError", "video codec error", mapOf(
-                    "error" to videoCodecError.javaClass.simpleName, "msg" to videoCodecError.message?.take(200)
-                ))
-            }
-
-            override fun onVideoDisabled(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                decoderCounters: androidx.media3.exoplayer.DecoderCounters
-            ) {
-                AgentDebugLog.log("B,C", "PlayerManager:videoDisabled", "video renderer disabled", mapOf(
-                    "rendered" to decoderCounters.renderedOutputBufferCount,
-                    "dropped" to decoderCounters.droppedBufferCount,
-                    "skipped" to decoderCounters.skippedOutputBufferCount,
-                    "queued" to decoderCounters.queuedInputBufferCount,
-                    "decoderInits" to decoderCounters.decoderInitCount,
-                    "posMs" to exoPlayer.currentPosition
-                ))
-            }
-        })
-        // #endregion
         _trackParams.value = exoPlayer.trackSelectionParameters
 
         runCatching {
@@ -561,17 +483,6 @@ class PlayerManager @Inject constructor(
         if (trackSelector.parameters.tunnelingEnabled != tunnel) {
             trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(tunnel))
         }
-        // #region agent log
-        val hdr = runCatching {
-            context.getSystemService(android.hardware.display.DisplayManager::class.java)
-                ?.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.hdrCapabilities?.supportedHdrTypes?.joinToString()
-        }.getOrNull()
-        AgentDebugLog.log("B,D", "PlayerManager:applyVideoOutput", "video output prefs", mapOf(
-            "device" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}", "sdk" to android.os.Build.VERSION.SDK_INT,
-            "tunneling" to tunnel, "frameRateMode" to p.frameRateMode, "decoderPref" to p.decoder,
-            "softwareVideo" to softwareVideo, "hdrTypes" to hdr, "isTv" to isTv, "lowRam" to lowRam
-        ))
-        // #endregion
     }
 
     /**
@@ -664,11 +575,6 @@ class PlayerManager @Inject constructor(
                 trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
             }
         }
-        // #region agent log
-        AgentDebugLog.log("G", "PlayerManager:repairVideo", "manual repair", mapOf(
-            "press" to manualRepairs, "softwareVideo" to softwareVideo, "posMs" to player.currentPosition
-        ))
-        // #endregion
         restartVideo()
         return softwareVideo
     }
@@ -746,18 +652,7 @@ class PlayerManager @Inject constructor(
         }
         val surface = player.surfaceSize
         if (surface.width <= 0 || surface.height <= 0) return
-        if (!player.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) {
-            // #region agent log
-            if (!agentNoVideoLogged) {
-                agentNoVideoLogged = true
-                AgentDebugLog.log("A", "PlayerManager:checkPicture", "watchdog skipped: no video track selected", mapOf(
-                    "videoGroups" to player.currentTracks.groups.count { it.type == C.TRACK_TYPE_VIDEO },
-                    "posMs" to player.currentPosition
-                ))
-            }
-            // #endregion
-            return
-        }
+        if (!player.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) return
         val position = player.currentPosition
         val from = pictureWaitFromMs
         if (from == C.TIME_UNSET || position < from) {
@@ -778,13 +673,6 @@ class PlayerManager @Inject constructor(
                 trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
             }
         }
-        // #region agent log
-        AgentDebugLog.log("C,D", "PlayerManager:fixPicture", "no-picture watchdog fired", mapOf(
-            "fix" to pictureFixes, "otherTrack" to (other != null), "softwareVideo" to softwareVideo,
-            "tunneling" to trackSelector.parameters.tunnelingEnabled, "posMs" to player.currentPosition,
-            "surface" to "${player.surfaceSize.width}x${player.surfaceSize.height}"
-        ))
-        // #endregion
         restartVideo(other)
     }
 
@@ -1013,9 +901,6 @@ class PlayerManager @Inject constructor(
         videoRestartToken++
         resetPictureWait()
         pictureFixes = 0
-        // #region agent log
-        agentNoVideoLogged = false
-        // #endregion
         coverArtChecked = false
         softwareVideo = false
         manualRepairs = 0

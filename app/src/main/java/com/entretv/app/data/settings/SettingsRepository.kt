@@ -38,17 +38,16 @@ data class PlayerPrefs(
     val subtitleBackground: Int = SettingsRepository.SUBTITLE_BG_SEMI,
     /** Qué tan arriba del borde inferior van los subtítulos. */
     val subtitlePosition: Int = SettingsRepository.SUBTITLE_POS_LOW,
-    val resizeMode: Int = SettingsRepository.RESIZE_FIT,
     /** Formato de los canales en vivo de Xtream: [SettingsRepository.LIVE_HLS] o [SettingsRepository.LIVE_TS]. */
     val liveFormat: String = SettingsRepository.LIVE_HLS,
     /** [SettingsRepository.DECODER_AUTO], [SettingsRepository.DECODER_HARDWARE] o [SettingsRepository.DECODER_SOFTWARE]. */
     val decoder: Int = SettingsRepository.DECODER_AUTO,
     /** [SettingsRepository.FRAME_RATE_OFF] o [SettingsRepository.FRAME_RATE_AUTO]. */
-    val frameRateMode: Int = SettingsRepository.FRAME_RATE_AUTO,
+    val frameRateMode: Int = SettingsRepository.FRAME_RATE_OFF,
     /** Reproducción en túnel (solo TV). */
     val tunneling: Boolean = false,
     /** Botón "Saltar intro" al empezar los episodios de series. */
-    val skipIntroButton: Boolean = true
+    val skipIntroButton: Boolean = false
 )
 
 /** Cómo se muestra el catálogo. */
@@ -145,7 +144,6 @@ class SettingsRepository @Inject constructor(
         private val KEY_SUBTITLE_COLOR = intPreferencesKey("subtitle_color")
         private val KEY_SUBTITLE_BACKGROUND = intPreferencesKey("subtitle_background")
         private val KEY_SUBTITLE_POSITION = intPreferencesKey("subtitle_position")
-        private val KEY_RESIZE_MODE = intPreferencesKey("resize_mode")
         private val KEY_DEFAULT_SORT = stringPreferencesKey("default_sort")
         private val KEY_CLEAN_NAMES = booleanPreferencesKey("clean_names")
         private val KEY_PIN_HASH = stringPreferencesKey("parental_pin_hash")
@@ -281,12 +279,12 @@ class SettingsRepository @Inject constructor(
             subtitleColor = it[KEY_SUBTITLE_COLOR]?.takeIf { c -> c in SUBTITLE_COLOR_WHITE..SUBTITLE_COLOR_YELLOW } ?: SUBTITLE_COLOR_WHITE,
             subtitleBackground = it[KEY_SUBTITLE_BACKGROUND]?.takeIf { b -> b in SUBTITLE_BG_NONE..SUBTITLE_BG_BLACK } ?: SUBTITLE_BG_SEMI,
             subtitlePosition = it[KEY_SUBTITLE_POSITION]?.takeIf { p -> p in SUBTITLE_POS_LOW..SUBTITLE_POS_HIGH } ?: SUBTITLE_POS_LOW,
-            resizeMode = it[KEY_RESIZE_MODE] ?: RESIZE_FIT,
             liveFormat = it[KEY_LIVE_FORMAT]?.takeIf { f -> f == LIVE_TS } ?: LIVE_HLS,
             decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO,
-            frameRateMode = it[KEY_FRAME_RATE]?.takeIf { m -> m in FRAME_RATE_OFF..FRAME_RATE_AUTO } ?: defaultFrameRateMode,
+            // Sin elegir queda apagado, también en TV.
+            frameRateMode = it[KEY_FRAME_RATE]?.takeIf { m -> m in FRAME_RATE_OFF..FRAME_RATE_AUTO } ?: FRAME_RATE_OFF,
             tunneling = isTv && it[KEY_TUNNELING] == true,
-            skipIntroButton = it[KEY_SKIP_INTRO] ?: true
+            skipIntroButton = it[KEY_SKIP_INTRO] ?: false
         )
     }
 
@@ -311,9 +309,6 @@ class SettingsRepository @Inject constructor(
     }
 
     private val isTv: Boolean by lazy { isTvDevice(context) }
-
-    // En TV la película pide su frecuencia; en celulares no se toca la pantalla.
-    private val defaultFrameRateMode: Int get() = if (isTv) FRAME_RATE_AUTO else FRAME_RATE_OFF
 
     suspend fun setFrameRateMode(mode: Int) {
         context.settingsStore.edit { it[KEY_FRAME_RATE] = mode }
@@ -391,10 +386,6 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setSubtitlePosition(position: Int) {
         context.settingsStore.edit { it[KEY_SUBTITLE_POSITION] = position }
-    }
-
-    suspend fun setResizeMode(mode: Int) {
-        context.settingsStore.edit { it[KEY_RESIZE_MODE] = mode }
     }
 
     suspend fun setDefaultSort(sort: String) {

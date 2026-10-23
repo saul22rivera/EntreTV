@@ -73,6 +73,8 @@
     <string name="home_remaining_hours">quedan %1$d h %2$d min</string>
     <string name="home_continue_next">Siguiente: %1$s</string>
     <string name="home_continue_next_episode">Siguiente episodio</string>
+    <string name="home_continue_empty">Ya no queda nada en Seguir viendo</string>
+    <string name="home_back">Volver</string>
 
     <!-- Menú del póster -->
     <string name="home_action_play">Reproducir</string>

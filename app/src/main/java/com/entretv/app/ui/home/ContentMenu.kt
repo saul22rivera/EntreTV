@@ -31,6 +31,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,16 +58,31 @@ fun ContentMenu(
     subtitle: String,
     imageUrl: String,
     actions: List<ContentAction>,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** Opción que arranca con el foco. */
+    focusIndex: Int = 0
 ) {
     Dialog(onDismissRequest = onDismiss) {
         val firstFocus = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
+        // El OK de la pulsación larga que abrió el menú puede seguir apretado: sus repeticiones y
+        // el soltar llegan aquí y elegirían la opción enfocada. Solo vale un OK apretado ya en el menú.
+        val okPressed = remember { booleanArrayOf(false) }
         Surface(
             color = EntreBrand.Panel,
             shape = RoundedCornerShape(22.dp),
             shadowElevation = 24.dp,
-            modifier = Modifier.widthIn(max = 420.dp)
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .onPreviewKeyEvent { event ->
+                    if (event.key != Key.DirectionCenter && event.key != Key.Enter && event.key != Key.NumPadEnter) {
+                        return@onPreviewKeyEvent false
+                    }
+                    if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) okPressed[0] = true
+                    val stray = !okPressed[0]
+                    if (event.type == KeyEventType.KeyUp) okPressed[0] = false
+                    stray
+                }
         ) {
             Column(Modifier.padding(vertical = 14.dp)) {
                 Row(
@@ -99,7 +119,7 @@ fun ContentMenu(
                 actions.forEachIndexed { index, action ->
                     MenuRow(
                         action = action,
-                        modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
+                        modifier = if (index == focusIndex) Modifier.focusRequester(firstFocus) else Modifier,
                         onClick = {
                             onDismiss()
                             action.onClick()

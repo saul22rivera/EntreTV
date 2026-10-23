@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -156,6 +157,11 @@ const val SUMMARY_EVENTS = "summary:events"
 private const val SUMMARY_ROW_SIZE = 20
 private const val EVENTS_ROW_SIZE = 40
 private const val AUTO_CHECK_MS = 5 * 60_000L
+
+/** Precarga de pósters: por categoría vecina en TV, y por categoría y en total tras actualizar. */
+private const val NEIGHBOR_POSTERS = 18
+private const val CATALOG_POSTERS_PER_CATEGORY = 12
+private const val CATALOG_POSTERS_MAX = 400
 
 /** Resumen al abrir la app en el celular: lo último agregado y los eventos de hoy. */
 @Immutable
@@ -315,7 +321,8 @@ class HomeViewModel @Inject constructor(
     private val downloads: DownloadRepository,
     private val metadata: MetadataRepository,
     private val profiles: ProfileSession,
-    private val player: dagger.Lazy<PlayerManager>
+    private val player: dagger.Lazy<PlayerManager>,
+    private val posters: PosterPrefetcher
 ) : ViewModel() {
     private val lowRam = isLowRamDevice(context)
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -437,6 +444,8 @@ class HomeViewModel @Inject constructor(
     private val sort = MutableStateFlow<SortOrder?>(null)
     private val trending = MutableStateFlow(Trending())
     private val summary = MutableStateFlow(true)
+    /** Una actualización cambió el catálogo, u hoy todavía no se precargaron sus pósters. */
+    private val catalogPostersDue = MutableStateFlow(false)
 
     private val effectiveSort: Flow<SortOrder> =
         combine(sort, settings.catalogPrefs) { s, p -> s ?: SortOrder.fromName(p.defaultSort) }
@@ -1412,6 +1421,7 @@ class HomeViewModel @Inject constructor(
         // Aviso al terminar una actualización que cambió algo: con novedades, o siempre si fue a mano.
         viewModelScope.launch {
             repository.updates.collect { u ->
+                catalogPostersDue.value = true
                 val news = listOfNotNull(
                     u.newMovies.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_movies, it, it) },
                     u.newSeries.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_series, it, it) },
@@ -1593,6 +1603,94 @@ class HomeViewModel @Inject constructor(
             if (autoRefresh?.isActive == true || refreshing.value || selectedPlaylistId.value == null) continue
             if (playerBusy() || !unmeteredNetwork()) continue
             repository.refreshAll(force = false, light = true, auto = true)
+        }
+    }
+
+    // ============================ Precarga de pósters ============================
+
+    /**
+     * TV, Películas y Series: baja los primeros pósters de las categorías vecinas a la enfocada.
+     * Corre en la corrutina de quien llama: moverse a otra categoría la cancela.
+     */
+    suspend fun prefetchNeighbors(categories: List<String>) {
+        val s = section.value
+        if (s == Section.LIVE || categories.isEmpty()) return
+        posters.prefetch(sectionPosters(s, categories, NEIGHBOR_POSTERS))
+    }
+
+    /**
+     * Mientras Inicio está a la vista: tras una actualización que cambió el catálogo, o la
+     * primera vez del día, baja los primeros pósters de cada categoría de Películas y Series.
+     * Se corta si empieza otra actualización y se retoma al terminar; con datos móviles no corre.
+     */
+    suspend fun catalogPostersLoop() {
+        if (posters.catalogDueToday()) catalogPostersDue.value = true
+        combine(catalogPostersDue, repository.syncing) { due, syncing -> due && !syncing }
+            .distinctUntilChanged()
+            .collectLatest { run ->
+                if (!run || !unmeteredNetwork()) return@collectLatest
+                AppStartup.ready.first { it }
+                val movies = sectionPosters(Section.MOVIES, null, CATALOG_POSTERS_PER_CATEGORY)
+                val series = sectionPosters(Section.SERIES, null, CATALOG_POSTERS_PER_CATEGORY)
+                posters.prefetch(interleave(movies, series).distinct().take(CATALOG_POSTERS_MAX))
+                posters.markCatalogDone()
+                catalogPostersDue.value = false
+            }
+    }
+
+    /** Alternadas: con el tope, las dos secciones reciben sus primeras categorías. */
+    private fun <T> interleave(a: List<T>, b: List<T>): List<T> = buildList(a.size + b.size) {
+        for (i in 0 until maxOf(a.size, b.size)) {
+            a.getOrNull(i)?.let(::add)
+            b.getOrNull(i)?.let(::add)
+        }
+    }
+
+    /**
+     * Primeros [perCategory] pósters de cada categoría de [s] en el orden en que se ven, con las
+     * mismas reglas que la cuadrícula. [categories] null = todas las de la sección.
+     */
+    private suspend fun sectionPosters(s: Section, categories: List<String>?, perCategory: Int): List<String> =
+        withContext(Dispatchers.Default) {
+            val pid = selectedPlaylistId.value ?: return@withContext emptyList()
+            val o = options.first { it.playlistId == pid }
+            val order = effectiveSort.first()
+            val c = o.cleanNames
+            when (s) {
+                Section.LIVE -> emptyList()
+                Section.MOVIES -> categoryPosters(
+                    movieTable.of(pid).first(), PlaylistRepository.SECTION_MOVIES, o, order, categories, perCategory,
+                    ::movieGroup, { it.id }
+                ) { BrowseItem.Movie(it, clean(it.name, c)) }
+                Section.SERIES -> categoryPosters(
+                    seriesTable.of(pid).first(), PlaylistRepository.SECTION_SERIES, o, order, categories, perCategory,
+                    ::seriesGroup, { it.id }
+                ) { BrowseItem.Show(it, clean(it.name, c)) }
+            }
+        }
+
+    private fun <T> categoryPosters(
+        items: List<T>,
+        sectionKey: String,
+        o: CatalogOptions,
+        requestedOrder: SortOrder,
+        categories: List<String>?,
+        perCategory: Int,
+        groupOf: (T) -> String,
+        keyOf: (T) -> String,
+        wrap: (T) -> BrowseItem
+    ): List<String> {
+        val order = orderFor(sectionKey, requestedOrder)
+        val groups = items.groupBy(groupOf)
+        val skip = excluder(sectionKey, o)
+        val names = (categories ?: orderedCategories(sectionKey, groups.keys, o, order))
+            .filter { it in groups && !skip(it) }
+        return names.flatMap { name ->
+            val visible = groups.getValue(name).asSequence()
+                .filter { keyOf(it) !in o.hidden && !(o.kids && adultTitle(it)) }
+            val shown = if (order == SortOrder.ORIGINAL) visible.take(perCategory).map(wrap).toList()
+            else sortItems(visible.map(wrap).toList(), order).take(perCategory)
+            shown.mapNotNull { it.imageUrl.ifEmpty { null } }
         }
     }
 

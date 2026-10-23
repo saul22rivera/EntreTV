@@ -61,6 +61,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -87,6 +88,7 @@ import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.ui.LiveGuide
 import com.entretv.app.ui.MY_LIST_ROW
+import com.entretv.app.ui.SortOrder
 import com.entretv.app.ui.TvLiveViewModel
 import com.entretv.app.ui.asString
 import com.entretv.app.ui.rowLabel
@@ -130,8 +132,13 @@ fun TvLiveScreen(
     onOpenGuide: (String?) -> Unit = {},
     /** Informa la categoría elegida (para el botón Guía de la cabecera). */
     onCategoryShown: (String?) -> Unit = {},
+    /** Órdenes posibles; con menos de dos no hay fila Ordenar. */
+    sortOptions: List<SortOrder> = emptyList(),
+    sort: SortOrder = SortOrder.ORIGINAL,
+    onSort: (SortOrder) -> Unit = {},
     viewModel: TvLiveViewModel = hiltViewModel()
 ) {
+    val showSort = sortOptions.size > 1
     LaunchedEffect(playlistId) { viewModel.setPlaylist(playlistId) }
     val channels by viewModel.channels.collectAsState()
     val favoriteIds by viewModel.favoriteIds.collectAsState()
@@ -154,13 +161,15 @@ fun TvLiveScreen(
     val selected = chosenCategory?.takeIf { it in cats }
         ?: playing?.groupTitle?.takeIf { it in cats }
         ?: cats.firstOrNull()
-    val list = remember(selected, channels, favorites, lockedCategories) {
-        when (selected) {
+    val alphabetical = sort == SortOrder.AZ && SortOrder.AZ in sortOptions
+    val list = remember(selected, channels, favorites, lockedCategories, alphabetical) {
+        val shown = when (selected) {
             null -> emptyList()
             MY_LIST_ROW -> favorites
             in lockedCategories -> emptyList()
             else -> channels.byGroup[selected].orEmpty()
         }
+        if (alphabetical) shown.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }) else shown
     }
 
     val guideCategory = selected?.takeIf { it !in lockedCategories }
@@ -207,7 +216,8 @@ fun TvLiveScreen(
 
     fun focusCategory() {
         val name = selected ?: return
-        scope.launch { focusRow(catState, cats.indexOf(name).coerceAtLeast(0), catRequester(name)) }
+        val index = cats.indexOf(name).coerceAtLeast(0)
+        scope.launch { focusRow(catState, if (showSort) index + 1 else index, catRequester(name)) }
     }
 
     fun focusChannel() {
@@ -341,11 +351,27 @@ fun TvLiveScreen(
                 .keys(setOf(Key.DirectionRight, Key.DirectionLeft)) { key ->
                     if (key == Key.DirectionRight) focusChannel() else onOpenMenu()
                 }
-                // Arriba de la primera categoría no hay nada: se queda ahí.
+                // Arriba de la primera fila no hay nada: se queda ahí.
                 .onPreviewKeyEvent { event ->
-                    event.key == Key.DirectionUp && focusedCategory != null && focusedCategory == cats.firstOrNull()
+                    event.key == Key.DirectionUp && focusedCategory != null &&
+                        focusedCategory == if (showSort) SORT_KEY else cats.firstOrNull()
                 }
         ) {
+            if (showSort) {
+                item(key = SORT_KEY) {
+                    TvSortRow(
+                        options = sortOptions,
+                        sort = sort,
+                        onSort = onSort,
+                        modifier = Modifier.onFocusChanged {
+                            if (it.isFocused) {
+                                focusedCategory = SORT_KEY
+                                zone = LiveZone.CATEGORIES
+                            } else if (focusedCategory == SORT_KEY) focusedCategory = null
+                        }
+                    )
+                }
+            }
             itemsIndexed(cats, key = { _, c -> c }) { _, name ->
                 val locked = name in lockedCategories
                 LiveCategoryRow(
@@ -635,6 +661,10 @@ internal fun LiveCategoryRow(
     locked: Boolean,
     favorite: Boolean,
     modifier: Modifier,
+    /** Ícono propio (fila Ordenar); sin él va el candado o el corazón. */
+    icon: ImageVector? = null,
+    /** Texto a la derecha en lugar del conteo. */
+    value: String? = null,
     onClick: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
@@ -644,6 +674,11 @@ internal fun LiveCategoryRow(
         focused -> EntreBrand.OnAccent
         selected -> EntreBrand.Accent
         else -> Color.White
+    }
+    val leading = icon ?: when {
+        locked -> Icons.Default.Lock
+        favorite -> Icons.Default.Favorite
+        else -> null
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -662,9 +697,9 @@ internal fun LiveCategoryRow(
             .clickable(interactionSource = source, indication = null, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 5.dp)
     ) {
-        if (favorite || locked) {
+        if (leading != null) {
             Icon(
-                if (locked) Icons.Default.Lock else Icons.Default.Favorite,
+                leading,
                 contentDescription = null,
                 tint = content,
                 modifier = Modifier.size(14.dp)
@@ -681,7 +716,10 @@ internal fun LiveCategoryRow(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
-        if (count > 0) {
+        if (value != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(value, color = content.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        } else if (count > 0) {
             Spacer(Modifier.width(6.dp))
             Text("$count", color = content.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
         }

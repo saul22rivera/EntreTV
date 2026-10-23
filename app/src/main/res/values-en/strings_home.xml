@@ -73,6 +73,8 @@
     <string name="home_remaining_hours">%1$d h %2$d min left</string>
     <string name="home_continue_next">Next: %1$s</string>
     <string name="home_continue_next_episode">Next episode</string>
+    <string name="home_continue_empty">Nothing left in Continue watching</string>
+    <string name="home_back">Back</string>
 
     <!-- Menú del póster -->
     <string name="home_action_play">Play</string>

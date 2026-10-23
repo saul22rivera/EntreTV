@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
 import androidx.compose.foundation.lazy.LazyListState
@@ -186,6 +187,7 @@ import com.entretv.app.ui.home.PinDialog
 import com.entretv.app.ui.home.SettingsPanel
 import com.entretv.app.ui.home.PILL_SPACE
 import com.entretv.app.ui.home.RAIL_COLLAPSED_WIDTH
+import com.entretv.app.ui.home.SortMenu
 import com.entretv.app.ui.profile.ProfileActions
 import com.entretv.app.ui.profile.ProfileMenu
 import com.entretv.app.ui.profile.profileColor
@@ -209,11 +211,6 @@ private val DPAD_KEYS = setOf(Key.DirectionUp, Key.DirectionDown, Key.DirectionL
 private const val ROW_PREFETCH = 8
 private const val ROW_PREFETCH_LOW_RAM = 4
 private val DeviceProfile.rowPrefetch get() = if (lowRam) ROW_PREFETCH_LOW_RAM else ROW_PREFETCH
-
-private val TMDB_BIG = Regex("/t/p/(original|w1280|w780|w500)/")
-
-/** Los pósters de TMDB que manda el servidor suelen venir en tamaño original: para una tarjeta basta w342. */
-private fun cardImage(url: String): String = if ("image.tmdb.org" in url) TMDB_BIG.replace(url, "/t/p/w342/") else url
 
 private val LIVE_CARD_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
 
@@ -261,7 +258,10 @@ fun HomeScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refreshIfDue() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.autoRefreshLoop() }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch { viewModel.catalogPostersLoop() }
+            viewModel.autoRefreshLoop()
+        }
     }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -284,6 +284,13 @@ fun HomeScreen(
     // TV: En vivo es la vista de categorías, canales y mini reproductor.
     val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null && !showSummary
     var liveCategory by remember { mutableStateOf<String?>(null) }
+    // "Ver todo" de Seguir viendo: vale para la vista donde se abrió (resumen o sección).
+    val continueContext = if (showSummary) "summary" else ui.section.name
+    var continueAllIn by rememberSaveable { mutableStateOf<String?>(null) }
+    val showContinueAll = continueAllIn == continueContext && !searching && ui.category == null
+    LaunchedEffect(continueContext, searching, ui.category) {
+        if (continueAllIn != null && !showContinueAll) continueAllIn = null
+    }
     val openGuide: (() -> Unit)? = ui.selectedPlaylistId?.takeIf { tvLive }?.let { id -> { onOpenGuide(id, liveCategory) } }
     // La vista en lista o cuadrícula se recuerda por sección; los resultados de búsqueda usan la de su tipo.
     val gridSection = when (ui.category) {
@@ -319,6 +326,8 @@ fun HomeScreen(
     // el sistema reubica solo al cerrarse el panel.
     var lastLeftKeyAt by remember { mutableStateOf(0L) }
     var menuItem by remember { mutableStateOf<BrowseItem?>(null) }
+    // Menú abierto desde "Seguir viendo": tiene sus propias opciones.
+    var menuContinue by remember { mutableStateOf<ContinueItem?>(null) }
     var focusedItem by remember { mutableStateOf<BrowseItem?>(null) }
     var focusedContinue by remember { mutableStateOf<ContinueItem?>(null) }
     val onFocusItem: (BrowseItem) -> Unit = {
@@ -465,6 +474,22 @@ fun HomeScreen(
         }
     }
 
+    // TV: el "Ver todo" que tenía el foco desaparece al abrir la cuadrícula; al cerrarla se
+    // vuelve a él. Solo en el cambio: al recrearse Inicio el foco lo devuelve FocusMemory.
+    val continueAllFocus = remember { FocusRequester() }
+    var continueAllShown by remember { mutableStateOf(showContinueAll) }
+    LaunchedEffect(showContinueAll) {
+        if (showContinueAll == continueAllShown) return@LaunchedEffect
+        continueAllShown = showContinueAll
+        if (!profile.isTv) return@LaunchedEffect
+        repeat(3) {
+            withFrameNanos { }
+            val target = if (showContinueAll) continueAllFocus else tvNav?.lastRequester()
+            if (target != null && focusInCatalog(target)) return@LaunchedEffect
+        }
+        runCatching { catalogFocus.requestFocus() }
+    }
+
     LaunchedEffect(searchOpen) {
         if (searchOpen) {
             delay(150)
@@ -497,6 +522,8 @@ fun HomeScreen(
         viewModel.showSummary()
     }
 
+    BackHandler(enabled = showContinueAll) { continueAllIn = null }
+
     /** TV: muestra Inicio detrás del menú, que sigue abierto. */
     fun showTvHome() {
         if (searchOpen) searchOpen = false
@@ -513,7 +540,13 @@ fun HomeScreen(
     // Dejar presionado agrega o quita de Mi lista; el menú completo va con la tecla Menú.
     val onItemLongClick: (BrowseItem) -> Unit = viewModel::toggleFavorite
     // En "Seguir viendo" dejar presionado abre el menú: ahí sirve quitarlo o empezar de nuevo.
-    val openContinueMenu: (ContinueItem) -> Unit = { item -> viewModel.browseItemFor(item) { menuItem = it } }
+    val openContinueMenu: (ContinueItem) -> Unit = { item ->
+        viewModel.browseItemFor(item) {
+            menuContinue = item
+            menuItem = it
+        }
+    }
+    val openContinueAll: () -> Unit = { continueAllIn = continueContext }
 
     /** Las categorías de adultos bloqueadas piden el PIN antes de abrirse. */
     fun openCategory(name: String?) {
@@ -722,11 +755,15 @@ fun HomeScreen(
                             // Con el menú abierto la sección puede cambiar detrás: la que aparece no se lleva el foco.
                             focusRequests = if (railExpanded) 0 else tvCatsFocusRequests,
                             onSelect = viewModel::selectCategory,
+                            onRest = viewModel::prefetchNeighbors,
                             onOpenLocked = ::openCategory,
                             onRight = ::focusTvContent,
                             onLeft = { setRailExpanded(true) },
                             onFocusChange = { tvCatsHaveFocus = it },
-                            modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 12.dp)
+                            modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 12.dp),
+                            sortOptions = if (fresh) content.sortOptions else emptyList(),
+                            sort = ui.sort,
+                            onSort = viewModel::selectSort
                         )
                     }
                     Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -794,6 +831,20 @@ fun HomeScreen(
                     val bottomSpace = if (profile.compactRail) PILL_SPACE else 32.dp
                     val nothingYet = content.rows.isEmpty() && content.categories.isEmpty()
                     when {
+                        showContinueAll && ui.playlists.isNotEmpty() -> ContinueGrid(
+                            profile = profile,
+                            items = if (showSummary) viewModel.summaryContinue.collectAsState().value else continueWatching,
+                            bottomSpace = bottomSpace,
+                            focusMemory = focusMemory,
+                            tvNav = tvNav,
+                            firstFocus = continueAllFocus,
+                            onBack = { continueAllIn = null },
+                            onPlay = ::playContinue,
+                            onRemove = viewModel::removeFromContinue,
+                            onMenu = openContinueMenu,
+                            onFocusItem = onFocusContinue,
+                            modifier = catalogModifier
+                        )
                         showSummary && ui.playlists.isNotEmpty() -> {
                             val summary by viewModel.summaryContent.collectAsState()
                             val summaryContinue by viewModel.summaryContinue.collectAsState()
@@ -812,6 +863,7 @@ fun HomeScreen(
                                 onRemoveContinue = viewModel::removeFromContinue,
                                 onContinueMenu = openContinueMenu,
                                 onFocusContinue = onFocusContinue,
+                                onContinueSeeAll = openContinueAll,
                                 onSeeAll = { row ->
                                     when (row.title) {
                                         SUMMARY_MOVIES -> viewModel.openSection(Section.MOVIES, RECENT_ROW)
@@ -841,6 +893,11 @@ fun HomeScreen(
                             onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } },
                             onOpenGuide = { category -> ui.selectedPlaylistId?.let { onOpenGuide(it, category) } },
                             onCategoryShown = { liveCategory = it },
+                            sortOptions = if (content.section == ui.section && content.playlistId == ui.selectedPlaylistId) {
+                                content.sortOptions
+                            } else emptyList(),
+                            sort = ui.sort,
+                            onSort = viewModel::selectSort,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .onFocusChanged {
@@ -899,8 +956,9 @@ fun HomeScreen(
                             onFocusItem = onFocusItem,
                             onPlayContinue = ::playContinue,
                             onRemoveContinue = viewModel::removeFromContinue,
-                                onContinueMenu = openContinueMenu,
-                                onFocusContinue = onFocusContinue,
+                            onContinueMenu = openContinueMenu,
+                            onFocusContinue = onFocusContinue,
+                            onContinueSeeAll = openContinueAll,
                             onSeeAll = { row -> openCategory(row.title) },
                             modifier = catalogModifier
                         )
@@ -970,7 +1028,18 @@ fun HomeScreen(
     menuItem?.let { item ->
         val inList = item.key in favorites.value
         val inProgress = continueWatching.any { it.key == item.key }
-        val actions = buildList {
+        val fromContinue = menuContinue?.takeIf { it.key == item.key }
+        val myListAction = ContentAction(
+            if (inList) Icons.Default.Check else Icons.Default.Add,
+            stringResource(if (inList) R.string.home_action_remove_my_list else R.string.home_action_add_my_list)
+        ) { viewModel.toggleFavorite(item) }
+        val actions = if (fromContinue != null) buildList {
+            add(ContentAction(Icons.Default.PlayArrow, stringResource(R.string.home_action_play)) { playContinue(fromContinue) })
+            add(ContentAction(Icons.Default.Info, stringResource(R.string.home_action_details)) { onOpen(item) })
+            add(myListAction)
+            add(ContentAction(Icons.Default.Close, stringResource(R.string.home_action_remove_continue)) { viewModel.removeFromContinue(fromContinue) })
+            add(ContentAction(Icons.Default.Replay, stringResource(R.string.home_action_restart_progress), destructive = true) { viewModel.resetProgress(item) })
+        } else buildList {
             add(ContentAction(Icons.Default.PlayArrow, stringResource(if (inProgress) R.string.home_continue_watching else R.string.home_action_play)) {
                 when (item) {
                     is BrowseItem.Movie -> onPlayMovie(item.movie.id)
@@ -981,12 +1050,7 @@ fun HomeScreen(
             if (item !is BrowseItem.Live) {
                 add(ContentAction(Icons.Default.Info, stringResource(R.string.home_action_details)) { onOpen(item) })
             }
-            add(
-                ContentAction(
-                    if (inList) Icons.Default.Check else Icons.Default.Add,
-                    stringResource(if (inList) R.string.home_action_remove_my_list else R.string.home_action_add_my_list)
-                ) { viewModel.toggleFavorite(item) }
-            )
+            add(myListAction)
             if (item is BrowseItem.Movie) {
                 add(ContentAction(Icons.Default.DoneAll, stringResource(R.string.home_action_mark_watched)) { viewModel.markWatched(item.movie) })
             }
@@ -1019,7 +1083,10 @@ fun HomeScreen(
             },
             imageUrl = item.imageUrl,
             actions = actions,
-            onDismiss = { menuItem = null }
+            onDismiss = {
+                menuItem = null
+                menuContinue = null
+            }
         )
     }
 
@@ -1395,6 +1462,7 @@ private fun CatalogRows(
     onRemoveContinue: (ContinueItem) -> Unit,
     onContinueMenu: (ContinueItem) -> Unit,
     onFocusContinue: (ContinueItem) -> Unit,
+    onContinueSeeAll: () -> Unit,
     onSeeAll: (ContentRow) -> Unit,
     modifier: Modifier
 ) {
@@ -1409,7 +1477,7 @@ private fun CatalogRows(
         if (continueWatching.isNotEmpty()) add("continue")
         if (content.top10.isNotEmpty()) add("top10")
         others.forEach { add("row:${it.title}") }
-    }.flatMap { if (it.startsWith("row:")) listOf(it, it + TvCatalogNav.ALL_SUFFIX) else listOf(it) }
+    }.flatMap { if (it.startsWith("row:") || it == "continue") listOf(it, it + TvCatalogNav.ALL_SUFFIX) else listOf(it) }
     if (tvNav != null) {
         tvNav.rowOrder = rowOrder
         tvNav.columnState = listState
@@ -1436,6 +1504,7 @@ private fun CatalogRows(
                     onRemove = onRemoveContinue,
                     onMenu = onContinueMenu,
                     onFocusItem = onFocusContinue,
+                    onSeeAll = onContinueSeeAll,
                     tvNav = tvNav,
                     navKey = "continue"
                 )
@@ -1506,6 +1575,7 @@ private fun PhoneSummary(
     onRemoveContinue: (ContinueItem) -> Unit,
     onContinueMenu: (ContinueItem) -> Unit,
     onFocusContinue: (ContinueItem) -> Unit,
+    onContinueSeeAll: () -> Unit,
     onSeeAll: (ContentRow) -> Unit,
     modifier: Modifier
 ) {
@@ -1519,7 +1589,7 @@ private fun PhoneSummary(
             RevealContinueRow(listState, continueWatching.isNotEmpty())
             if (tvNav != null) {
                 tvNav.rowOrder = buildList {
-                    if (continueWatching.isNotEmpty()) add("continue")
+                    if (continueWatching.isNotEmpty()) { add("continue"); add("continue" + TvCatalogNav.ALL_SUFFIX) }
                     summary.rows.forEach { add("row:${it.title}"); add("row:${it.title}" + TvCatalogNav.ALL_SUFFIX) }
                 }
                 tvNav.columnState = listState
@@ -1540,6 +1610,7 @@ private fun PhoneSummary(
                             onRemove = onRemoveContinue,
                             onMenu = onContinueMenu,
                             onFocusItem = onFocusContinue,
+                            onSeeAll = onContinueSeeAll,
                             tvNav = tvNav,
                             navKey = "continue"
                         )
@@ -1864,17 +1935,14 @@ private fun HomeHeader(
                 IconButton(onClick = { sortOpen = true }) {
                     Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = stringResource(R.string.home_sort))
                 }
-                DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
-                    sortOptions.forEach { order ->
-                        DropdownMenuItem(
-                            text = { Text(order.label) },
-                            leadingIcon = if (sort == order) {
-                                { Icon(Icons.Default.Check, contentDescription = null) }
-                            } else null,
-                            onClick = { sortOpen = false; onSort(order) }
-                        )
-                    }
-                }
+                SortMenu(
+                    expanded = sortOpen,
+                    options = sortOptions,
+                    sort = sort,
+                    focusCurrent = profile.isTv,
+                    onSort = onSort,
+                    onDismiss = { sortOpen = false }
+                )
             }
         }
         // En el celular actualizar va solo en el menú de tres puntos; aquí queda el indicador mientras actualiza.
@@ -1936,12 +2004,14 @@ private fun ContinueWatchingRow(
     onRemove: (ContinueItem) -> Unit,
     onMenu: (ContinueItem) -> Unit,
     onFocusItem: (ContinueItem) -> Unit,
+    onSeeAll: () -> Unit,
     tvNav: TvCatalogNav? = null,
     navKey: String = ""
 ) {
     val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
-        RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = null)
+        // Como en las demás filas: en TV "Ver todo" va al final y debajo de la fila.
+        RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
         LazyRow(
             state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
@@ -1962,6 +2032,105 @@ private fun ContinueWatchingRow(
                     onMenu = { onMenu(item) }
                 )
             }
+            if (profile.isTv) {
+                item(key = "seeAll", contentType = "seeAll") {
+                    SeeAllCard(
+                        profile = profile,
+                        live = false,
+                        onClick = onSeeAll,
+                        modifier = Modifier.tvNavItem(tvNav, navKey, items.size)
+                    )
+                }
+            }
+        }
+        if (profile.isTv && tvNav != null) {
+            SeeAllButton(
+                onClick = onSeeAll,
+                modifier = Modifier
+                    .padding(start = profile.edge, top = 2.dp)
+                    .tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0)
+            )
+        }
+    }
+}
+
+/** "Ver todo" de Seguir viendo: todas las tarjetas en cuadrícula (la fila puede quedarse corta). */
+@Composable
+private fun ContinueGrid(
+    profile: DeviceProfile,
+    items: List<ContinueItem>,
+    bottomSpace: Dp,
+    focusMemory: FocusMemory,
+    tvNav: TvCatalogNav?,
+    firstFocus: FocusRequester,
+    onBack: () -> Unit,
+    onPlay: (ContinueItem) -> Unit,
+    onRemove: (ContinueItem) -> Unit,
+    onMenu: (ContinueItem) -> Unit,
+    onFocusItem: (ContinueItem) -> Unit,
+    modifier: Modifier
+) {
+    // Las filas no están en pantalla: arriba y abajo los resuelve la búsqueda de foco de la cuadrícula.
+    if (tvNav != null) tvNav.rowOrder = emptyList()
+    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = profile.continueWidth - 24.dp),
+        state = gridState,
+        modifier = modifier,
+        contentPadding = PaddingValues(start = profile.edge, end = profile.edge, top = 4.dp, bottom = bottomSpace),
+        horizontalArrangement = Arrangement.spacedBy(profile.itemGap),
+        verticalArrangement = Arrangement.spacedBy(profile.itemGap)
+    ) {
+        item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                // En TV se vuelve con Atrás: un botón arriba solo sería otra parada del foco.
+                if (!profile.isTv) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.home_back))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.home_continue_watching),
+                        style = if (profile.isTv) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        pluralStringResource(R.plurals.home_titles_count, items.size, items.size),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = EntreBrand.TextDim
+                    )
+                }
+            }
+        }
+        if (items.isEmpty()) {
+            item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    stringResource(R.string.home_continue_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = EntreBrand.TextDim,
+                    modifier = Modifier.padding(vertical = 24.dp)
+                )
+            }
+        }
+        itemsIndexed(items, key = { _, it -> it.key }, contentType = { _, _ -> "continue" }) { index, item ->
+            val memoryKey = "continueAll|${item.key}"
+            ContinueCard(
+                profile = profile,
+                item = item,
+                fillWidth = true,
+                modifier = focusMemory.modifierFor(memoryKey).then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier),
+                onFocused = {
+                    focusMemory.onFocused(memoryKey)
+                    onFocusItem(item)
+                },
+                onPlay = { onPlay(item) },
+                onRemove = { onRemove(item) },
+                onMenu = { onMenu(item) }
+            )
         }
     }
 }
@@ -1982,7 +2151,9 @@ private fun ContinueCard(
     onFocused: () -> Unit,
     onPlay: () -> Unit,
     onRemove: () -> Unit,
-    onMenu: () -> Unit
+    onMenu: () -> Unit,
+    /** Cuadrícula "Ver todo": ocupa el ancho de su columna. */
+    fillWidth: Boolean = false
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
@@ -1995,7 +2166,7 @@ private fun ContinueCard(
         colors = CardDefaults.cardColors(containerColor = EntreBrand.Panel),
         border = if (focused) BorderStroke(3.dp, EntreBrand.Accent) else null,
         modifier = modifier
-            .width(profile.continueWidth)
+            .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier.width(profile.continueWidth))
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(shape)
             .combinedClickable(
@@ -2008,7 +2179,10 @@ private fun ContinueCard(
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(profile.continueHeight)
+                .then(
+                    if (fillWidth) Modifier.aspectRatio(profile.continueWidth / profile.continueHeight)
+                    else Modifier.height(profile.continueHeight)
+                )
                 .background(EntreBrand.PanelHigh),
             contentAlignment = Alignment.Center
         ) {
@@ -2026,16 +2200,24 @@ private fun ContinueCard(
                     modifier = Modifier.size(40.dp)
                 )
             }
-            IconButton(
-                onClick = onRemove,
-                modifier = Modifier.align(Alignment.TopEnd).size(32.dp)
-            ) {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = stringResource(R.string.home_remove),
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
+            // OK mantenido: Compose lleva el foco hacia adentro de la tarjeta con cada repetición
+            // de la tecla; si la X pudiera enfocarse, al soltar se quitaba el título. En TV se
+            // quita desde el menú.
+            if (!profile.isTv) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(32.dp)
+                        .focusProperties { canFocus = false }
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = stringResource(R.string.home_remove),
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
             if (item.fraction > 0f) {
                 Text(

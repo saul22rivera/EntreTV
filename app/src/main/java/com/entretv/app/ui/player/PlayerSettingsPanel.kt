@@ -147,6 +147,8 @@ fun PlayerSettingsPanel(
     menu: TrackMenu,
     prefs: PlayerPrefs,
     resizeMode: Int,
+    /** Celular en vertical: sin "Pantalla", rellenar o estirar ahí deforman el video. */
+    showScreen: Boolean,
     speed: Float,
     isLive: Boolean,
     sleepMinutes: Int,
@@ -159,6 +161,7 @@ fun PlayerSettingsPanel(
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     var page by remember { mutableStateOf(Page.MAIN) }
     LaunchedEffect(visible) { if (visible) page = Page.MAIN }
+    LaunchedEffect(showScreen) { if (!showScreen && page == Page.SCREEN) page = Page.MAIN }
     BackHandler(enabled = visible) { if (page != Page.MAIN) page = Page.MAIN else onDismiss() }
 
     Box(Modifier.fillMaxSize()) {
@@ -218,6 +221,7 @@ fun PlayerSettingsPanel(
                         menu = menu,
                         prefs = prefs,
                         resizeMode = resizeMode,
+                        showScreen = showScreen,
                         speed = speed,
                         isLive = isLive,
                         sleepMinutes = sleepMinutes,
@@ -255,6 +259,7 @@ private fun PageContent(
     menu: TrackMenu,
     prefs: PlayerPrefs,
     resizeMode: Int,
+    showScreen: Boolean,
     speed: Float,
     isLive: Boolean,
     sleepMinutes: Int,
@@ -328,14 +333,16 @@ private fun PageContent(
                         )
                     }
                 }
-                item {
-                    PanelRow(
-                        title = stringResource(R.string.player_screen),
-                        value = stringResource(resizeLabelRes(resizeMode)),
-                        icon = Icons.Default.AspectRatio,
-                        chevron = true,
-                        onClick = { onNavigate(Page.SCREEN) }
-                    )
+                if (showScreen) {
+                    item {
+                        PanelRow(
+                            title = stringResource(R.string.player_screen),
+                            value = stringResource(resizeLabelRes(resizeMode)),
+                            icon = Icons.Default.AspectRatio,
+                            chevron = true,
+                            onClick = { onNavigate(Page.SCREEN) }
+                        )
+                    }
                 }
                 if (!isLive) {
                     item {
