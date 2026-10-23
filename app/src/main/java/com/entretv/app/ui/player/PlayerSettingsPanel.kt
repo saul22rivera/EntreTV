@@ -97,6 +97,8 @@ interface PlayerSettingsActions {
     /** null = video automático. */
     fun selectVideo(option: TrackOption?)
     fun disableVideo()
+    /** "Reparar imagen": reinicia el decodificador de video. */
+    fun repairVideo()
     fun setSubtitleSize(size: Int)
     fun setSubtitleColor(color: Int)
     fun setSubtitleBackground(background: Int)
@@ -450,6 +452,14 @@ private fun PageContent(
                         selected = menu.videoOff,
                         modifier = if (menu.videoOff) Modifier.focusRequester(focus) else Modifier,
                         onClick = { actions.disableVideo(); back() }
+                    )
+                }
+                item {
+                    PanelRow(
+                        title = stringResource(R.string.player_video_repair),
+                        value = stringResource(R.string.player_video_repair_hint),
+                        selected = false,
+                        onClick = { actions.repairVideo(); back() }
                     )
                 }
                 item { PanelHint(stringResource(R.string.player_video_hint)) }

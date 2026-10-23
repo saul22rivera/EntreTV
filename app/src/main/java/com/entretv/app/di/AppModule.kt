@@ -22,7 +22,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import java.io.File
 import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import okhttp3.Cache
 import okhttp3.MediaType.Companion.toMediaType
@@ -30,9 +34,19 @@ import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
+/** Ámbito que vive lo que el proceso: para trabajo que debe terminar aunque se cierre la pantalla. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ApplicationScope
+
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Provides
     @Singleton

@@ -49,6 +49,8 @@ data class ProfileUiState(
     val screen: ProfileScreen? = null,
     /** Arranque: la app espera la elección (Atrás sale de la app). */
     val startup: Boolean = false,
+    /** Perfil que el selector ofrece primero; null = el activo. */
+    val preselectId: String? = null,
     val pin: PinPrompt? = null,
     /** Niños sin ningún PIN de adultos: alcanza con confirmar. */
     val adultConfirm: Boolean = false
@@ -71,8 +73,6 @@ class ProfileViewModel @Inject constructor(
     val activeName: StateFlow<String> = session.activeName
     val activeAvatar: StateFlow<Int> = session.activeAvatar
     val kids: StateFlow<Boolean> = session.kids
-    val multiple: StateFlow<Boolean> = session.multiple
-    val askOnStart: StateFlow<Boolean> = session.askOnStart
 
     private val _ui = MutableStateFlow(startupState())
     val ui: StateFlow<ProfileUiState> = _ui.asStateFlow()
@@ -93,20 +93,17 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    /** Con un perfil y sin PIN no se abre nada ni se lee la base: entra directo. */
+    /**
+     * Cada apertura pasa por "¿Quién está viendo?", aun con un solo perfil, con el último que
+     * reprodujo algo ya elegido. Recién iniciada la sesión, con su único perfil y sin PIN, entra directo.
+     */
     private fun startupState(): ProfileUiState {
         if (session.startupHandled) return ProfileUiState()
-        val ask = session.multiple.value && session.askOnStart.value
-        val pin = session.activeHasPin
-        if (!ask && !pin) {
+        if (session.loggedInThisLaunch && !session.multiple.value && !session.activeHasPin) {
             session.startupHandled = true
             return ProfileUiState()
         }
-        return ProfileUiState(
-            screen = ProfileScreen.Picker,
-            startup = true,
-            pin = if (!ask) PinPrompt.Enter(session.activeId.value) else null
-        )
+        return ProfileUiState(screen = ProfileScreen.Picker, startup = true, preselectId = session.lastPlayedId)
     }
 
     fun openPicker() {
@@ -258,8 +255,6 @@ class ProfileViewModel @Inject constructor(
             }
         }
     }
-
-    fun setAskOnStart(ask: Boolean) = session.setAskOnStart(ask)
 
     /** Las tarjetas del inicio de la TV no abren contenido de adultos en el perfil de niños. */
     suspend fun allowLink(link: TvDeepLink): Boolean {

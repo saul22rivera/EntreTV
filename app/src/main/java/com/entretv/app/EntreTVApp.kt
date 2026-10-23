@@ -2,6 +2,7 @@ package com.entretv.app
 
 import android.app.ActivityManager
 import android.app.Application
+import android.os.StrictMode
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import coil.ImageLoader
@@ -35,6 +36,22 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        if (BuildConfig.DEBUG) {
+            StrictMode.setThreadPolicy(
+                StrictMode.ThreadPolicy.Builder()
+                    .detectDiskReads()
+                    .detectDiskWrites()
+                    .detectNetwork()
+                    .penaltyLog()
+                    .build()
+            )
+            StrictMode.setVmPolicy(
+                StrictMode.VmPolicy.Builder()
+                    .detectLeakedClosableObjects()
+                    .penaltyLog()
+                    .build()
+            )
+        }
         AppLanguage.init(this)
         downloads.resumePending()
         // WorkManager abre su base al primer uso: fuera del hilo principal para no demorar el arranque.

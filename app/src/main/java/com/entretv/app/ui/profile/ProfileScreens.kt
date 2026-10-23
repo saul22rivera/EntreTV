@@ -108,13 +108,12 @@ fun profileColor(avatar: Int): Color = PROFILE_COLORS[Math.floorMod(avatar, PROF
 fun profileDisplayName(name: String): String = name.ifBlank { stringResource(R.string.profile_default_name) }
 
 /** Lo que el menú y Configuración muestran del perfil activo. */
-data class ProfileMenu(val name: String, val avatar: Int, val multiple: Boolean, val askOnStart: Boolean)
+data class ProfileMenu(val name: String, val avatar: Int)
 
 /** Acciones de perfiles que Inicio ofrece; [guardAdult] protege lo de adultos en el perfil de niños. */
 class ProfileActions(
     val onSwitch: () -> Unit,
     val onManage: () -> Unit,
-    val onAskOnStartChange: (Boolean) -> Unit,
     val guardAdult: (() -> Unit) -> Unit
 )
 
@@ -145,6 +144,7 @@ fun ProfilesHost(viewModel: ProfileViewModel, onExitApp: () -> Unit) {
                     when (screen) {
                         ProfileScreen.Picker, ProfileScreen.Manage -> ProfileGrid(
                             profiles = profiles,
+                            preselectId = ui.preselectId,
                             activeId = activeId,
                             manage = screen == ProfileScreen.Manage,
                             onChoose = viewModel::choose,
@@ -212,6 +212,7 @@ fun ProfilesHost(viewModel: ProfileViewModel, onExitApp: () -> Unit) {
 @Composable
 private fun ProfileGrid(
     profiles: List<ProfileEntity>,
+    preselectId: String?,
     activeId: String,
     manage: Boolean,
     onChoose: (ProfileEntity) -> Unit,
@@ -227,7 +228,9 @@ private fun ProfileGrid(
         withFrameNanos { }
         runCatching { focus.requestFocus() }
     }
-    val focusId = profiles.firstOrNull { it.id == activeId }?.id ?: profiles.firstOrNull()?.id
+    // Un perfil guardado que ya se borró no está en la lista: se pasa al siguiente.
+    val focusId = listOf(preselectId, activeId).firstNotNullOfOrNull { id -> profiles.firstOrNull { it.id == id } }?.id
+        ?: profiles.firstOrNull()?.id
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

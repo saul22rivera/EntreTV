@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.data.local.EpgEntity
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
@@ -14,6 +15,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,11 +23,13 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
+import kotlinx.coroutines.launch
 
 /** Guía del canal enfocado: lo que está ahora y lo que sigue. */
 @Immutable
@@ -52,6 +56,7 @@ class TvLiveViewModel @Inject constructor(
     private val repository: PlaylistRepository,
     settings: SettingsRepository,
     parental: ParentalControl,
+    private val profileSession: ProfileSession,
     val playerManager: PlayerManager
 ) : ViewModel() {
 
@@ -126,8 +131,15 @@ class TvLiveViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LiveGuide())
 
+    private var playedJob: Job? = null
+
     fun play(channel: ChannelEntity) {
         playerManager.play(channel.streamUrl, channel.name, TitleCleaner.clean(channel.groupTitle, true), isLive = true, contentKey = channel.id)
+        playedJob?.cancel()
+        playedJob = viewModelScope.launch {
+            playerManager.isPlayingFlow.first { it }
+            profileSession.markPlayed()
+        }
     }
 
     /** Pantalla completa abierta desde el mini reproductor: al salir de Inicio no se corta. */

@@ -419,7 +419,7 @@ fun PlayerScreen(
     LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro) {
         if (overlayOpen || quick != null) return@LaunchedEffect
         delay(60)
-        runCatching {
+        val agentResult = runCatching {
             when {
                 controlsVisible -> playFocus.requestFocus()
                 showNextEpisode && profile.isTv -> nextFocus.requestFocus()
@@ -427,6 +427,13 @@ fun PlayerScreen(
                 else -> rootFocus.requestFocus()
             }
         }
+        // #region agent log
+        com.entretv.app.player.AgentDebugLog.log("F", "PlayerScreen:focusEffect", "initial focus request", mapOf(
+            "controlsVisible" to controlsVisible, "playableLoaded" to (playable != null), "isPlaying" to isPlaying,
+            "buffering" to buffering, "playError" to (playError != null), "result" to agentResult.getOrNull(),
+            "failure" to agentResult.exceptionOrNull()?.javaClass?.simpleName
+        ))
+        // #endregion
     }
 
     BackHandler(enabled = profile.isTv && controlsVisible && !overlayOpen) { controlsVisible = false }
@@ -586,23 +593,17 @@ fun PlayerScreen(
                             if (!isLive) {
                                 ControlIcon(Icons.Default.Replay10, stringResource(R.string.player_rewind_10), 40.dp, modifier = downToSeek) { seekBy(-10_000); interaction++ }
                             }
-                            if (buffering) {
-                                Box(Modifier.size(if (small) 64.dp else 84.dp), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(if (small) 40.dp else 56.dp)
-                                    )
-                                }
-                            } else {
-                                ControlIcon(
-                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
-                                    size = if (small) 44.dp else 60.dp,
-                                    emphasized = true,
-                                    modifier = Modifier.focusRequester(playFocus).then(downToSeek),
-                                    onClick = ::togglePlay
-                                )
-                            }
+                            // Un solo botón también mientras carga: si se cambiara por otro elemento,
+                            // el foco de la TV se perdería al arrancar y nadie lo devuelve a Play.
+                            ControlIcon(
+                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
+                                size = if (small) 44.dp else 60.dp,
+                                emphasized = true,
+                                loading = buffering,
+                                modifier = Modifier.focusRequester(playFocus).then(downToSeek),
+                                onClick = ::togglePlay
+                            )
                             if (!isLive) {
                                 ControlIcon(Icons.Default.Forward30, stringResource(R.string.player_forward_30), 40.dp, modifier = downToSeek) { seekBy(30_000); interaction++ }
                             }
@@ -1093,6 +1094,7 @@ private fun quickItems(
         add(QuickItem(if (auto) videoValue(menu) else stringResource(R.string.player_video_auto), auto) { actions.selectVideo(null) })
         menu.video.forEach { add(QuickItem(it.label, menu.videoFixed && !menu.videoOff && it.selected) { actions.selectVideo(it) }) }
         add(QuickItem(stringResource(R.string.player_video_off), menu.videoOff) { actions.disableVideo() })
+        add(QuickItem(stringResource(R.string.player_video_repair), false) { actions.repairVideo() })
     }
     QuickKind.SPEED -> stringResource(R.string.player_speed) to SPEEDS.map { value ->
         QuickItem(speedLabel(value), value == speed) { actions.setSpeed(value) }
@@ -1556,6 +1558,7 @@ private fun ControlIcon(
     modifier: Modifier = Modifier,
     emphasized: Boolean = false,
     tint: Color = Color.White,
+    loading: Boolean = false,
     onClick: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
@@ -1577,7 +1580,11 @@ private fun ControlIcon(
             .clickable(interactionSource = source, indication = null, onClick = onClick)
             .padding(if (emphasized) 12.dp else 8.dp)
     ) {
-        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size))
+        if (loading) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(size))
+        } else {
+            Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size))
+        }
     }
 }
 

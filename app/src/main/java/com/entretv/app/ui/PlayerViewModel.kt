@@ -13,11 +13,13 @@ import com.entretv.app.data.local.EpisodeEntity
 import com.entretv.app.data.local.EpgEntity
 import com.entretv.app.data.local.PlaybackProgressEntity
 import com.entretv.app.data.local.VodMovieEntity
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.data.repo.GuideRepository
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.di.ApplicationScope
 import com.entretv.app.player.PlayerManager
 import com.entretv.app.ui.navigation.PlayerRoute
 import com.entretv.app.ui.player.PlayerSettingsActions
@@ -28,9 +30,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import com.entretv.app.data.local.FavoriteEntity
 import java.text.Normalizer
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -111,6 +115,8 @@ class PlayerViewModel @Inject constructor(
     private val parental: ParentalControl,
     private val downloads: DownloadRepository,
     private val guide: GuideRepository,
+    private val profileSession: ProfileSession,
+    @ApplicationScope private val appScope: CoroutineScope,
     val playerManager: PlayerManager
 ) : ViewModel(), PlayerSettingsActions {
 
@@ -227,6 +233,11 @@ class PlayerViewModel @Inject constructor(
 
     override fun disableVideo() {
         playerManager.disableVideo()
+    }
+
+    override fun repairVideo() {
+        val software = playerManager.repairVideo()
+        showNotice(uiText(if (software) R.string.player_notice_repair_software else R.string.player_notice_repair_hardware))
     }
 
     override fun setSubtitleSize(size: Int) {
@@ -422,6 +433,10 @@ class PlayerViewModel @Inject constructor(
     init {
         playerManager.onEnded = { onContentEnded() }
         viewModelScope.launch { load(route.contentKey, route.kind) }
+        viewModelScope.launch {
+            playerManager.isPlayingFlow.first { it }
+            profileSession.markPlayed()
+        }
     }
 
     private suspend fun load(contentKey: String, kind: String) {
@@ -529,25 +544,28 @@ class PlayerViewModel @Inject constructor(
     }
 
     private suspend fun savePosition(p: Playable) {
-        if (p.kind == "LIVE" || p is Playable.CatchUp) return
+        positionSnapshot(p)?.let { repository.saveProgress(it) }
+    }
+
+    /** Lee el reproductor (solo desde el hilo principal); null si no hay minuto nuevo que guardar. */
+    private fun positionSnapshot(p: Playable): PlaybackProgressEntity? {
+        if (p.kind == "LIVE" || p is Playable.CatchUp) return null
         val position = playerManager.player.currentPosition.coerceAtLeast(0L)
         val duration = playerManager.durationMs.value.takeIf { it > 0 }
             ?: playerManager.player.duration.coerceAtLeast(0L)
-        if (position <= 0L) return
-        if (position == lastSavedMs) return
+        if (position <= 0L) return null
+        if (position == lastSavedMs) return null
         lastSavedMs = position
-        repository.saveProgress(
-            PlaybackProgressEntity(
-                contentKey = p.contentKey,
-                kind = p.kind,
-                playlistId = p.let { key -> key.contentKey.substringBefore(":") },
-                refId = p.contentKey,
-                title = p.title,
-                imageUrl = p.imageUrl,
-                subtitle = p.subtitle,
-                positionMs = position,
-                durationMs = if (duration > 0) duration else 0L
-            )
+        return PlaybackProgressEntity(
+            contentKey = p.contentKey,
+            kind = p.kind,
+            playlistId = p.let { key -> key.contentKey.substringBefore(":") },
+            refId = p.contentKey,
+            title = p.title,
+            imageUrl = p.imageUrl,
+            subtitle = p.subtitle,
+            positionMs = position,
+            durationMs = if (duration > 0) duration else 0L
         )
     }
 
@@ -646,11 +664,13 @@ class PlayerViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        // viewModelScope ya está cancelado aquí; runBlocking sí llega a Room.
+        // viewModelScope ya está cancelado aquí. El minuto se lee antes de stop() y en este hilo;
+        // la escritura en Room va al ámbito de la app para no trabar la salida del reproductor.
         val current = _playable.value
         playerManager.onEnded = null
-        if (current != null) {
-            kotlinx.coroutines.runBlocking { savePosition(current) }
+        val progress = current?.let(::positionSnapshot)
+        if (progress != null) {
+            appScope.launch(NonCancellable) { repository.saveProgress(progress) }
         }
         if (!route.keepPlaying || current !is Playable.LiveChannel) playerManager.stop()
         super.onCleared()

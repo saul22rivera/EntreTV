@@ -96,7 +96,7 @@ class UpdateRepository @Inject constructor(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     private val apkFile get() = File(File(context.cacheDir, "updates").apply { mkdirs() }, "EntreTV-update.apk")
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)

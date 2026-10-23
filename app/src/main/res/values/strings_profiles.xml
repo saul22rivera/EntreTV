@@ -56,6 +56,4 @@
     <string name="settings_switch_profile_desc">Ahora: %1$s</string>
     <string name="settings_manage_profiles">Administrar perfiles</string>
     <string name="settings_manage_profiles_desc">Agregar, editar o eliminar perfiles, perfiles de niños y PIN</string>
-    <string name="settings_ask_profile">Preguntar perfil al abrir</string>
-    <string name="settings_ask_profile_desc">Con más de un perfil, la app abre en «¿Quién está viendo?»</string>
 </resources>

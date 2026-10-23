@@ -55,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.entretv.app.R
 import com.entretv.app.data.profile.ProfileRepository
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.data.repo.AccountException
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.ui.theme.EntreBrand
@@ -84,7 +85,8 @@ data class LoginUiState(val loading: Boolean = false, val error: UiText? = null)
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val repository: PlaylistRepository,
-    private val profiles: ProfileRepository
+    private val profiles: ProfileRepository,
+    private val profileSession: ProfileSession
 ) : ViewModel() {
     private val _ui = MutableStateFlow(LoginUiState())
     val ui: StateFlow<LoginUiState> = _ui.asStateFlow()
@@ -96,6 +98,8 @@ class LoginViewModel @Inject constructor(
             return
         }
         _ui.value = LoginUiState(loading = true)
+        // Antes de guardar la cuenta: al quedar guardada la app ya pasa a Inicio y decide si pregunta perfil.
+        profileSession.loggedInThisLaunch = true
         viewModelScope.launch {
             repository.login(name.trim(), user.trim(), pass.trim())
                 .onSuccess {

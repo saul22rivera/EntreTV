@@ -5,7 +5,11 @@
     <string name="player_video_auto_height">Automatic · %1$dp</string>
     <string name="player_video_off">No video</string>
     <string name="player_video_cover">Cover image</string>
-    <string name="player_video_hint">Sound but no picture? Pick the same video track again or try another one.</string>
+    <string name="player_video_hint">Sound but no picture, or stuttering? Use Fix picture; if that is not enough, press it again to switch decoders.</string>
+    <string name="player_video_repair">Fix picture</string>
+    <string name="player_video_repair_hint">Restarts the video; again = other decoder</string>
+    <string name="player_notice_repair_hardware">Fixing picture · TV decoder</string>
+    <string name="player_notice_repair_software">Fixing picture · software decoder</string>
     <string name="player_audio_off">No audio</string>
     <string name="player_more_options">More options</string>
 </resources>

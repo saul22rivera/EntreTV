@@ -107,11 +107,8 @@ fun SettingsPanel(
     onLogout: () -> Unit,
     /** null = sin perfiles (no se muestra la sección). */
     profileName: String?,
-    multipleProfiles: Boolean,
-    askProfileOnStart: Boolean,
     onSwitchProfile: () -> Unit,
     onManageProfiles: () -> Unit,
-    onAskProfileOnStartChange: (Boolean) -> Unit,
     appVersion: String,
     onCheckUpdates: () -> Unit,
     appLanguage: String,
@@ -172,14 +169,6 @@ fun SettingsPanel(
                     onSwitchProfile
                 )
                 ActionLine(stringResource(R.string.settings_manage_profiles), stringResource(R.string.settings_manage_profiles_desc), onManageProfiles)
-                if (multipleProfiles) {
-                    SwitchLine(
-                        title = stringResource(R.string.settings_ask_profile),
-                        subtitle = stringResource(R.string.settings_ask_profile_desc),
-                        checked = askProfileOnStart,
-                        onChange = onAskProfileOnStartChange
-                    )
-                }
             }
 
             Divider()

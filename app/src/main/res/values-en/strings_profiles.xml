@@ -56,6 +56,4 @@
     <string name="settings_switch_profile_desc">Current: %1$s</string>
     <string name="settings_manage_profiles">Manage profiles</string>
     <string name="settings_manage_profiles_desc">Add, edit or delete profiles, kids profiles and PINs</string>
-    <string name="settings_ask_profile">Ask for profile on start</string>
-    <string name="settings_ask_profile_desc">With more than one profile, the app opens on “Who\'s watching?”</string>
 </resources>

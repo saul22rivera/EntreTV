@@ -27,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.entretv.app.data.profile.ProfileSession
 import com.entretv.app.player.PipController
 import com.entretv.app.tv.TvDeepLink
 import com.entretv.app.ui.AppStartup
@@ -52,9 +53,12 @@ import com.entretv.app.ui.profile.ProfilesHost
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreTVTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
+
+    @Inject lateinit var profileSession: ProfileSession
 
     /** True mientras el usuario está en la pantalla de reproducción. */
     private var inPlayer by mutableStateOf(false)
@@ -76,7 +80,11 @@ class MainActivity : AppCompatActivity() {
             provider.view.animate().alpha(0f).setDuration(250L).withEndAction { provider.remove() }.start()
         }
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) pendingLink = TvDeepLink.parse(intent)
+        // Con estado guardado es la misma apertura (rotación, cambio de idioma): no se vuelve a preguntar.
+        if (savedInstanceState == null) {
+            profileSession.newLaunch()
+            pendingLink = TvDeepLink.parse(intent)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -99,8 +107,8 @@ class MainActivity : AppCompatActivity() {
                     Session.LOGGED_IN -> {
                         val profiles: ProfileViewModel = hiltViewModel()
                         val profileUi by profiles.ui.collectAsStateWithLifecycle()
-                        // Al abrir con varios perfiles (o con PIN) Inicio espera a que se elija:
-                        // no carga nada ni abre la tarjeta del inicio de la TV antes de tiempo.
+                        // Al abrir, Inicio espera a que se elija el perfil: no carga nada ni abre
+                        // la tarjeta del inicio de la TV antes de tiempo (se abre después de elegir).
                         if (profileUi.startup) {
                             LaunchedEffect(Unit) { AppStartup.markReady() }
                             Box(Modifier.fillMaxSize().background(EntreBrand.Ink))
@@ -133,14 +141,11 @@ class MainActivity : AppCompatActivity() {
         }
         val profileName by profiles.activeName.collectAsStateWithLifecycle()
         val profileAvatar by profiles.activeAvatar.collectAsStateWithLifecycle()
-        val multipleProfiles by profiles.multiple.collectAsStateWithLifecycle()
-        val askProfileOnStart by profiles.askOnStart.collectAsStateWithLifecycle()
-        val profileMenu = ProfileMenu(profileName, profileAvatar, multipleProfiles, askProfileOnStart)
+        val profileMenu = ProfileMenu(profileName, profileAvatar)
         val profileActions = remember(profiles) {
             ProfileActions(
                 onSwitch = profiles::openPicker,
                 onManage = profiles::openManage,
-                onAskOnStartChange = profiles::setAskOnStart,
                 guardAdult = profiles::guardAdult
             )
         }

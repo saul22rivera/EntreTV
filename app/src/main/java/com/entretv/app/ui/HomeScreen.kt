@@ -1141,8 +1141,6 @@ fun HomeScreen(
             },
             onLogout = { confirmLogout = true },
             profileName = profileMenu?.let { profileDisplayName(it.name) },
-            multipleProfiles = profileMenu?.multiple == true,
-            askProfileOnStart = profileMenu?.askOnStart == true,
             onSwitchProfile = {
                 showSettings = false
                 profileActions?.onSwitch?.invoke()
@@ -1151,7 +1149,6 @@ fun HomeScreen(
                 showSettings = false
                 profileActions?.onManage?.invoke()
             },
-            onAskProfileOnStartChange = { profileActions?.onAskOnStartChange?.invoke(it) },
             appVersion = updateViewModel.versionName,
             onCheckUpdates = updateViewModel::checkNow,
             appLanguage = remember { AppLanguage.current(context) },

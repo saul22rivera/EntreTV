@@ -6,14 +6,13 @@ import com.entretv.app.data.local.ProfileEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
-/**
- * Perfil activo y lo justo para decidir el arranque sin abrir la base: con un solo perfil y
- * sin PIN la app entra directo como siempre.
- */
+/** Perfil activo y lo justo para decidir el arranque sin abrir la base. */
 @Singleton
 class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -35,14 +34,22 @@ class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
     /** Hay más de un perfil. */
     val multiple: StateFlow<Boolean> = _multiple.asStateFlow()
 
-    private val _askOnStart = MutableStateFlow(prefs.getBoolean(KEY_ASK_ON_START, true))
-    /** Con más de un perfil, la app abre en "¿Quién está viendo?". */
-    val askOnStart: StateFlow<Boolean> = _askOnStart.asStateFlow()
-
     val activeHasPin: Boolean get() = prefs.getBoolean(KEY_HAS_PIN, false)
 
-    /** El arranque ya pasó por la elección de perfil (o no hacía falta) en este proceso. */
+    /** Último perfil que reprodujo algo en este equipo: el que "¿Quién está viendo?" ofrece primero. */
+    val lastPlayedId: String? get() = prefs.getString(KEY_LAST_PLAYED, null)
+
+    /** El arranque ya pasó por la elección de perfil (o no hacía falta) en esta apertura de la app. */
     @Volatile var startupHandled: Boolean = false
+
+    /** Se inició sesión en esta apertura: con el único perfil recién nombrado se entra directo a Inicio. */
+    @Volatile var loggedInThisLaunch: Boolean = false
+
+    /** La app se abre de nuevo (no al rotar ni al volver del fondo): hay que elegir perfil otra vez. */
+    fun newLaunch() {
+        startupHandled = false
+        loggedInThisLaunch = false
+    }
 
     /** Ya se le buscó nombre al perfil por defecto con la cuenta guardada (se hace una sola vez). */
     var defaultNameChecked: Boolean
@@ -71,9 +78,10 @@ class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
         }
     }
 
-    fun setAskOnStart(ask: Boolean) {
-        prefs.edit().putBoolean(KEY_ASK_ON_START, ask).apply()
-        _askOnStart.value = ask
+    /** El perfil activo empezó a reproducir. */
+    suspend fun markPlayed() = withContext(Dispatchers.IO) {
+        val id = _activeId.value
+        if (prefs.getString(KEY_LAST_PLAYED, null) != id) prefs.edit().putString(KEY_LAST_PLAYED, id).apply()
     }
 
     // Intentos fallidos de PIN: sobreviven a cerrar la app para que no sirva reiniciarla.
@@ -97,7 +105,7 @@ class ProfileSession @Inject constructor(@ApplicationContext context: Context) {
         const val KEY_NAME = "active_name"
         const val KEY_AVATAR = "active_avatar"
         const val KEY_MULTIPLE = "multiple"
-        const val KEY_ASK_ON_START = "ask_on_start"
         const val KEY_DEFAULT_NAMED = "default_name_checked"
+        const val KEY_LAST_PLAYED = "last_played_id"
     }
 }

@@ -197,7 +197,15 @@ private class DisplayModeSwitcher(private val window: Window, private val displa
         if (contentKey == matchedKey) return
         matchedKey = contentKey
         val d = display ?: return
-        val target = runCatching { pickDisplayMode(d.mode, d.supportedModes, fps, originalMode) }.getOrNull() ?: return
+        val target = runCatching { pickDisplayMode(d.mode, d.supportedModes, fps, originalMode) }.getOrNull()
+        // #region agent log
+        com.entretv.app.player.AgentDebugLog.log("E", "FrameRateMatcher:match", "display mode switch", mapOf(
+            "fps" to fps, "current" to d.mode?.let { "${it.modeId}:${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate}" },
+            "target" to target?.let { "${it.modeId}:${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate}" },
+            "modes" to d.supportedModes.joinToString { "${it.modeId}:${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate}" }
+        ))
+        // #endregion
+        if (target == null) return
         if (window.attributes.preferredDisplayModeId == target.modeId) return
         runCatching {
             window.attributes = window.attributes.apply { preferredDisplayModeId = target.modeId }
