@@ -1,7 +1,9 @@
 package com.entretv.app
 
+import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
+import android.os.Bundle
 import android.os.StrictMode
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
@@ -10,13 +12,16 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
+import com.entretv.app.data.AppForeground
 import com.entretv.app.data.download.DownloadRepository
 import com.entretv.app.data.sync.CatalogSyncWorker
 import com.entretv.app.tv.TvHomePublisher
 import com.entretv.app.ui.AppLanguage
+import com.entretv.app.ui.ImageFailures
 import com.entretv.app.ui.PosterThumbs
 import com.entretv.app.ui.isLowRamDevice
 import dagger.hilt.android.HiltAndroidApp
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
@@ -57,6 +62,15 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
             )
         }
         AppLanguage.init(this)
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) = AppForeground.onActivityStarted()
+            override fun onActivityStopped(activity: Activity) = AppForeground.onActivityStopped()
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
         downloads.resumePending()
         // WorkManager abre su base al primer uso: fuera del hilo principal para no demorar el arranque.
         thread(name = "catalog-sync-schedule") {
@@ -69,11 +83,14 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
     // Con poca memoria: JPEG en RGB_565 (la mitad de bytes; exige bitmaps de software,
     // los de hardware siempre son ARGB_8888), sin fundido y caché en memoria del 10 % del heap
     // normal: con largeHeap, maxSizePercent se calcularía sobre largeMemoryClass.
+    // Las miniaturas son lo que se muestra y duran; el original queda en una caché de Coil chica.
     override fun newImageLoader(): ImageLoader {
         val lowRam = isLowRamDevice(this)
-        val thumbs = PosterThumbs(this, (if (lowRam) 100L else 150L) * 1024 * 1024, appScope).also { it.trim() }
+        val failures = ImageFailures.get(this)
+        val thumbs = PosterThumbs(this, (if (lowRam) 150L else 500L) * 1024 * 1024, appScope).also { it.trim() }
         return ImageLoader.Builder(this)
             .components {
+                add(failures.interceptor)
                 add(thumbs.interceptor)
                 add(thumbs.fetcherFactory)
             }
@@ -91,16 +108,21 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
             }
             // Cliente de la app con despachador propio: el de fábrica deja 5 descargas por servidor
             // y los pósters vienen casi todos del mismo. Sin caché HTTP: Coil ya guarda en disco.
+            // Plazos cortos: un póster que no llega en segundos deja el título y se reintenta después.
             .okHttpClient {
                 httpClient.get().newBuilder()
                     .cache(null)
                     .dispatcher(Dispatcher().apply { maxRequests = 32; maxRequestsPerHost = 12 })
+                    .connectTimeout(4, TimeUnit.SECONDS)
+                    .readTimeout(8, TimeUnit.SECONDS)
+                    .callTimeout(12, TimeUnit.SECONDS)
+                    .addInterceptor(failures.hostBreaker)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("entre_coil"))
-                    .maxSizeBytes((if (lowRam) 128L else 256L) * 1024 * 1024)
+                    .maxSizeBytes(96L * 1024 * 1024)
                     .build()
             }
             .respectCacheHeaders(false)

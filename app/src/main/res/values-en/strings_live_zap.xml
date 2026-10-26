@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Live zapping banner -->
+    <string name="live_zap_now">Now: %1$s</string>
+    <string name="live_zap_next">Next: %1$s</string>
+</resources>

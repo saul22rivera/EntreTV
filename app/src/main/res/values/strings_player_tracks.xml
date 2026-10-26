@@ -10,6 +10,8 @@
     <string name="player_video_repair_hint">Reinicia el video; otra vez = otro decodificador</string>
     <string name="player_notice_repair_hardware">Reparando imagen · decodificador de la TV</string>
     <string name="player_notice_repair_software">Reparando imagen · decodificador por software</string>
-    <string name="player_audio_off">Sin audio</string>
+    <string name="player_video_forget_fixes">Olvidar ajustes de imagen</string>
+    <string name="player_video_forget_fixes_hint">Lo que Reparar imagen recordó deja de aplicarse solo</string>
+    <string name="player_notice_fixes_forgotten">Ajustes de imagen olvidados</string>    <string name="player_audio_off">Sin audio</string>
     <string name="player_more_options">Más opciones</string>
 </resources>

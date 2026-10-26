@@ -687,7 +687,10 @@ fun HomeScreen(
                         coil.Coil.imageLoader(context).memoryCache?.clear()
                         coil.Coil.imageLoader(context).diskCache?.clear()
                         scope.launch {
-                            withContext(Dispatchers.IO) { PosterThumbs.clear(context) }
+                            withContext(Dispatchers.IO) {
+                                PosterThumbs.clear(context)
+                                ImageFailures.get(context).clear()
+                            }
                             snackbar.showSnackbar(context.getString(R.string.home_images_cleared))
                         }
                     },
@@ -2527,16 +2530,34 @@ private fun PosterCard(
             if (item.imageUrl.isNotEmpty()) {
                 val context = LocalContext.current
                 var waiting by remember(item.imageUrl) { mutableStateOf(!isLive) }
+                // Un póster que no llegó por la red se vuelve a pedir un par de veces; los rotos no.
+                var retry by remember(item.imageUrl) { mutableIntStateOf(0) }
+                var retryDue by remember(item.imageUrl) { mutableStateOf(false) }
                 if (waiting) PosterPlaceholder(item.title)
                 AsyncImage(
-                    model = remember(item.imageUrl) {
-                        if (isLive) cardImage(item.imageUrl) else posterRequest(context, item.imageUrl).build()
+                    model = remember(item.imageUrl, retry) {
+                        if (isLive) cardImage(item.imageUrl)
+                        else posterRequest(context, item.imageUrl)
+                            .apply { if (retry > 0) setParameter(POSTER_RETRY_PARAM, retry, memoryCacheKey = null) }
+                            .build()
                     },
                     contentDescription = item.title,
                     modifier = if (isLive) Modifier.fillMaxSize().padding(8.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop,
-                    onState = if (isLive) null else { state -> waiting = state !is AsyncImagePainter.State.Success }
+                    onState = if (isLive) null else { state ->
+                        waiting = state !is AsyncImagePainter.State.Success
+                        if (state is AsyncImagePainter.State.Error && retry < POSTER_RETRIES &&
+                            ImageFailures.isTransient(state.result.throwable)
+                        ) retryDue = true
+                    }
                 )
+                if (retryDue) {
+                    LaunchedEffect(retry) {
+                        delay(POSTER_RETRY_DELAY_MS)
+                        retryDue = false
+                        retry++
+                    }
+                }
             } else {
                 Icon(iconFor(item), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }

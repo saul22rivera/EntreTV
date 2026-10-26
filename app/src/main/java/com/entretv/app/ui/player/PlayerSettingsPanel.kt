@@ -99,6 +99,8 @@ interface PlayerSettingsActions {
     fun disableVideo()
     /** "Reparar imagen": reinicia el decodificador de video. */
     fun repairVideo()
+    /** Borra lo que "Reparar imagen" dejó recordado para cada tipo de video. */
+    fun forgetVideoFixes()
     fun setSubtitleSize(size: Int)
     fun setSubtitleColor(color: Int)
     fun setSubtitleBackground(background: Int)
@@ -467,6 +469,14 @@ private fun PageContent(
                         value = stringResource(R.string.player_video_repair_hint),
                         selected = false,
                         onClick = { actions.repairVideo(); back() }
+                    )
+                }
+                item {
+                    PanelRow(
+                        title = stringResource(R.string.player_video_forget_fixes),
+                        value = stringResource(R.string.player_video_forget_fixes_hint),
+                        selected = false,
+                        onClick = { actions.forgetVideoFixes(); back() }
                     )
                 }
                 item { PanelHint(stringResource(R.string.player_video_hint)) }

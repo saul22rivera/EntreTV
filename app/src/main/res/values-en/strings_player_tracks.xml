@@ -10,6 +10,8 @@
     <string name="player_video_repair_hint">Restarts the video; again = other decoder</string>
     <string name="player_notice_repair_hardware">Fixing picture · TV decoder</string>
     <string name="player_notice_repair_software">Fixing picture · software decoder</string>
-    <string name="player_audio_off">No audio</string>
+    <string name="player_video_forget_fixes">Forget picture fixes</string>
+    <string name="player_video_forget_fixes_hint">What Fix picture remembered stops applying automatically</string>
+    <string name="player_notice_fixes_forgotten">Picture fixes forgotten</string>    <string name="player_audio_off">No audio</string>
     <string name="player_more_options">More options</string>
 </resources>

@@ -169,7 +169,7 @@ class SettingsRepository @Inject constructor(
             isTrial = parts.getOrNull(3) == "1",
             checkedAt = parts.getOrNull(4)?.toLongOrNull() ?: 0L
         )
-    }
+    }.distinctUntilChanged()
 
     suspend fun setAccountInfo(playlistId: String, info: AccountInfo?) {
         context.settingsStore.edit {
@@ -202,7 +202,7 @@ class SettingsRepository @Inject constructor(
         context.settingsStore.data.first()[lastRefreshKey(playlistId)] ?: 0L
 
     fun lastRefreshFlow(playlistId: String): Flow<Long> =
-        context.settingsStore.data.map { it[lastRefreshKey(playlistId)] ?: 0L }
+        context.settingsStore.data.map { it[lastRefreshKey(playlistId)] ?: 0L }.distinctUntilChanged()
 
     val refreshMode: Flow<Int> = context.settingsStore.data.map {
         when (val mode = it[KEY_REFRESH_MODE]) {
@@ -238,7 +238,7 @@ class SettingsRepository @Inject constructor(
                 val at = entry.substringAfterLast('|').toLongOrNull() ?: return@mapNotNull null
                 entry.substringBeforeLast('|') to at
             }.toMap()
-        }
+        }.distinctUntilChanged()
     }
 
     suspend fun dismissContinue(key: String, at: Long) {
@@ -256,6 +256,7 @@ class SettingsRepository @Inject constructor(
 
     /** Las descargas esperan a una red sin límite de datos (Wi‑Fi o cable). */
     val downloadWifiOnly: Flow<Boolean> = context.settingsStore.data.map { it[KEY_DOWNLOAD_WIFI_ONLY] ?: true }
+        .distinctUntilChanged()
 
     suspend fun setDownloadWifiOnly(enabled: Boolean) {
         context.settingsStore.edit { it[KEY_DOWNLOAD_WIFI_ONLY] = enabled }
@@ -264,12 +265,12 @@ class SettingsRepository @Inject constructor(
     /** Segundos de video que se juntan antes de empezar (y tras un trabón). */
     val bufferSeconds: Flow<Int> = context.settingsStore.data.map {
         it[KEY_BUFFER_SECONDS] ?: DEFAULT_BUFFER_SECONDS
-    }
+    }.distinctUntilChanged()
 
     /** Hasta cuántos segundos por delante descarga el reproductor. */
     val maxBufferSeconds: Flow<Int> = context.settingsStore.data.map {
         it[KEY_MAX_BUFFER_SECONDS] ?: DEFAULT_MAX_BUFFER_SECONDS
-    }
+    }.distinctUntilChanged()
 
     val playerPrefs: Flow<PlayerPrefs> = context.settingsStore.data.map {
         PlayerPrefs(
@@ -286,7 +287,7 @@ class SettingsRepository @Inject constructor(
             tunneling = isTv && it[KEY_TUNNELING] == true,
             skipIntroButton = it[KEY_SKIP_INTRO] ?: false
         )
-    }
+    }.distinctUntilChanged()
 
     suspend fun setSkipIntroButton(enabled: Boolean) {
         context.settingsStore.edit { it[KEY_SKIP_INTRO] = enabled }
@@ -319,7 +320,7 @@ class SettingsRepository @Inject constructor(
     }
 
     /** Fecha y hora pequeña arriba en Inicio y en el reproductor. */
-    val showClock: Flow<Boolean> = context.settingsStore.data.map { it[KEY_SHOW_CLOCK] ?: true }
+    val showClock: Flow<Boolean> = context.settingsStore.data.map { it[KEY_SHOW_CLOCK] ?: true }.distinctUntilChanged()
 
     suspend fun setShowClock(enabled: Boolean) {
         context.settingsStore.edit { it[KEY_SHOW_CLOCK] = enabled }
@@ -341,18 +342,20 @@ class SettingsRepository @Inject constructor(
         context.settingsStore.edit { it[KEY_DECODER] = mode }
     }
 
+    // Cualquier ajuste guardado hace emitir a todos: sin repetidos no se rearma el catálogo.
     val catalogPrefs: Flow<CatalogPrefs> = context.settingsStore.data.map {
         CatalogPrefs(
             defaultSort = it[KEY_DEFAULT_SORT] ?: DEFAULT_SORT,
             cleanNames = it[KEY_CLEAN_NAMES] ?: true
         )
-    }
+    }.distinctUntilChanged()
 
     /**
      * Secciones (nombre de [com.entretv.app.ui.Section]) cuyas categorías se ven en lista, un
      * renglón por título; las demás, en cuadrícula de pósters.
      */
     val listViewSections: Flow<Set<String>> = context.settingsStore.data.map { it[KEY_LIST_VIEW_SECTIONS].orEmpty() }
+        .distinctUntilChanged()
 
     suspend fun setListView(section: String, list: Boolean) {
         context.settingsStore.edit { prefs ->
@@ -362,7 +365,7 @@ class SettingsRepository @Inject constructor(
     }
 
     /** SHA-256 del PIN parental; vacío = sin PIN. */
-    val pinHash: Flow<String> = context.settingsStore.data.map { it[KEY_PIN_HASH].orEmpty() }
+    val pinHash: Flow<String> = context.settingsStore.data.map { it[KEY_PIN_HASH].orEmpty() }.distinctUntilChanged()
 
     suspend fun setBufferSeconds(seconds: Int) {
         context.settingsStore.edit { it[KEY_BUFFER_SECONDS] = seconds }

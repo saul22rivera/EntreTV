@@ -24,15 +24,18 @@ import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -62,7 +65,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -79,7 +85,11 @@ fun Format.isCoverArt(): Boolean =
  *    se recupera solo y sin límite de intentos, escalando: saltar al directo → volver a
  *    preparar → reconstruir la fuente, con espera creciente (0 s, 1 s, 2 s… hasta 15 s).
  *  - Si vuelve la red, reintenta de inmediato.
- *  - Películas y episodios reintentan hasta 8 veces desde el mismo minuto.
+ *  - Películas y episodios reintentan desde el mismo minuto sin límite mientras haya red (el
+ *    error aparece tras 30 min seguidos fallando); sin red esperan y siguen solos al volver.
+ *  - Con red no medida, la película o episodio se baja entero al disco por delante de la
+ *    reproducción con una sola conexión ([VodAheadDownloader]); si no se puede, se guardan
+ *    hasta 5 min en memoria.
  *  - Nunca se registran URLs: llevan usuario y contraseña.
  */
 @OptIn(UnstableApi::class)
@@ -95,7 +105,12 @@ class PlayerManager @Inject constructor(
         private const val CACHE_BYTES = 256L * 1024 * 1024
         private const val LOW_RAM_CACHE_BYTES = 96L * 1024 * 1024
         private const val LOAD_RETRIES = 6
-        private const val MAX_VOD_RECONNECTS = 8
+        /** Película fallando sin parar (con red) durante esto: se muestra el error con "Reintentar". */
+        private const val VOD_GIVE_UP_MS = 30 * 60_000L
+        /** Película cargando sin avanzar nada (con red) durante esto = trabada. */
+        private const val VOD_STALL_BUFFERING_MS = 20_000L
+        /** Espacio libre mínimo para intentar bajar la película al disco (el chequeo fino lo hace la descarga). */
+        private const val AHEAD_MIN_FREE_BYTES = 2L * 1024 * 1024 * 1024
         private const val MAX_RECONNECT_DELAY_MS = 15_000L
         private const val LONG_BUFFER_MS = 60_000
         private const val LIVE_OFFSET_LONG_BUFFER_MS = 20_000L
@@ -114,6 +129,12 @@ class PlayerManager @Inject constructor(
         private const val PRELOAD_RELEASE_WAIT_MS = 250L
         /** Sonido avanzando sin ningún cuadro de video durante esto = imagen trabada. */
         private const val NO_PICTURE_MS = 3_000L
+        /** Al empezar, tras un salto o un reinicio del video se vigila más seguido y con menos espera. */
+        private const val FAST_PICTURE_WINDOW_MS = 15_000L
+        private const val FAST_PICTURE_TICK_MS = 500L
+        private const val NO_PICTURE_FAST_MS = 1_500L
+        /** "Reparar imagen" sin otro toque durante esto = funcionó; se recuerda para ese tipo de video. */
+        private const val REPAIR_SETTLE_MS = 20_000L
         private const val MAX_PICTURE_FIXES = 3
         /** Pausa entre quitar y volver a poner la pista de video: si no, el cambio no llega a soltar el decodificador. */
         private const val VIDEO_RESTART_GAP_MS = 300L
@@ -141,12 +162,15 @@ class PlayerManager @Inject constructor(
 
     private val lowRam: Boolean by lazy { isLowRamDevice(context) }
 
+    // Una sola base para las dos cachés de video.
+    private val databaseProvider by lazy { StandaloneDatabaseProvider(context) }
+
     private val cache: SimpleCache by lazy {
         SimpleCache(
             File(context.cacheDir, "entre_media"),
             // Los equipos con poca memoria suelen traer poco almacenamiento.
             LeastRecentlyUsedCacheEvictor(if (lowRam) LOW_RAM_CACHE_BYTES else CACHE_BYTES),
-            StandaloneDatabaseProvider(context)
+            databaseProvider
         )
     }
 
@@ -180,6 +204,21 @@ class PlayerManager @Inject constructor(
     }
 
     private val errorPolicy = DefaultLoadErrorHandlingPolicy(LOAD_RETRIES)
+    private val vodErrorPolicy = VodLoadErrorPolicy(LOAD_RETRIES)
+
+    // Cliente propio, como el de la precarga: cancelar sus llamadas corta la conexión al instante.
+    private val aheadClient: OkHttpClient by lazy {
+        streamClient.newBuilder().dispatcher(Dispatcher()).build()
+    }
+
+    // Crearlo no abre nada: la caché y el hilo nacen con la primera película.
+    private val ahead: VodAheadDownloader by lazy {
+        VodAheadDownloader(File(context.noBackupFilesDir, "entre_vod_ahead"), databaseProvider, aheadClient, USER_AGENT)
+    }
+
+    private val aheadSourceFactory by lazy {
+        ProgressiveMediaSource.Factory(AheadCacheDataSource.Factory(ahead)).setLoadErrorHandlingPolicy(vodErrorPolicy)
+    }
 
     // Cliente propio para poder cortar su conexión al instante: interrumpir el hilo no
     // desbloquea una lectura de red y la línea quedaría ocupada al abrir el reproductor.
@@ -233,7 +272,7 @@ class PlayerManager @Inject constructor(
     }
 
     private val vodSourceFactory by lazy {
-        DefaultMediaSourceFactory(vodDataFactory).setLoadErrorHandlingPolicy(errorPolicy)
+        DefaultMediaSourceFactory(vodDataFactory).setLoadErrorHandlingPolicy(vodErrorPolicy)
     }
 
     /** Descargas: se leen del disco directo, sin pasar por la caché de video. */
@@ -267,6 +306,21 @@ class PlayerManager @Inject constructor(
     private val _error = MutableStateFlow<UiText?>(null)
     val error: StateFlow<UiText?> = _error
 
+    /** Película o episodio por la red (no en vivo ni descarga). */
+    private val _vodActive = MutableStateFlow(false)
+
+    /**
+     * Película o episodio parado por falta de red: la pantalla muestra "Sin internet · se reanuda
+     * solo" en vez de "Reconectando…". Sigue solo al volver la red.
+     */
+    val waitingForNetwork: StateFlow<Boolean> =
+        combine(_vodActive, _offline, _isBuffering, _reconnecting) { vod, offline, buffering, reconnecting ->
+            vod && offline && (buffering || reconnecting)
+        }.stateIn(scope, SharingStarted.Eagerly, false)
+
+    /** Parte de la película ya bajada al disco (0..1); null si no se está bajando adelantada. */
+    val aheadDownloaded: StateFlow<Float?> get() = ahead.progress
+
     /** Pistas de audio, subtítulos y video del contenido actual. */
     private val _tracks = MutableStateFlow(Tracks.EMPTY)
     val tracks: StateFlow<Tracks> = _tracks
@@ -295,8 +349,17 @@ class PlayerManager @Inject constructor(
     private var reconnectAttempts = 0
     private var reconnectPending = false
     private var lastPositionMs = C.TIME_UNSET
+    private var lastBufferedMs = C.TIME_UNSET
     private var lastProgressAt = 0L
     private var recoveredAt = 0L
+    /** Desde cuándo la película falla sin volver a reproducir (0 si no falla); sin red no cuenta. */
+    private var vodFailingSince = 0L
+    /** Título que se baja adelantado al disco; null si va por el camino normal. */
+    private var aheadUrl: String? = null
+
+    // Lo lee el búfer desde el hilo de reproducción.
+    @Volatile
+    private var vodLongBuffer = false
 
     // Vigilante de imagen, por contenido.
     private var firstFrameShown = false
@@ -305,11 +368,26 @@ class PlayerManager @Inject constructor(
     private var coverArtChecked = false
     /** Cuenta los reinicios de video: uno pendiente de otro contenido no se aplica. */
     private var videoRestartToken = 0
+    /** Hasta cuándo se vigila la imagen cada [FAST_PICTURE_TICK_MS]. */
+    private var fastPictureUntil = 0L
+    private var surfaceHasSize = false
+    private var surfaceSizedAt = 0L
+    /** El decodificador de video nació antes de que la pantalla tuviera tamaño (TCL/MediaTek: sonido sin imagen). */
+    private var decoderBeforeSurface = false
+    /** Reinicio automático del video al empezar: uno por contenido. */
+    private var startRestartDone = false
+    private var proactiveRestartPending = false
+    private var fixMemoryChecked = false
+    /** Tipo del video actual para [VideoFixMemory]. */
+    private var videoFixKey: String? = null
+    private var repairKey: String? = null
 
     // Lo lee el hilo de reproducción al crear cada decodificador.
     @Volatile
     private var softwareVideo = false
     private var manualRepairs = 0
+
+    private val videoFixes by lazy { VideoFixMemory(context) }
 
     private val reconnect = Runnable {
         reconnectPending = false
@@ -321,6 +399,22 @@ class PlayerManager @Inject constructor(
             checkStall()
             checkPicture()
             mainHandler.postDelayed(this, WATCHDOG_TICK_MS)
+        }
+    }
+
+    private val fastPicture = object : Runnable {
+        override fun run() {
+            checkPicture()
+            if (!firstFrameShown && currentItem != null && SystemClock.elapsedRealtime() < fastPictureUntil) {
+                mainHandler.postDelayed(this, FAST_PICTURE_TICK_MS)
+            }
+        }
+    }
+
+    private val rememberRepair = Runnable {
+        val key = repairKey ?: return@Runnable
+        if (currentItem != null) {
+            videoFixes.remember(key, if (softwareVideo) VideoFixMemory.LEVEL_SOFTWARE else VideoFixMemory.LEVEL_RESTART)
         }
     }
 
@@ -338,7 +432,10 @@ class PlayerManager @Inject constructor(
     }
 
     private fun buildPlayer(): ExoPlayer {
-        val loadControl = UserBufferLoadControl(targetBufferBytes(), lowRam, { startBufferMs }, { maxBufferMs }, { currentIsLive })
+        val loadControl = UserBufferLoadControl(
+            targetBufferBytes(), longVodBufferBytes(), lowRam,
+            { startBufferMs }, { maxBufferMs }, { currentIsLive }, { vodLongBuffer }
+        )
 
         trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -388,12 +485,14 @@ class PlayerManager @Inject constructor(
                 if (isPlaying) {
                     _reconnecting.value = false
                     lastProgressAt = SystemClock.elapsedRealtime()
+                    vodFailingSince = 0L
                 }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 _isBuffering.value = state == Player.STATE_BUFFERING
                 _durationMs.value = if (state == Player.STATE_IDLE) 0L else exoPlayer.duration.coerceAtLeast(0L)
+                if (aheadUrl != null && _durationMs.value > 0) ahead.durationMs = _durationMs.value
                 if (state == Player.STATE_READY) {
                     _error.value = null
                     if (!currentIsLive) {
@@ -423,6 +522,14 @@ class PlayerManager @Inject constructor(
 
             override fun onRenderedFirstFrame() {
                 firstFrameShown = true
+                if (proactiveRestartPending) {
+                    proactiveRestartPending = false
+                    autoRestartVideo()
+                }
+            }
+
+            override fun onSurfaceSizeChanged(width: Int, height: Int) {
+                onSurfaceSize(width > 0 && height > 0)
             }
 
             override fun onPositionDiscontinuity(
@@ -430,11 +537,32 @@ class PlayerManager @Inject constructor(
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK) pictureWaitFromMs = C.TIME_UNSET
+                if (reason != Player.DISCONTINUITY_REASON_SEEK) return
+                pictureWaitFromMs = C.TIME_UNSET
+                // Tras un salto Media3 no siempre vuelve a avisar del primer cuadro: solo se vigila si aún no hubo imagen.
+                if (!firstFrameShown) armFastPicture()
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 _speed.value = playbackParameters.speed
+            }
+        })
+        exoPlayer.addAnalyticsListener(object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long
+            ) {
+                onVideoDecoderReady(initializedTimestampMs)
+            }
+
+            override fun onVideoInputFormatChanged(
+                eventTime: AnalyticsListener.EventTime,
+                format: Format,
+                decoderReuseEvaluation: DecoderReuseEvaluation?
+            ) {
+                onVideoFormat(format)
             }
         })
         _trackParams.value = exoPlayer.trackSelectionParameters
@@ -566,17 +694,33 @@ class PlayerManager @Inject constructor(
      * Botón "Reparar imagen": suelta y vuelve a crear el decodificador de video. Desde la
      * segunda vez en el mismo contenido alterna entre el de hardware y el de software (este
      * sin modo túnel). Devuelve true si quedó el de software.
+     * Si no se vuelve a tocar en [REPAIR_SETTLE_MS], lo que quedó se recuerda para ese tipo de video.
      */
     fun repairVideo(): Boolean {
+        repairKey = player.videoFormat?.takeUnless { it.isCoverArt() }?.let { VideoFixMemory.keyFor(it) } ?: videoFixKey ?: repairKey
         manualRepairs++
         if (manualRepairs >= 2) {
-            softwareVideo = !softwareVideo
-            if (softwareVideo && trackSelector.parameters.tunnelingEnabled) {
-                trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
-            }
+            if (softwareVideo) softwareVideo = false else useSoftwareVideo()
         }
         restartVideo()
+        mainHandler.removeCallbacks(rememberRepair)
+        if (repairKey != null) mainHandler.postDelayed(rememberRepair, REPAIR_SETTLE_MS)
         return softwareVideo
+    }
+
+    /** Borra los arreglos de imagen recordados por [repairVideo]. */
+    fun forgetVideoFixes() {
+        mainHandler.removeCallbacks(rememberRepair)
+        repairKey = null
+        videoFixes.clear()
+    }
+
+    /** Decodificador por software desde el próximo que se cree; el modo túnel no lo admite. */
+    private fun useSoftwareVideo() {
+        softwareVideo = true
+        if (trackSelector.parameters.tunnelingEnabled) {
+            trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
+        }
     }
 
     fun disableVideo() {
@@ -608,6 +752,67 @@ class PlayerManager @Inject constructor(
     private fun resetPictureWait() {
         firstFrameShown = false
         pictureWaitFromMs = C.TIME_UNSET
+        armFastPicture()
+    }
+
+    private fun armFastPicture() {
+        fastPictureUntil = SystemClock.elapsedRealtime() + FAST_PICTURE_WINDOW_MS
+        mainHandler.removeCallbacks(fastPicture)
+        mainHandler.postDelayed(fastPicture, FAST_PICTURE_TICK_MS)
+    }
+
+    /** Reinicio del video al empezar (pantalla tardía o arreglo recordado): uno por contenido. */
+    private fun autoRestartVideo() {
+        if (startRestartDone || currentItem == null) return
+        startRestartDone = true
+        proactiveRestartPending = false
+        restartVideo()
+    }
+
+    /**
+     * La pantalla recibió tamaño: con la superficie nueva llega otro primer cuadro, así que se
+     * vuelve a esperar. Si el decodificador ya existía (en TCL/MediaTek suele quedar sin imagen),
+     * se reinicia una vez.
+     */
+    private fun onSurfaceSize(hasSize: Boolean) {
+        if (hasSize && !surfaceHasSize) {
+            surfaceSizedAt = SystemClock.elapsedRealtime()
+            if (currentItem != null) {
+                resetPictureWait()
+                if (decoderBeforeSurface && isTv) autoRestartVideo()
+            }
+        }
+        surfaceHasSize = hasSize
+    }
+
+    /** [initializedAtMs] es del reloj de arranque: el aviso llega al hilo principal un poco después. */
+    private fun onVideoDecoderReady(initializedAtMs: Long) {
+        val surface = player.surfaceSize
+        val sized = surface.width > 0 && surface.height > 0
+        decoderBeforeSurface = !sized || initializedAtMs < surfaceSizedAt
+        if (decoderBeforeSurface && sized && isTv) autoRestartVideo()
+    }
+
+    /** Primer video de cada contenido: aplica lo que [VideoFixMemory] recuerda para su tipo. */
+    private fun onVideoFormat(format: Format) {
+        if (format.isCoverArt()) return
+        val key = VideoFixMemory.keyFor(format) ?: return
+        videoFixKey = key
+        if (fixMemoryChecked || currentItem == null) return
+        fixMemoryChecked = true
+        when (videoFixes.levelFor(key)) {
+            // El decodificador ya se creó con el formato: hay que soltarlo para que nazca el de software.
+            // No gasta el reinicio por pantalla tardía: el nuevo también puede nacer sin pantalla.
+            VideoFixMemory.LEVEL_SOFTWARE -> {
+                if (!softwareVideo) {
+                    useSoftwareVideo()
+                    restartVideo()
+                }
+            }
+            VideoFixMemory.LEVEL_RESTART -> {
+                if (firstFrameShown) autoRestartVideo() else proactiveRestartPending = !startRestartDone
+            }
+        }
     }
 
     /**
@@ -643,6 +848,8 @@ class PlayerManager @Inject constructor(
      * Vigilante de "se oye pero no se ve": el sonido avanzó [NO_PICTURE_MS] con una pista de
      * video elegida y una pantalla donde dibujar, y no llegó ningún cuadro. Escala: reiniciar la
      * pista → otra pista de video si la hay → decodificador por software (y sin modo túnel).
+     * Al empezar basta [NO_PICTURE_FAST_MS]; tras un primer arreglo se da el margen normal para
+     * que el decodificador nuevo se enganche.
      */
     private fun checkPicture() {
         if (firstFrameShown || currentItem == null || pictureFixes >= MAX_PICTURE_FIXES) return
@@ -659,20 +866,19 @@ class PlayerManager @Inject constructor(
             pictureWaitFromMs = position
             return
         }
-        if (position - from < NO_PICTURE_MS) return
+        val fast = pictureFixes == 0 && SystemClock.elapsedRealtime() < fastPictureUntil
+        val limitMs = if (fast) NO_PICTURE_FAST_MS else NO_PICTURE_MS
+        if (position - from < limitMs) return
         fixPicture()
     }
 
     private fun fixPicture() {
         pictureFixes++
+        startRestartDone = true
+        proactiveRestartPending = false
         val video = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
         val other = if (pictureFixes == 2) realVideoTrack(video, exclude = video.firstOrNull { it.isSelected }) else null
-        if (pictureFixes >= 2 && other == null) {
-            softwareVideo = true
-            if (trackSelector.parameters.tunnelingEnabled) {
-                trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false))
-            }
-        }
+        if (pictureFixes >= 2 && other == null) useSoftwareVideo()
         restartVideo(other)
     }
 
@@ -709,6 +915,22 @@ class PlayerManager @Inject constructor(
         return mb * 1024 * 1024
     }
 
+    /** Techo del búfer de 5 min de película sin descarga al disco. */
+    private fun longVodBufferBytes(): Int {
+        val heapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
+        return if (!lowRam && heapMb >= 512) 256 * 1024 * 1024 else targetBufferBytes()
+    }
+
+    /**
+     * Hasta dónde está la película en disco de corrido desde la posición actual, en ms, para
+     * dibujarlo en la barra; [C.TIME_UNSET] si no se está bajando adelantada.
+     */
+    fun aheadBufferedPositionMs(): Long {
+        val url = aheadUrl ?: return C.TIME_UNSET
+        if (currentItem == null || currentIsLive) return C.TIME_UNSET
+        return ahead.bufferedEndMs(url, player.currentPosition, player.duration)
+    }
+
     // ============================ Recuperación ============================
 
     private fun handleError(error: PlaybackException) {
@@ -716,6 +938,10 @@ class PlayerManager @Inject constructor(
         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
             player.seekToDefaultPosition()
             player.prepare()
+            return
+        }
+        if (!currentIsLive && error.hasCause<AheadUnavailableException>()) {
+            leaveAhead()
             return
         }
         // Película que el decodificador de video no pudo seguir: un reintento con el de software
@@ -737,11 +963,29 @@ class PlayerManager @Inject constructor(
             scheduleRecovery()
             return
         }
-        if (!isRecoverableVod(error) || reconnectAttempts >= MAX_VOD_RECONNECTS) {
+        if (!isRecoverableVod(error)) {
             showFatal()
             return
         }
+        if (isOffline()) {
+            waitForNetwork()
+            return
+        }
         scheduleRecovery()
+    }
+
+    /** Sin red no se gastan intentos ni se muestra el error: al volver la red sigue sola. */
+    private fun waitForNetwork() {
+        vodFailingSince = 0L
+        _reconnecting.value = true
+    }
+
+    /** Lee el estado de la red (por si se perdió un aviso) y lo publica. */
+    private fun isOffline(): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val offline = cm.activeNetwork == null
+        _offline.value = offline
+        return offline
     }
 
     private fun showFatal() {
@@ -760,19 +1004,35 @@ class PlayerManager @Inject constructor(
         else -> true
     }
 
-    private fun isRecoverableVod(error: PlaybackException): Boolean = when (error.errorCode) {
-        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
-        PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
-        PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED -> false
-        // Incluye 403/509 por límite de conexiones del proveedor: se libera al poco rato.
-        in 2000..2999 -> true
-        PlaybackException.ERROR_CODE_TIMEOUT -> true
-        else -> false
+    private fun isRecoverableVod(error: PlaybackException): Boolean {
+        // 401/404/410: el título no existe o la cuenta no tiene acceso; reintentar no lo arregla.
+        if (error.findCause<HttpDataSource.InvalidResponseCodeException>()?.isPermanent() == true) return false
+        return when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+            PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED -> false
+            // Incluye 403/509 por límite de conexiones del proveedor: se libera al poco rato.
+            in 2000..2999 -> true
+            PlaybackException.ERROR_CODE_TIMEOUT -> true
+            else -> false
+        }
     }
 
-    /** Programa el siguiente escalón; el primero es inmediato, luego 1 s, 2 s, 4 s… hasta 15 s. */
+    /**
+     * Programa el siguiente escalón; el primero es inmediato, luego 1 s, 2 s, 4 s… hasta 15 s.
+     * Una película que lleva [VOD_GIVE_UP_MS] fallando con red muestra el error.
+     */
     private fun scheduleRecovery() {
         if (reconnectPending || currentItem == null) return
+        if (!currentIsLive) {
+            val now = SystemClock.elapsedRealtime()
+            if (vodFailingSince == 0L) {
+                vodFailingSince = now
+            } else if (now - vodFailingSince > VOD_GIVE_UP_MS) {
+                showFatal()
+                return
+            }
+        }
         reconnectAttempts++
         _reconnectAttempt.value = reconnectAttempts
         _reconnecting.value = true
@@ -793,6 +1053,9 @@ class PlayerManager @Inject constructor(
         lastProgressAt = now
         recoveredAt = now
         lastPositionMs = C.TIME_UNSET
+        lastBufferedMs = C.TIME_UNSET
+        // La conexión de la descarga adelantada puede estar colgada: se abre otra ya.
+        if (!currentIsLive && aheadUrl == currentUrl) ahead.reconnectNow()
         when {
             currentIsLive && reconnectAttempts <= 1 -> {
                 player.seekToDefaultPosition()
@@ -814,7 +1077,11 @@ class PlayerManager @Inject constructor(
 
     /** Vigilante del en vivo: congelado o cargando demasiado → siguiente escalón. */
     private fun checkStall() {
-        if (!currentIsLive || currentItem == null || _error.value != null || reconnectPending) return
+        if (currentItem == null || _error.value != null || reconnectPending) return
+        if (!currentIsLive) {
+            checkVodStall()
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         if (!player.playWhenReady) {
             lastProgressAt = now
@@ -841,21 +1108,74 @@ class PlayerManager @Inject constructor(
         }
     }
 
+    /**
+     * Vigilante de películas y episodios por la red: cargando [VOD_STALL_BUFFERING_MS] sin que
+     * avance la posición ni lo cargado → se reconstruye la fuente en el mismo punto. Sin red solo
+     * se espera.
+     */
+    private fun checkVodStall() {
+        if (currentUrl.startsWith("file:")) return
+        val now = SystemClock.elapsedRealtime()
+        val offline = isOffline()
+        if (player.playerError != null) {
+            // Esperando red tras un error: si la red ya está y el aviso no llegó, se reintenta igual.
+            if (_reconnecting.value && !offline) scheduleRecovery()
+            return
+        }
+        if (offline || !player.playWhenReady || player.playbackState != Player.STATE_BUFFERING) {
+            lastProgressAt = now
+            lastPositionMs = C.TIME_UNSET
+            lastBufferedMs = C.TIME_UNSET
+            return
+        }
+        val position = player.currentPosition
+        val buffered = player.bufferedPosition
+        if (position != lastPositionMs || buffered != lastBufferedMs) {
+            lastPositionMs = position
+            lastBufferedMs = buffered
+            lastProgressAt = now
+            return
+        }
+        if (now - lastProgressAt > VOD_STALL_BUFFERING_MS) scheduleRecovery()
+    }
+
     private fun onNetworkAvailable() {
+        val wasOffline = _offline.value
         _offline.value = false
+        // El tiempo sin red no cuenta para darse por vencido.
+        vodFailingSince = 0L
         if (currentItem == null) return
+        if (aheadUrl != null) ahead.onNetworkAvailable()
         when {
             _error.value != null -> retry()
             _reconnecting.value -> {
                 cancelRecovery()
                 reconnect.run()
             }
+            // Película trabada cargando durante el corte: se retoma ya en vez de esperar el próximo reintento.
+            wasOffline && !currentIsLive && aheadUrl == null && player.playWhenReady &&
+                player.playbackState == Player.STATE_BUFFERING -> rebuildVodSource()
         }
+    }
+
+    /** Vuelve a armar la fuente de la película en la posición actual. */
+    private fun rebuildVodSource() {
+        val item = currentItem ?: return
+        player.setMediaSource(sourceFor(item, currentUrl), player.currentPosition.coerceAtLeast(0L))
+        player.prepare()
+        player.playWhenReady = true
+    }
+
+    /** La descarga adelantada no sirve para este título: sigue por el camino normal desde el mismo punto. */
+    private fun leaveAhead() {
+        aheadUrl = null
+        rebuildVodSource()
     }
 
     /** Reintento manual desde la pantalla, después de agotar los automáticos. */
     fun retry() {
         cancelRecovery()
+        vodFailingSince = 0L
         _error.value = null
         _reconnecting.value = true
         reconnectAttempts = 1
@@ -863,8 +1183,26 @@ class PlayerManager @Inject constructor(
         recover()
     }
 
+    /**
+     * Bajar la película entera al disco: solo por http, archivo único (no listas HLS/DASH), con
+     * red no medida y espacio libre. Se decide al empezar el título para no cambiar de camino a mitad.
+     */
+    private fun aheadAllowed(url: String): Boolean {
+        if (!url.startsWith("http", ignoreCase = true)) return false
+        val path = url.substringBefore('?').lowercase(Locale.ROOT)
+        if (path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd")) return false
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        if (cm.activeNetwork == null || cm.isActiveNetworkMetered) return false
+        return runCatching { context.noBackupFilesDir.usableSpace >= AHEAD_MIN_FREE_BYTES }.getOrDefault(false)
+    }
+
     private fun sourceFor(item: MediaItem, url: String): MediaSource {
+        // Nunca dos conexiones al mismo proveedor: fuera del camino adelantado, su descarga se corta.
+        val useAhead = !currentIsLive && url == aheadUrl
+        if (useAhead) ahead.attach(url) else ahead.stop()
+        vodLongBuffer = !currentIsLive && !useAhead && !url.startsWith("file:")
         if (url.startsWith("file:")) return localSourceFactory.createMediaSource(item)
+        if (useAhead) return aheadSourceFactory.createMediaSource(item)
         if (!currentIsLive) return vodSourceFactory.createMediaSource(item)
         val path = url.substringBefore('?').lowercase(Locale.ROOT)
         return when {
@@ -904,10 +1242,22 @@ class PlayerManager @Inject constructor(
         coverArtChecked = false
         softwareVideo = false
         manualRepairs = 0
+        decoderBeforeSurface = false
+        startRestartDone = false
+        proactiveRestartPending = false
+        fixMemoryChecked = false
+        videoFixKey = null
+        repairKey = null
+        mainHandler.removeCallbacks(rememberRepair)
         val url = target
         currentUrl = url
         _currentKey.value = contentKey.ifEmpty { null }
+        _vodActive.value = !isLive && !url.startsWith("file:")
+        aheadUrl = if (!isLive && aheadAllowed(url)) url else null
+        ahead.durationMs = C.TIME_UNSET
+        vodFailingSince = 0L
         lastPositionMs = C.TIME_UNSET
+        lastBufferedMs = C.TIME_UNSET
         lastProgressAt = SystemClock.elapsedRealtime()
 
         // El id no lleva la URL: la sesión multimedia lo comparte con otras apps.
@@ -989,13 +1339,20 @@ class PlayerManager @Inject constructor(
     fun stop() {
         cancelRecovery()
         mainHandler.removeCallbacks(watchdog)
+        mainHandler.removeCallbacks(fastPicture)
+        mainHandler.removeCallbacks(rememberRepair)
         currentItem = null
         _currentKey.value = null
+        _vodActive.value = false
         _reconnecting.value = false
         _reconnectAttempt.value = 0
         _error.value = null
         player.stop()
         player.clearMediaItems()
+        // Corta la conexión; lo bajado queda para volver a entrar al mismo título.
+        aheadUrl = null
+        ahead.stop()
+        vodLongBuffer = false
     }
 
     fun release() {
@@ -1003,6 +1360,9 @@ class PlayerManager @Inject constructor(
         preloadExecutor.shutdownNow()
         cancelRecovery()
         mainHandler.removeCallbacks(watchdog)
+        mainHandler.removeCallbacks(fastPicture)
+        mainHandler.removeCallbacks(rememberRepair)
+        ahead.release()
         runCatching {
             context.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback)
         }

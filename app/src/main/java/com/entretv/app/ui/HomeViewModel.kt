@@ -9,6 +9,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkManager
 import com.entretv.app.R
 import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.download.DownloadRepository
@@ -32,6 +33,7 @@ import com.entretv.app.data.settings.CatalogPrefs
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.PlayerPrefs
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.data.sync.PosterCacheWorker
 import com.entretv.app.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -158,11 +160,9 @@ private const val SUMMARY_ROW_SIZE = 20
 private const val EVENTS_ROW_SIZE = 40
 private const val AUTO_CHECK_MS = 5 * 60_000L
 
-/** Precarga de pósters: por categoría vecina en TV, y por categoría y en total tras actualizar. */
+/** Precarga de pósters por categoría vecina en TV; el catálogo entero lo baja [PosterCacheWorker]. */
 private const val NEIGHBOR_POSTERS = 18
 private const val NEIGHBOR_WARM_POSTERS = 12
-private const val CATALOG_POSTERS_PER_CATEGORY = 12
-private const val CATALOG_POSTERS_MAX = 400
 
 /** Resumen al abrir la app en el celular: lo último agregado y los eventos de hoy. */
 @Immutable
@@ -290,7 +290,7 @@ private class BuiltContent(
 }
 
 /** Lo que el usuario decidió sobre el catálogo. */
-private data class CatalogOptions(
+internal data class CatalogOptions(
     val playlistId: String? = null,
     /** sección → categoría → posición en el servidor. */
     val serverOrder: Map<String, Map<String, Int>> = emptyMap(),
@@ -301,6 +301,106 @@ private data class CatalogOptions(
     /** Perfil de niños: las categorías de adultos ni aparecen (no se pueden desbloquear). */
     val kids: Boolean = false
 )
+
+/**
+ * Orden y filtros del catálogo tal como se ven en Inicio, sin estado: los usan [HomeViewModel] y
+ * la descarga de pósters en segundo plano. Los textos llegan ya limpios y normalizados por quien llama.
+ */
+internal object CatalogOrder {
+    private val accents = Regex("\\p{Mn}+")
+
+    fun liveGroup(channel: ChannelEntity): String = channel.groupTitle.ifEmpty { LIVE_GROUP }
+    fun movieGroup(movie: VodMovieEntity): String = movie.categoryName.ifEmpty { MOVIES_GROUP }
+    fun seriesGroup(series: SeriesEntity): String = series.categoryName.ifEmpty { SERIES_GROUP }
+
+    fun normalize(text: String): String {
+        val lower = text.lowercase()
+        if (lower.all { it.code < 128 }) return lower
+        return accents.replace(Normalizer.normalize(lower, Normalizer.Form.NFD), "")
+    }
+
+    /** [titleKey]: título ya normalizado para A-Z. */
+    fun sortItems(items: List<BrowseItem>, order: SortOrder, titleKey: (String) -> String): List<BrowseItem> = when (order) {
+        SortOrder.ORIGINAL -> items
+        SortOrder.RECENT -> items.sortedByDescending { it.added }
+        SortOrder.AZ -> items.sortedBy { titleKey(it.title) }
+        SortOrder.RATING -> items.sortedByDescending { it.rating }
+    }
+
+    /** En vivo no hay fecha ni puntuación: esos órdenes caen en el original. */
+    fun orderFor(sectionKey: String, order: SortOrder): SortOrder =
+        if (sectionKey == PlaylistRepository.SECTION_LIVE && (order == SortOrder.RATING || order == SortOrder.RECENT)) {
+            SortOrder.ORIGINAL
+        } else order
+
+    /**
+     * Categorías de la sección en orden: primero el que armó el usuario, después el del
+     * servidor. Sin orden propio y con A-Z elegido, alfabético por [azKey].
+     */
+    fun orderedCategories(
+        sectionKey: String,
+        present: Collection<String>,
+        o: CatalogOptions,
+        order: SortOrder,
+        azKey: (String) -> String
+    ): List<String> {
+        val server = o.serverOrder[sectionKey].orEmpty()
+        val names = (server.keys + present).distinct()
+        val userOrdered = names.any { o.prefs[sectionKey to it]?.userPosition != null }
+        if (!userOrdered && order == SortOrder.AZ) return names.sortedBy(azKey)
+        val appearance = present.withIndex().associate { it.value to it.index }
+        return names.sortedWith(
+            compareBy<String>(
+                { o.prefs[sectionKey to it]?.userPosition ?: Int.MAX_VALUE },
+                { server[it] ?: Int.MAX_VALUE },
+                { appearance[it] ?: Int.MAX_VALUE }
+            )
+        )
+    }
+
+    /** Categoría que no se muestra: oculta, o de adultos con el PIN puesto. */
+    fun excluder(sectionKey: String, o: CatalogOptions): (String) -> Boolean {
+        val memo = HashMap<String, Boolean>()
+        return { name ->
+            memo.getOrPut(name) {
+                val pref = o.prefs[sectionKey to name]
+                pref?.hidden == true || (o.locked && ParentalControl.isAdult(name, pref))
+            }
+        }
+    }
+
+    /**
+     * Primeros [perCategory] pósters de cada categoría en el orden en que se ven, con las mismas
+     * reglas que la cuadrícula. [categories] null = todas las de la sección.
+     */
+    fun <T> categoryPosters(
+        items: List<T>,
+        sectionKey: String,
+        o: CatalogOptions,
+        requestedOrder: SortOrder,
+        categories: List<String>?,
+        perCategory: Int,
+        groupOf: (T) -> String,
+        keyOf: (T) -> String,
+        adultTitle: (T) -> Boolean,
+        wrap: (T) -> BrowseItem,
+        sort: (List<BrowseItem>, SortOrder) -> List<BrowseItem>,
+        azKey: (String) -> String
+    ): List<String> {
+        val order = orderFor(sectionKey, requestedOrder)
+        val groups = items.groupBy(groupOf)
+        val skip = excluder(sectionKey, o)
+        val names = (categories ?: orderedCategories(sectionKey, groups.keys, o, order, azKey))
+            .filter { it in groups && !skip(it) }
+        return names.flatMap { name ->
+            val visible = groups.getValue(name).asSequence()
+                .filter { keyOf(it) !in o.hidden && !(o.kids && adultTitle(it)) }
+            val shown = if (order == SortOrder.ORIGINAL) visible.take(perCategory).map(wrap).toList()
+            else sort(visible.map(wrap).toList(), order).take(perCategory)
+            shown.mapNotNull { it.imageUrl.ifEmpty { null } }
+        }
+    }
+}
 
 private data class Trending(val movies: List<TrendingTitle> = emptyList(), val series: List<TrendingTitle> = emptyList())
 
@@ -327,6 +427,8 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
     private val lowRam = isLowRamDevice(context)
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    /** WorkManager abre su base al primer uso: solo desde [Dispatchers.IO]. */
+    private val workManager by lazy { WorkManager.getInstance(context) }
 
     val downloadWifiOnly: StateFlow<Boolean> = settings.downloadWifiOnly
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -447,6 +549,8 @@ class HomeViewModel @Inject constructor(
     private val summary = MutableStateFlow(true)
     /** Una actualización cambió el catálogo, u hoy todavía no se precargaron sus pósters. */
     private val catalogPostersDue = MutableStateFlow(false)
+    /** La descarga de pósters en curso usa el catálogo viejo: hay que empezarla de nuevo. */
+    @Volatile private var catalogChanged = false
 
     private val effectiveSort: Flow<SortOrder> =
         combine(sort, settings.catalogPrefs) { s, p -> s ?: SortOrder.fromName(p.defaultSort) }
@@ -521,6 +625,9 @@ class HomeViewModel @Inject constructor(
                 )
             }
         }
+        // Comparar y armar los mapas de cientos de categorías, fuera del hilo principal.
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, CatalogOptions())
 
     /** Películas y series de categorías de adultos; solo se calcula con el PIN activo. */
@@ -553,6 +660,7 @@ class HomeViewModel @Inject constructor(
             settings.continueDismissed, settings.catalogPrefs
         ) { list, s, excluded, dismissed, prefs -> ContinueInput(list, s, excluded, dismissed, prefs.cleanNames) }
             .mapLatest(::buildContinue)
+            .distinctUntilChanged()
             .flowOn(Dispatchers.IO)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -676,6 +784,8 @@ class HomeViewModel @Inject constructor(
                 }
             }
             .let { base -> combine(base, favoriteKeys) { b, keys -> withMyList(b, keys) } }
+            // stateIn compara en el hilo principal: lo igual (miles de títulos) se descarta acá.
+            .distinctUntilChanged()
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SectionContent())
 
@@ -730,9 +840,9 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun liveGroup(channel: ChannelEntity): String = channel.groupTitle.ifEmpty { LIVE_GROUP }
-    private fun movieGroup(movie: VodMovieEntity): String = movie.categoryName.ifEmpty { MOVIES_GROUP }
-    private fun seriesGroup(series: SeriesEntity): String = series.categoryName.ifEmpty { SERIES_GROUP }
+    private fun liveGroup(channel: ChannelEntity): String = CatalogOrder.liveGroup(channel)
+    private fun movieGroup(movie: VodMovieEntity): String = CatalogOrder.movieGroup(movie)
+    private fun seriesGroup(series: SeriesEntity): String = CatalogOrder.seriesGroup(series)
 
     /** Lo que se puede mostrar de una sección: sin categorías ocultas o bloqueadas ni títulos ocultos. */
     private fun <T> visibleBySection(
@@ -772,6 +882,7 @@ class HomeViewModel @Inject constructor(
                 (buildContinue(input) + buildContinue(input.copy(section = Section.SERIES)))
                     .sortedByDescending { it.updatedAt }
             }
+            .distinctUntilChanged()
             .flowOn(Dispatchers.IO)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -783,6 +894,7 @@ class HomeViewModel @Inject constructor(
                 channelTable.of(pid), movieTable.of(pid), seriesTable.of(pid), options
             ) { channels, movies, series, o -> buildSummary(pid, channels, movies, series, o) }
         }
+        .distinctUntilChanged()
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SummaryContent())
 
@@ -878,53 +990,19 @@ class HomeViewModel @Inject constructor(
     private fun clean(raw: String, enabled: Boolean): String =
         if (!enabled) raw else cleanCache.getOrPut(raw) { TitleCleaner.clean(raw) }
 
-    private fun sortItems(items: List<BrowseItem>, order: SortOrder): List<BrowseItem> = when (order) {
-        SortOrder.ORIGINAL -> items
-        SortOrder.RECENT -> items.sortedByDescending { it.added }
-        SortOrder.AZ -> items.sortedBy { normalizedTitle(it.title) }
-        SortOrder.RATING -> items.sortedByDescending { it.rating }
-    }
+    private fun sortItems(items: List<BrowseItem>, order: SortOrder): List<BrowseItem> =
+        CatalogOrder.sortItems(items, order, ::normalizedTitle)
 
-    /** En vivo no hay fecha ni puntuación: esos órdenes caen en el original. */
-    private fun orderFor(sectionKey: String, order: SortOrder): SortOrder =
-        if (sectionKey == PlaylistRepository.SECTION_LIVE && (order == SortOrder.RATING || order == SortOrder.RECENT)) {
-            SortOrder.ORIGINAL
-        } else order
+    private fun orderFor(sectionKey: String, order: SortOrder): SortOrder = CatalogOrder.orderFor(sectionKey, order)
 
-    /**
-     * Categorías de la sección en orden: primero el que armó el usuario, después el del
-     * servidor. Sin orden propio y con A-Z elegido, alfabético.
-     */
     private fun orderedCategories(
         sectionKey: String,
         present: Collection<String>,
         o: CatalogOptions,
         order: SortOrder
-    ): List<String> {
-        val server = o.serverOrder[sectionKey].orEmpty()
-        val names = (server.keys + present).distinct()
-        val userOrdered = names.any { o.prefs[sectionKey to it]?.userPosition != null }
-        if (!userOrdered && order == SortOrder.AZ) return names.sortedBy { normalize(clean(it, o.cleanNames)) }
-        val appearance = present.withIndex().associate { it.value to it.index }
-        return names.sortedWith(
-            compareBy<String>(
-                { o.prefs[sectionKey to it]?.userPosition ?: Int.MAX_VALUE },
-                { server[it] ?: Int.MAX_VALUE },
-                { appearance[it] ?: Int.MAX_VALUE }
-            )
-        )
-    }
+    ): List<String> = CatalogOrder.orderedCategories(sectionKey, present, o, order) { normalize(clean(it, o.cleanNames)) }
 
-    /** Categoría que no se muestra: oculta, o de adultos con el PIN puesto. */
-    private fun excluder(sectionKey: String, o: CatalogOptions): (String) -> Boolean {
-        val memo = HashMap<String, Boolean>()
-        return { name ->
-            memo.getOrPut(name) {
-                val pref = o.prefs[sectionKey to name]
-                pref?.hidden == true || (o.locked && ParentalControl.isAdult(name, pref))
-            }
-        }
-    }
+    private fun excluder(sectionKey: String, o: CatalogOptions): (String) -> Boolean = CatalogOrder.excluder(sectionKey, o)
 
     private fun <T> buildContent(
         items: List<T>,
@@ -1166,13 +1244,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private val accents = Regex("\\p{Mn}+")
-
-    private fun normalize(text: String): String {
-        val lower = text.lowercase()
-        if (lower.all { it.code < 128 }) return lower
-        return accents.replace(Normalizer.normalize(lower, Normalizer.Form.NFD), "")
-    }
+    private fun normalize(text: String): String = CatalogOrder.normalize(text)
 
     private val titleCache = ConcurrentHashMap<String, String>()
 
@@ -1194,6 +1266,7 @@ class HomeViewModel @Inject constructor(
     /** Todas las categorías de la sección (también las ocultas), en el orden en que se ven. */
     val organizeList: StateFlow<List<CategoryInfo>> =
         combine(options, organizeSection, effectiveSort, content) { o, s, order, _ -> managedCategories(s, o, order) }
+            .distinctUntilChanged()
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -1422,6 +1495,7 @@ class HomeViewModel @Inject constructor(
         // Aviso al terminar una actualización que cambió algo: con novedades, o siempre si fue a mano.
         viewModelScope.launch {
             repository.updates.collect { u ->
+                catalogChanged = true
                 catalogPostersDue.value = true
                 val news = listOfNotNull(
                     u.newMovies.takeIf { it > 0 }?.let { uiPlural(R.plurals.home_new_movies, it, it) },
@@ -1570,6 +1644,7 @@ class HomeViewModel @Inject constructor(
             val pid = selectedPlaylistId.value
             val first = pid != null && repository.needsFirstSync(pid)
             if (first) firstSync.value = true
+            val before = pid?.let { settings.lastRefreshAt(it) }
             repository.refreshAll(force = manual, light = playerBusy())
                 .onSuccess { failed ->
                     if (failed.isNotEmpty() && (manual || first)) {
@@ -1582,7 +1657,18 @@ class HomeViewModel @Inject constructor(
                 }
             refreshing.value = false
             firstSync.value = false
+            enqueuePostersIfSynced(pid, before)
         }
+
+    /** Si de verdad se bajó el catálogo de [pid], encarga los pósters que falten. */
+    private suspend fun enqueuePostersIfSynced(pid: String?, before: Long?) {
+        if (pid == null || settings.lastRefreshAt(pid) == before) return
+        enqueuePosterCache(pid, replace = false)
+    }
+
+    private suspend fun enqueuePosterCache(pid: String?, replace: Boolean) {
+        withContext(Dispatchers.IO) { PosterCacheWorker.enqueue(workManager, pid, replace) }
+    }
 
     /** Hay algo cargado en el reproductor (también el mini reproductor de En vivo). */
     private fun playerBusy() = player.get().currentKey.value != null
@@ -1603,7 +1689,10 @@ class HomeViewModel @Inject constructor(
             if (refreshMode.value != SettingsRepository.REFRESH_AUTO) continue
             if (autoRefresh?.isActive == true || refreshing.value || selectedPlaylistId.value == null) continue
             if (playerBusy() || !unmeteredNetwork()) continue
+            val pid = selectedPlaylistId.value
+            val before = pid?.let { settings.lastRefreshAt(it) }
             repository.refreshAll(force = false, light = true, auto = true)
+            enqueuePostersIfSynced(pid, before)
         }
     }
 
@@ -1624,30 +1713,22 @@ class HomeViewModel @Inject constructor(
 
     /**
      * Mientras Inicio está a la vista: tras una actualización que cambió el catálogo, o la
-     * primera vez del día, baja los primeros pósters de cada categoría de Películas y Series.
-     * Se corta si empieza otra actualización y se retoma al terminar; con datos móviles no corre.
+     * primera vez del día, encarga a [PosterCacheWorker] los pósters de Películas y Series
+     * (en segundo plano y solo con Wi‑Fi o cable). Espera a que termine la actualización en curso.
      */
     suspend fun catalogPostersLoop() {
         if (posters.catalogDueToday()) catalogPostersDue.value = true
         combine(catalogPostersDue, repository.syncing) { due, syncing -> due && !syncing }
             .distinctUntilChanged()
             .collectLatest { run ->
-                if (!run || !unmeteredNetwork()) return@collectLatest
+                if (!run) return@collectLatest
                 AppStartup.ready.first { it }
-                val movies = sectionPosters(Section.MOVIES, null, CATALOG_POSTERS_PER_CATEGORY)
-                val series = sectionPosters(Section.SERIES, null, CATALOG_POSTERS_PER_CATEGORY)
-                posters.prefetch(interleave(movies, series).distinct().take(CATALOG_POSTERS_MAX))
+                val replace = catalogChanged
+                enqueuePosterCache(selectedPlaylistId.value, replace)
+                if (replace) catalogChanged = false
                 posters.markCatalogDone()
                 catalogPostersDue.value = false
             }
-    }
-
-    /** Alternadas: con el tope, las dos secciones reciben sus primeras categorías. */
-    private fun <T> interleave(a: List<T>, b: List<T>): List<T> = buildList(a.size + b.size) {
-        for (i in 0 until maxOf(a.size, b.size)) {
-            a.getOrNull(i)?.let(::add)
-            b.getOrNull(i)?.let(::add)
-        }
     }
 
     /**
@@ -1683,20 +1764,10 @@ class HomeViewModel @Inject constructor(
         groupOf: (T) -> String,
         keyOf: (T) -> String,
         wrap: (T) -> BrowseItem
-    ): List<String> {
-        val order = orderFor(sectionKey, requestedOrder)
-        val groups = items.groupBy(groupOf)
-        val skip = excluder(sectionKey, o)
-        val names = (categories ?: orderedCategories(sectionKey, groups.keys, o, order))
-            .filter { it in groups && !skip(it) }
-        return names.flatMap { name ->
-            val visible = groups.getValue(name).asSequence()
-                .filter { keyOf(it) !in o.hidden && !(o.kids && adultTitle(it)) }
-            val shown = if (order == SortOrder.ORIGINAL) visible.take(perCategory).map(wrap).toList()
-            else sortItems(visible.map(wrap).toList(), order).take(perCategory)
-            shown.mapNotNull { it.imageUrl.ifEmpty { null } }
-        }
-    }
+    ): List<String> = CatalogOrder.categoryPosters(
+        items, sectionKey, o, requestedOrder, categories, perCategory, groupOf, keyOf,
+        adultTitle = { adultTitle(it) }, wrap = wrap, sort = ::sortItems
+    ) { normalize(clean(it, o.cleanNames)) }
 
     fun episodesFor(seriesKey: String) = repository.episodes(seriesKey)
 

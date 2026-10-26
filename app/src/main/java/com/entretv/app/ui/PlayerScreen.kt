@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.res.Configuration
 import android.media.AudioManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -32,11 +33,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.media3.common.C
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -124,6 +127,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -160,6 +164,7 @@ private const val AUTO_HIDE_MS = 4_000L
 private const val NEXT_EPISODE_WINDOW_MS = 30_000L
 private const val DOUBLE_TAP_SEEK_MS = 10_000L
 private const val SCRUB_COMMIT_MS = 1_200L
+private const val ZAP_BANNER_MS = 3_000L
 
 /** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen, formato de imagen. */
 private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null, val durationMs: Long = 900)
@@ -195,6 +200,7 @@ fun PlayerScreen(
     val reconnecting by manager.reconnecting.collectAsState()
     val reconnectAttempt by manager.reconnectAttempt.collectAsState()
     val offline by manager.offline.collectAsState()
+    val waitingForNetwork by manager.waitingForNetwork.collectAsState()
     val playError by manager.error.collectAsState()
     val tracks by manager.tracks.collectAsState()
     val trackParams by manager.trackParams.collectAsState()
@@ -231,6 +237,8 @@ fun PlayerScreen(
     var restorePillFocus by remember { mutableStateOf<QuickKind?>(null) }
     val anchors = remember { PlayerAnchors() }
     val resizeMode by viewModel.resizeMode.collectAsState()
+    val zapInfo by viewModel.zapInfo.collectAsState()
+    var zapBannerVisible by remember { mutableStateOf(false) }
 
     val isLive = playable?.kind == "LIVE"
     val portrait = !profile.isTv && configuration.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -339,7 +347,10 @@ fun PlayerScreen(
         hold = controlsVisible || overlayOpen || quick != null
     )
 
-    val lifecycleOwner = LocalLifecycleOwner.current
+    // La actividad y no la entrada de navegación: al volver a Inicio la entrada se detiene, y
+    // pausar ahí corta el mini reproductor de En vivo que sigue con el mismo canal.
+    val entryOwner = LocalLifecycleOwner.current
+    val lifecycleOwner = (activity as? LifecycleOwner) ?: entryOwner
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -369,7 +380,20 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(controlsVisible) {
-        if (!controlsVisible) quick = null
+        if (!controlsVisible) {
+            quick = null
+        } else {
+            zapBannerVisible = false
+        }
+    }
+
+    LaunchedEffect(zapInfo?.serial) {
+        val shownAt = zapInfo?.shownAt ?: return@LaunchedEffect
+        val left = ZAP_BANNER_MS - (SystemClock.elapsedRealtime() - shownAt)
+        if (left <= 0L) return@LaunchedEffect
+        zapBannerVisible = true
+        delay(left)
+        zapBannerVisible = false
     }
 
     LaunchedEffect(restorePillFocus) {
@@ -507,15 +531,15 @@ fun PlayerScreen(
                             Button(onClick = { manager.retry() }) { Text(stringResource(R.string.player_retry)) }
                         }
                     }
-                    buffering && !controlsVisible && !reconnecting -> CircularProgressIndicator(
+                    buffering && !controlsVisible && !reconnecting && !waitingForNetwork -> CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
 
-                if (reconnecting && playError == null) {
+                if ((reconnecting || waitingForNetwork) && playError == null) {
                     ReconnectPill(
-                        offline = offline,
+                        offline = offline || waitingForNetwork,
                         attempt = reconnectAttempt,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -614,6 +638,7 @@ fun PlayerScreen(
                                 BottomBar(
                                     isLive = isLive,
                                     position = { positionState.longValue },
+                                    downloadedTo = { manager.aheadBufferedPositionMs() },
                                     duration = duration,
                                     speed = speed,
                                     epg = epg,
@@ -697,6 +722,17 @@ fun PlayerScreen(
                             modifier = Modifier.focusRequester(skipIntroFocus)
                         )
                     }
+                }
+
+                AnimatedVisibility(
+                    visible = zapBannerVisible && isLive && !controlsVisible && !overlayOpen && !portraitLive,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = if (profile.isTv) profile.edge else 16.dp, bottom = if (profile.isTv) 32.dp else 24.dp)
+                ) {
+                    zapInfo?.let { ZapBanner(it, tv = profile.isTv) }
                 }
 
                 val currentFeedback = feedback
@@ -956,6 +992,71 @@ private fun ReconnectPill(offline: Boolean, attempt: Int, modifier: Modifier = M
                 style = MaterialTheme.typography.labelLarge
             )
         }
+    }
+}
+
+/** Cartel del zapping: número, canal, lo que pasa ahora y lo que sigue. Sin foco: las flechas siguen zapeando. */
+@Composable
+private fun ZapBanner(info: ZapInfo, tv: Boolean) {
+    Surface(
+        color = Color.Black.copy(alpha = 0.75f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.widthIn(max = if (tv) 440.dp else 320.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (info.number > 0) {
+                    Text(
+                        info.number.toString(),
+                        color = EntreBrand.Accent,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text(
+                    info.name,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            info.now?.let { program ->
+                Spacer(Modifier.height(6.dp))
+                ZapProgramLine(
+                    stringResource(R.string.live_zap_now, program.title),
+                    "${timeFormat(program.start)} – ${timeFormat(program.end)}",
+                    Color.White
+                )
+            }
+            info.next?.let { program ->
+                Spacer(Modifier.height(2.dp))
+                ZapProgramLine(
+                    stringResource(R.string.live_zap_next, program.title),
+                    timeFormat(program.start),
+                    Color.White.copy(alpha = 0.75f)
+                )
+            }
+        }
+    }
+}
+
+/** El título se recorta antes que la hora. */
+@Composable
+private fun ZapProgramLine(text: String, time: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text,
+            color = color,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(time, color = EntreBrand.Accent, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -1355,6 +1456,7 @@ private fun TopBar(
 private fun BottomBar(
     isLive: Boolean,
     position: () -> Long,
+    downloadedTo: () -> Long,
     duration: Long,
     speed: Float,
     epg: List<EpgEntity>,
@@ -1371,7 +1473,7 @@ private fun BottomBar(
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))))
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
-        if (!isLive && duration > 0) SeekBar(position, duration, speed, tv, seekFocus, onSeekChange, onSeekDone)
+        if (!isLive && duration > 0) SeekBar(position, downloadedTo, duration, speed, tv, seekFocus, onSeekChange, onSeekDone)
         else if (isLive && epg.isNotEmpty()) LiveNowNext(epg)
         extra()
     }
@@ -1381,6 +1483,7 @@ private fun BottomBar(
 @Composable
 private fun SeekBar(
     positionOf: () -> Long,
+    downloadedTo: () -> Long,
     duration: Long,
     speed: Float,
     tv: Boolean,
@@ -1389,6 +1492,7 @@ private fun SeekBar(
     onSeekDone: () -> Unit
 ) {
     val position = positionOf()
+    val downloaded = downloadedTo()
     val barSource = remember { MutableInteractionSource() }
     val barFocused by barSource.collectIsFocusedAsState()
     var scrubbing by remember { mutableStateOf(false) }
@@ -1458,6 +1562,16 @@ private fun SeekBar(
             modifier = Modifier.fillMaxWidth()
                 .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
         )
+        if (downloaded != C.TIME_UNSET && duration > 0) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(horizontal = 10.dp)
+                    .fillMaxWidth((downloaded.toFloat() / duration).coerceIn(0f, 1f))
+                    .height(2.dp)
+                    .background(Color.White.copy(alpha = 0.45f), RoundedCornerShape(1.dp))
+            )
+        }
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(

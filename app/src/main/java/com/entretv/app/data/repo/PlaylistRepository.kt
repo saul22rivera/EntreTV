@@ -11,6 +11,7 @@ import com.entretv.app.R
 import com.entretv.app.ui.UiText
 import com.entretv.app.ui.isLowRamDevice
 import com.entretv.app.ui.uiText
+import com.entretv.app.data.AppForeground
 import com.entretv.app.data.backgroundExecutor
 import com.entretv.app.data.local.AppDatabase
 import com.entretv.app.data.local.CatalogDao
@@ -125,6 +126,8 @@ class PlaylistRepository @Inject constructor(
 
     /** Pocos servidores Xtream aguantan muchas descargas grandes a la vez: cortan la respuesta. */
     private val requestSlots = Semaphore(2)
+    /** Con la app a la vista, una sola descarga del catálogo: el resto de la red queda para los pósters. */
+    private val foregroundSlot = Semaphore(1)
 
     /** Huella de la última respuesta de cada sección: si no cambió, no se reescribe la base. */
     private val syncPrefs = context.getSharedPreferences("entre_sync", Context.MODE_PRIVATE)
@@ -698,7 +701,7 @@ class PlaylistRepository @Inject constructor(
         syncDir.mkdirs()
         val file = File.createTempFile(action, ".json", syncDir)
         try {
-            val print = requestSlots.withPermit {
+            val print = withRequestSlot {
                 xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
                     val hashing = HashingSource.md5(body.source())
                     val count = file.sink().buffer().use { it.writeAll(hashing) }
@@ -710,6 +713,10 @@ class PlaylistRepository @Inject constructor(
         } finally {
             file.delete()
         }
+    }
+
+    private suspend fun <T> withRequestSlot(block: suspend () -> T): T = requestSlots.withPermit {
+        if (AppForeground.isForeground) foregroundSlot.withPermit { block() } else block()
     }
 
     private suspend fun <T> fetchOrNull(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T>? =

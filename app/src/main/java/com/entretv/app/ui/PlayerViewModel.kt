@@ -1,6 +1,7 @@
 package com.entretv.app.ui
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -51,6 +52,20 @@ import kotlinx.coroutines.launch
 
 /** Categoría en vivo del navegador de canales: [raw] es la clave, [label] lo que se muestra (vacío si no tiene nombre). */
 data class LiveCategory(val raw: String, val label: String, val count: Int)
+
+/**
+ * Cartel del zapping en vivo. [serial] cambia en cada salto (la guía que llega después lo
+ * conserva); [shownAt] es de [SystemClock.elapsedRealtime] y fija cuánto le queda en pantalla.
+ */
+data class ZapInfo(
+    val channelId: String,
+    val number: Int,
+    val name: String,
+    val now: EpgEntity?,
+    val next: EpgEntity?,
+    val serial: Int,
+    val shownAt: Long
+)
 
 /** Contenido reproducible genérico. */
 sealed interface Playable {
@@ -183,6 +198,12 @@ class PlayerViewModel @Inject constructor(
     private val _groupChannels = MutableStateFlow<List<ChannelEntity>>(emptyList())
     val groupChannels: StateFlow<List<ChannelEntity>> = _groupChannels
 
+    private val _zapInfo = MutableStateFlow<ZapInfo?>(null)
+    val zapInfo: StateFlow<ZapInfo?> = _zapInfo
+    private var zapSerial = 0
+    private var zapJob: Job? = null
+    private var epgJob: Job? = null
+
     /** Mensaje puntual: "Reanudado en 12:34" / "Siguiente episodio…". */
     private val _notice = MutableStateFlow<UiText?>(null)
     val notice: StateFlow<UiText?> = _notice
@@ -238,6 +259,11 @@ class PlayerViewModel @Inject constructor(
     override fun repairVideo() {
         val software = playerManager.repairVideo()
         showNotice(uiText(if (software) R.string.player_notice_repair_software else R.string.player_notice_repair_hardware))
+    }
+
+    override fun forgetVideoFixes() {
+        playerManager.forgetVideoFixes()
+        showNotice(uiText(R.string.player_notice_fixes_forgotten))
     }
 
     override fun setSubtitleSize(size: Int) {
@@ -370,6 +396,7 @@ class PlayerViewModel @Inject constructor(
     fun playChannel(channel: ChannelEntity) {
         val current = _playable.value
         if (current is Playable.LiveChannel && current.channel.id == channel.id) return
+        zapJob?.cancel()
         viewModelScope.launch { startPlayable(Playable.LiveChannel(channel)) }
     }
 
@@ -496,6 +523,7 @@ class PlayerViewModel @Inject constructor(
         _autoNextCanceled.value = false
         _introDone.value = false
         introLearnJob?.cancel()
+        epgJob?.cancel()
         introSeekFrom = -1L
         _introEndMs.value = (p as? Playable.Episode)?.episode?.seriesKey
             ?.takeIf { it.isNotEmpty() }?.let { settings.introEnd(it) }
@@ -529,10 +557,38 @@ class PlayerViewModel @Inject constructor(
             if (group.none { it.id == p.channel.id }) {
                 _groupChannels.value = _allChannels.value.filter { it.groupTitle == rawGroup }.map(::display)
             }
-            _epg.value = repository.upcomingEpg(p.channel)
-            repository.refreshEpg(p.channel)
-            if (_playable.value == p) _epg.value = repository.upcomingEpg(p.channel)
+            val cached = repository.upcomingEpg(p.channel)
+            if (!isCurrentChannel(p.channel.id)) return
+            _epg.value = cached
+            // Zapeando seguido no se pide al servidor la guía de cada canal que pasa.
+            epgJob = viewModelScope.launch {
+                delay(EPG_REFRESH_DELAY_MS)
+                repository.refreshEpg(p.channel)
+                val fresh = repository.upcomingEpg(p.channel)
+                if (!isCurrentChannel(p.channel.id)) return@launch
+                _epg.value = fresh
+                _zapInfo.value?.takeIf { it.channelId == p.channel.id }?.let { info ->
+                    val (now, next) = nowNext(fresh)
+                    _zapInfo.value = info.copy(now = now, next = next)
+                }
+            }
         }
+    }
+
+    private fun isCurrentChannel(id: String): Boolean =
+        (_playable.value as? Playable.LiveChannel)?.channel?.id == id
+
+    /** Igual que la barra de abajo: "ahora" es el que está en el aire, "sigue" el primero que empieza después. */
+    private fun nowNext(programs: List<EpgEntity>): Pair<EpgEntity?, EpgEntity?> {
+        val now = System.currentTimeMillis() / 1000
+        return programs.firstOrNull { it.start <= now && it.end > now } to programs.firstOrNull { it.start > now }
+    }
+
+    /** Solo la guía guardada: el cartel sale al instante aunque no haya red. */
+    private suspend fun showZapInfo(channel: ChannelEntity, serial: Int) {
+        val (now, next) = nowNext(repository.upcomingEpg(channel, limit = 2))
+        if (serial != zapSerial) return
+        _zapInfo.value = ZapInfo(channel.id, channel.number, channel.name, now, next, serial, SystemClock.elapsedRealtime())
     }
 
     /** Guarda el minuto cada 5 segundos mientras reproduce VOD. */
@@ -639,7 +695,9 @@ class PlayerViewModel @Inject constructor(
     /** Zapping: canales en vivo, episodios dentro de la serie. */
     fun zap(delta: Int) {
         val p = _playable.value ?: return
-        viewModelScope.launch {
+        // Cada salto corta el anterior a medio arrancar: [p] ya es el canal al que se iba.
+        zapJob?.cancel()
+        zapJob = viewModelScope.launch {
             savePosition(p)
             when (p) {
                 is Playable.LiveChannel -> {
@@ -648,6 +706,8 @@ class PlayerViewModel @Inject constructor(
                     if (list.size < 2) return@launch
                     val idx = list.indexOfFirst { it.id == p.channel.id }
                     val next = list[(idx + delta + list.size) % list.size]
+                    val serial = ++zapSerial
+                    launch { showZapInfo(next, serial) }
                     startPlayable(Playable.LiveChannel(next))
                 }
                 is Playable.Episode -> {
@@ -694,6 +754,7 @@ class PlayerViewModel @Inject constructor(
         private const val INTRO_MAX_END_MS = 300_000L
         private const val DEFAULT_INTRO_SKIP_MS = 85_000L
         private const val INTRO_SEEK_SETTLE_MS = 3_000L
+        private const val EPG_REFRESH_DELAY_MS = 1_000L
 
         fun formatMs(ms: Long): String {
             val totalSec = ms / 1000

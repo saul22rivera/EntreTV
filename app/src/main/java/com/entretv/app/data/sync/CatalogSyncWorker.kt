@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
  * al abrirla ya está al día y no hace falta bajar nada. Usa la misma regla que al entrar
  * (con "Solo manual" no baja nada), así que si ya se actualizó después del corte no vuelve
  * a bajar. En Android TV después renueva el canal de EntreTV del inicio (una vez por día como mucho).
+ * Al terminar encarga los pósters que falten a [PosterCacheWorker].
  */
 @HiltWorker
 class CatalogSyncWorker @AssistedInject constructor(
@@ -34,6 +35,7 @@ class CatalogSyncWorker @AssistedInject constructor(
         repository.refreshAll(force = false, light = true).fold(
             onSuccess = {
                 tvHome.refreshChannel(force = false)
+                PosterCacheWorker.enqueue(applicationContext)
                 Result.success()
             },
             onFailure = { if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else Result.success() }

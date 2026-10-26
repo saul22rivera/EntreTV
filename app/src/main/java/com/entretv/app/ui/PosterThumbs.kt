@@ -34,10 +34,12 @@ fun posterRequest(context: Context, url: String): ImageRequest.Builder =
  * Miniaturas de los pósters en disco, ya reducidas al tamaño de tarjeta (WebP de unos 20 KB).
  * Volver a mostrar un póster decodifica ese archivo en vez del original, que del proveedor puede
  * pesar cientos de KB, y en el mismo espacio caben muchos más. Solo para pedidos de [posterRequest].
+ * Van fuera de la caché: Android no las borra cuando le falta espacio.
  */
 class PosterThumbs(context: Context, private val maxBytes: Long, private val scope: CoroutineScope) {
 
     private val dir = dirOf(context)
+    private val legacyDir = legacyDirOf(context)
     private val writer = backgroundExecutor("poster-thumbs", 1).asCoroutineDispatcher()
     private val writing = ConcurrentHashMap.newKeySet<String>()
 
@@ -52,6 +54,7 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
     /** Al arrancar: si se pasó del tope, borra las menos usadas hasta quedar en el 80 %. */
     fun trim() {
         scope.launch(writer) {
+            migrate()
             val files = dir.listFiles()?.filter { it.isFile } ?: return@launch
             var total = files.sumOf { it.length() }
             if (total <= maxBytes) return@launch
@@ -61,6 +64,18 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
                 if (file.delete()) total -= size
             }
         }
+    }
+
+    /** Las de versiones anteriores estaban en la caché: se mudan una vez. */
+    private fun migrate() {
+        if (!legacyDir.isDirectory) return
+        dir.mkdirs()
+        legacyDir.listFiles()?.forEach { old ->
+            if (!old.isFile || !old.name.endsWith(".webp")) return@forEach
+            val target = File(dir, old.name)
+            if (target.exists() || !old.renameTo(target)) old.delete()
+        }
+        legacyDir.deleteRecursively()
     }
 
     private fun fileFor(url: String) = fileIn(dir, url)
@@ -118,14 +133,16 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
     companion object {
         const val PARAM = "entre_poster"
         const val DIR = "entre_thumbs"
-        private const val MIN_HEIGHT = 240
+        private const val MIN_HEIGHT = 160
         private const val MAX_HEIGHT = 450
         private const val QUALITY = 80
         /** Tamaño con el que la precarga decodifica para dejar la miniatura hecha. */
         const val PREFETCH_WIDTH = 300
         const val PREFETCH_HEIGHT = MAX_HEIGHT
 
-        private fun dirOf(context: Context) = context.cacheDir.resolve(DIR)
+        private fun dirOf(context: Context) = context.noBackupFilesDir.resolve(DIR)
+
+        private fun legacyDirOf(context: Context) = context.cacheDir.resolve(DIR)
 
         private fun fileIn(dir: File, url: String) = File(dir, url.encodeUtf8().sha1().hex() + ".webp")
 
@@ -135,6 +152,7 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
         /** Borra todas las miniaturas. Toca el disco: fuera del hilo principal. */
         fun clear(context: Context) {
             dirOf(context).deleteRecursively()
+            legacyDirOf(context).deleteRecursively()
         }
     }
 }

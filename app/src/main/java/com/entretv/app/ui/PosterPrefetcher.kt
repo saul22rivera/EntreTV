@@ -41,10 +41,15 @@ private const val PREFETCH_PARALLEL = 3
 class PosterPrefetcher @Inject constructor(@ApplicationContext private val context: Context) {
 
     private val prefs by lazy { context.getSharedPreferences("entre_posters", Context.MODE_PRIVATE) }
+    private val failures by lazy { ImageFailures.get(context) }
 
-    /** Deja la miniatura en disco de [urls], de a [PREFETCH_PARALLEL]; cancelar corta lo que esté bajando. */
-    suspend fun prefetch(urls: List<String>) = load(urls) { url ->
-        if (PosterThumbs.exists(context, cardImage(url))) null
+    /**
+     * Deja la miniatura en disco de [urls], de a [PREFETCH_PARALLEL]; cancelar corta lo que esté bajando.
+     * Antes de cada descarga espera a [gate]; si devuelve false no baja nada más.
+     */
+    suspend fun prefetch(urls: List<String>, gate: (suspend () -> Boolean)? = null) = load(urls, gate) { url ->
+        val card = cardImage(url)
+        if (PosterThumbs.exists(context, card) || failures.isRemembered(card)) null
         else posterRequest(context, url)
             .size(PosterThumbs.PREFETCH_WIDTH, PosterThumbs.PREFETCH_HEIGHT)
             .precision(Precision.INEXACT)
@@ -70,7 +75,11 @@ class PosterPrefetcher @Inject constructor(@ApplicationContext private val conte
         }
     }
 
-    private suspend fun load(urls: List<String>, request: (String) -> ImageRequest?) {
+    private suspend fun load(
+        urls: List<String>,
+        gate: (suspend () -> Boolean)? = null,
+        request: (String) -> ImageRequest?
+    ) {
         if (urls.isEmpty()) return
         val loader = context.imageLoader
         val next = AtomicInteger()
@@ -80,7 +89,9 @@ class PosterPrefetcher @Inject constructor(@ApplicationContext private val conte
                     launch {
                         while (true) {
                             val url = urls.getOrNull(next.getAndIncrement()) ?: break
-                            request(url)?.let { loader.execute(it) }
+                            val built = request(url) ?: continue
+                            if (gate != null && !gate()) break
+                            loader.execute(built)
                         }
                     }
                 }

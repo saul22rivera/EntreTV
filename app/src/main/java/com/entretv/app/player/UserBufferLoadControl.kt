@@ -23,16 +23,21 @@ import kotlin.math.min
  * con poca memoria eso provoca tirones del recolector o cierres por falta de RAM. En esos
  * equipos ([lowRam]) VOD no guarda el doble y el máximo no pasa de 50 s.
  *
+ * Película o episodio por la red sin descarga adelantada al disco ([longVodBuffer]): se guardan
+ * hasta 5 min por delante en memoria, con techo [longVodBufferBytes] (no en equipos con poca memoria).
+ *
  * Las descargas (archivos locales) usan los mismos valores que la red.
  */
 @OptIn(UnstableApi::class)
 class UserBufferLoadControl private constructor(
     private val bufferAllocator: DefaultAllocator,
     private val targetBufferBytes: Int,
+    private val longVodBufferBytes: Int,
     private val lowRam: Boolean,
     private val startBufferMs: () -> Int,
     private val maxBufferMs: () -> Int,
-    private val isLive: () -> Boolean
+    private val isLive: () -> Boolean,
+    private val longVodBuffer: () -> Boolean
 ) : DefaultLoadControl(
     bufferAllocator,
     /* minBufferMs = */ MIN_BUFFER_MS,
@@ -51,17 +56,23 @@ class UserBufferLoadControl private constructor(
 ) {
     constructor(
         targetBufferBytes: Int,
+        longVodBufferBytes: Int,
         lowRam: Boolean,
         startBufferMs: () -> Int,
         maxBufferMs: () -> Int,
-        isLive: () -> Boolean
-    ) : this(DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE), targetBufferBytes, lowRam, startBufferMs, maxBufferMs, isLive)
+        isLive: () -> Boolean,
+        longVodBuffer: () -> Boolean
+    ) : this(
+        DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE), targetBufferBytes, longVodBufferBytes, lowRam,
+        startBufferMs, maxBufferMs, isLive, longVodBuffer
+    )
 
     private companion object {
         const val MIN_BUFFER_MS = 15_000
         const val MAX_USER_BUFFER_MS = 60_000
         const val LOW_RAM_MAX_BUFFER_MS = 50_000
         const val MAX_BUFFER_MS = 2 * MAX_USER_BUFFER_MS
+        const val LONG_VOD_BUFFER_MS = 300_000L
 
         // Con 0 s, tras un trabón se exige 1 s para no entrar en un ciclo de cortes.
         const val MIN_AFTER_REBUFFER_US = 1_000_000L
@@ -95,6 +106,11 @@ class UserBufferLoadControl private constructor(
         if (isLive()) {
             if (bufferedUs >= userCapMs * 1_000L) return false
             return super.shouldContinueLoading(parameters)
+        }
+        if (!lowRam && longVodBuffer()) {
+            if (bufferedUs >= LONG_VOD_BUFFER_MS * 1_000L) return false
+            if (bufferedUs < MIN_BUFFER_MS * 1_000L) return super.shouldContinueLoading(parameters)
+            return bufferAllocator.totalBytesAllocated < longVodBufferBytes
         }
         if (bufferedUs >= userCapMs * (if (lowRam) 1_000L else 2_000L)) return false
         if (bufferedUs < MIN_BUFFER_MS * 1_000L) return super.shouldContinueLoading(parameters)

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cartel del zapping en vivo -->
+    <string name="live_zap_now">Ahora: %1$s</string>
+    <string name="live_zap_next">Sigue: %1$s</string>
+</resources>

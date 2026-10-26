@@ -69,8 +69,10 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -117,6 +119,7 @@ import com.entretv.app.data.repo.SeriesResumeRule
 import com.entretv.app.ui.theme.EntreBrand
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -150,6 +153,10 @@ fun DetailsScreen(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var plotExpanded by rememberSaveable { mutableStateOf(false) }
     val primaryFocus = remember { FocusRequester() }
+    // Episodio que se mandó a reproducir: al volver del reproductor el foco regresa a su fila.
+    var lastEpisodeId by rememberSaveable { mutableStateOf<String?>(null) }
+    val episodeFocus = remember { mutableMapOf<String, FocusRequester>() }
+    val listState = rememberLazyListState()
 
     LaunchedEffect(notice) {
         notice?.let {
@@ -172,12 +179,48 @@ fun DetailsScreen(
         else -> 300.dp
     }
 
-    // En TV el foco arranca en el botón principal para usar el control de inmediato.
-    LaunchedEffect(title.isNotEmpty()) {
-        if (profile.isTv && title.isNotEmpty()) runCatching { primaryFocus.requestFocus() }
+    val playEpisode: (EpisodeEntity) -> Unit = { ep ->
+        lastEpisodeId = ep.id
+        // Fija la temporada: al terminar, resumeTarget puede pasar a otra y cambiar la lista.
+        viewModel.selectSeason(ep.season)
+        onPlayEpisode(ep.id)
     }
 
+    // Debe coincidir con los items de la LazyColumn: hero, actions, info?, cast?, seasons, episodios.
+    val firstEpisodeIndex = 3 +
+        (if (details?.hasExtraInfo() == true) 1 else 0) +
+        (if (details?.castMembers?.isNotEmpty() == true) 1 else 0)
+    val episodeTarget by rememberUpdatedState(
+        lastEpisodeId?.let { id -> seasonEpisodes.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?.let { firstEpisodeIndex + it }
+    )
+
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // En TV el foco arranca en el botón principal; al volver del reproductor, en el episodio visto.
+    // Se espera a RESUMED y a un frame: al quitarse el reproductor Android le devuelve el foco a la
+    // vista. Solo se pide foco a filas o botones compuestos; si no, el foco queda atorado en Atrás.
+    LaunchedEffect(title.isNotEmpty()) {
+        if (!profile.isTv || title.isEmpty()) return@LaunchedEffect
+        lifecycleOwner.lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
+        withFrameNanos { }
+        val id = lastEpisodeId
+        val index = episodeTarget
+        if (id != null && index != null) {
+            if (listState.layoutInfo.visibleItemsInfo.none { it.key == id }) listState.scrollToItem(index)
+            repeat(2) {
+                withFrameNanos { }
+                if (runCatching { episodeFocus.getValue(id).requestFocus() }.isSuccess) return@LaunchedEffect
+            }
+        }
+        if (listState.layoutInfo.visibleItemsInfo.none { it.key == "actions" }) {
+            listState.scrollToItem(0)
+            withFrameNanos { }
+        }
+        runCatching { primaryFocus.requestFocus() }
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) viewModel.cancelPrewarm()
@@ -191,7 +234,6 @@ fun DetailsScreen(
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         Box(Modifier.fillMaxSize()) {
-            val listState = rememberLazyListState()
             val heroPx = with(LocalDensity.current) { heroHeight.toPx() }
             // TV: la portada queda fija de fondo; al bajar a la sinopsis solo se atenúa.
             if (profile.isTv) {
@@ -250,7 +292,7 @@ fun DetailsScreen(
                                     text = target?.label?.asString() ?: stringResource(R.string.details_loading_episodes),
                                     icon = Icons.Default.PlayArrow,
                                     primary = true,
-                                    onClick = { target?.let { onPlayEpisode(it.episode.id) } },
+                                    onClick = { target?.let { playEpisode(it.episode) } },
                                     modifier = Modifier
                                         .focusRequester(primaryFocus)
                                         .then(if (wide) Modifier else Modifier.fillMaxWidth())
@@ -461,13 +503,20 @@ fun DetailsScreen(
                         }
                     }
                     items(seasonEpisodes, key = { it.id }) { ep ->
+                        val rowFocus = remember(ep.id) { FocusRequester() }
+                        DisposableEffect(ep.id, rowFocus) {
+                            episodeFocus[ep.id] = rowFocus
+                            onDispose { if (episodeFocus[ep.id] === rowFocus) episodeFocus.remove(ep.id) }
+                        }
                         EpisodeRow(
                             episode = ep,
                             fallbackImage = poster,
                             progress = episodeProgress[ep.id],
                             wide = wide,
+                            isTv = profile.isTv,
                             edge = profile.edge,
-                            onClick = { onPlayEpisode(ep.id) },
+                            focusRequester = rowFocus,
+                            onClick = { playEpisode(ep) },
                             trailing = {
                                 EpisodeDownloadIcon(
                                     download = episodeDownloads[ep.id],
@@ -494,13 +543,17 @@ fun DetailsScreen(
             }
             }
 
+            // primaryFocus solo existe mientras "actions" está compuesto; más abajo vale la búsqueda normal.
+            val actionsVisible by remember {
+                derivedStateOf { listState.layoutInfo.visibleItemsInfo.any { it.key == "actions" } }
+            }
             IconButton(
                 onClick = onBack,
                 modifier = Modifier
                     .statusBarsPadding()
                     .padding(8.dp)
                     // Encima de la lista: sin esto, Abajo no encontraba nada y el foco quedaba atorado.
-                    .focusProperties { down = primaryFocus }
+                    .focusProperties { if (actionsVisible) down = primaryFocus }
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.45f))
             ) {
@@ -922,7 +975,9 @@ private fun EpisodeRow(
     fallbackImage: String,
     progress: PlaybackProgressEntity?,
     wide: Boolean,
+    isTv: Boolean,
     edge: Dp,
+    focusRequester: FocusRequester,
     onClick: () -> Unit,
     trailing: @Composable () -> Unit,
     downloadLabel: String?
@@ -939,12 +994,15 @@ private fun EpisodeRow(
         else -> Color.Transparent
     }
 
+    val innerPadding = if (isTv) 4.dp else 6.dp
+
     // La fila y el botón de descarga son dos focos separados: en TV, derecha pasa de uno al otro.
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = edge - 6.dp, vertical = 4.dp)
+            .padding(horizontal = edge - innerPadding, vertical = if (isTv) 2.dp else 4.dp)
+            .then(if (isTv) Modifier.widthIn(max = 820.dp) else Modifier)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -955,12 +1013,19 @@ private fun EpisodeRow(
                 .background(tint)
                 .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.Transparent)
                 .then(if (focused) Modifier.border(2.dp, EntreBrand.Accent, shape) else Modifier)
+                .focusRequester(focusRequester)
                 .clickable(interactionSource = source, indication = LocalIndication.current, onClick = onClick)
-                .padding(6.dp)
+                .padding(innerPadding)
         ) {
             Box(
                 Modifier
-                    .width(if (wide) 220.dp else 136.dp)
+                    .width(
+                        when {
+                            isTv -> 150.dp
+                            wide -> 220.dp
+                            else -> 136.dp
+                        }
+                    )
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(EntreBrand.PanelHigh),
@@ -977,12 +1042,17 @@ private fun EpisodeRow(
                 }
                 Box(
                     Modifier
-                        .size(36.dp)
+                        .size(if (isTv) 28.dp else 36.dp)
                         .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.5f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = if (isTv) Modifier.size(18.dp) else Modifier
+                    )
                 }
                 if (fraction != null && fraction > 0f) {
                     Text(
@@ -1009,14 +1079,14 @@ private fun EpisodeRow(
                     )
                 }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(if (isTv) 10.dp else 12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     "${episode.episodeNum}. ${episode.title}",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = Color.White,
-                    maxLines = 2,
+                    maxLines = if (isTv) 1 else 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (episode.durationSecs > 0) {
@@ -1035,7 +1105,11 @@ private fun EpisodeRow(
                         episode.plot,
                         style = MaterialTheme.typography.bodySmall,
                         color = EntreBrand.TextDim,
-                        maxLines = if (wide) 3 else 2,
+                        maxLines = when {
+                            isTv -> 1
+                            wide -> 3
+                            else -> 2
+                        },
                         overflow = TextOverflow.Ellipsis
                     )
                 }

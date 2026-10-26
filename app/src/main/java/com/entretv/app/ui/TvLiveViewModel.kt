@@ -1,5 +1,6 @@
 package com.entretv.app.ui
 
+import android.os.SystemClock
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -145,19 +146,28 @@ class TvLiveViewModel @Inject constructor(
     /** Pantalla completa abierta desde el mini reproductor: al salir de Inicio no se corta. */
     var openingFullscreen = false
 
-    /** Al volver a la pantalla (de pantalla completa o de otra app) el canal sigue en el directo. */
+    /** Cuándo [pause] detuvo el canal ([SystemClock.elapsedRealtime]); 0 si no lo pausó. */
+    private var pausedAt = 0L
+
+    /**
+     * Al volver a la pantalla (de pantalla completa o de otra app) el canal sigue. Solo tras una
+     * pausa larga se salta al directo: hacerlo siempre recarga el búfer y se nota como un corte.
+     */
     fun resume() {
         openingFullscreen = false
         if (playerManager.currentKey.value == null) return
         val player = playerManager.player
-        if (!player.isPlaying) {
-            player.seekToDefaultPosition()
-            player.play()
-        }
+        val stale = pausedAt > 0L && SystemClock.elapsedRealtime() - pausedAt > RESUME_LIVE_EDGE_AFTER_MS
+        pausedAt = 0L
+        if (player.isPlaying) return
+        if (stale) player.seekToDefaultPosition()
+        player.play()
     }
 
     fun pause() {
-        if (playerManager.currentKey.value != null) playerManager.player.pause()
+        if (playerManager.currentKey.value == null) return
+        playerManager.player.pause()
+        pausedAt = SystemClock.elapsedRealtime()
     }
 
     /** Al salir de En vivo: se corta el canal para no gastar datos. */
@@ -169,5 +179,6 @@ class TvLiveViewModel @Inject constructor(
         const val GUIDE_DEBOUNCE_MS = 400L
         const val GUIDE_SIZE = 4
         const val GUIDE_REFRESH_MS = 10 * 60_000L
+        const val RESUME_LIVE_EDGE_AFTER_MS = 30_000L
     }
 }
