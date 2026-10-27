@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.entretv.app.data.AppForeground
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
@@ -18,6 +19,7 @@ import com.entretv.app.ui.BrowseItem
 import com.entretv.app.ui.CatalogOptions
 import com.entretv.app.ui.CatalogOrder
 import com.entretv.app.ui.PosterPrefetcher
+import com.entretv.app.ui.PosterThumbs
 import com.entretv.app.ui.SortOrder
 import com.entretv.app.ui.TitleCleaner
 import dagger.Lazy
@@ -32,7 +34,8 @@ import kotlinx.coroutines.withContext
  * Baja en segundo plano las miniaturas de todos los pósters de Películas y Series de la cuenta,
  * en el orden en que se ven (primero el comienzo de cada categoría, después el resto). Solo con
  * Wi‑Fi o cable y con espacio; lo que ya está en disco se salta, así que si se corta sigue donde
- * quedó. Mientras se reproduce un video espera, para no quitarle red.
+ * quedó. Espera mientras la app está a la vista o se reproduce un video, para no quitarle disco,
+ * CPU ni red a lo que se está usando.
  */
 @HiltWorker
 class PosterCacheWorker @AssistedInject constructor(
@@ -50,13 +53,35 @@ class PosterCacheWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         if (!enoughSpace()) return Result.success()
+        // Con la app a la vista compite por disco y CPU con los pósters en pantalla.
+        AppForeground.visible.first { !it }
+        // #region agent log
+        val agentT0 = android.os.SystemClock.elapsedRealtime()
+        com.entretv.app.data.DebugLog.workerRunning = true
+        try {
+        // #endregion
         val urls = withContext(Dispatchers.Default) { catalogPosters() }
+        // #region agent log
+        com.entretv.app.data.DebugLog.log("PosterCacheWorker.doWork", "catalog ready", "A,F", mapOf(
+            "urls" to urls.size, "computeMs" to android.os.SystemClock.elapsedRealtime() - agentT0, "attempt" to runAttemptCount
+        ))
+        // #endregion
         posters.prefetch(urls, gate = { canContinue() })
+        // #region agent log
+        } finally {
+            com.entretv.app.data.DebugLog.workerRunning = false
+            com.entretv.app.data.DebugLog.log("PosterCacheWorker.doWork", "worker end", "A,F", mapOf(
+                "elapsedMs" to android.os.SystemClock.elapsedRealtime() - agentT0, "stopped" to isStopped
+            ))
+        }
+        // #endregion
         return Result.success()
     }
 
     private suspend fun canContinue(): Boolean {
         player.get().isPlayingFlow.first { !it }
+        AppForeground.visible.first { !it }
+        PosterThumbs.pending.first { it <= MAX_PENDING_THUMBS }
         // statfs en cada póster sobra: cada tanto alcanza.
         if (checks.getAndIncrement() % SPACE_CHECK_EVERY == 0) lowSpace = !enoughSpace()
         return !lowSpace && !isStopped
@@ -118,6 +143,7 @@ class PosterCacheWorker @AssistedInject constructor(
         private const val KEY_PLAYLIST = "playlist"
         private const val FIRST_PER_CATEGORY = 12
         private const val SPACE_CHECK_EVERY = 25
+        private const val MAX_PENDING_THUMBS = 3
         private const val MIN_FREE_BYTES = 1024L * 1024 * 1024
 
         /**

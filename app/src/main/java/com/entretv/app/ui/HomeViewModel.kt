@@ -778,8 +778,20 @@ class HomeViewModel @Inject constructor(
             .let { raw ->
                 combine(raw, options, effectiveSort, trending) { r, o, order, t ->
                     val cached = synchronized(builtCache) { builtCache[r.filter] }?.takeIf { it.matches(r, o, order, t) }
-                    cached?.base ?: buildBase(r, o, order, t).also { base ->
+                    // #region agent log
+                    val agentT0 = android.os.SystemClock.elapsedRealtime()
+                    // #endregion
+                    (cached?.base ?: buildBase(r, o, order, t).also { base ->
                         synchronized(builtCache) { builtCache[r.filter] = BuiltContent(r, o, order, t, base) }
+                    }).also {
+                        // #region agent log
+                        com.entretv.app.data.DebugLog.log("HomeViewModel.content", "catalog built", "A,D", mapOf(
+                            "section" to r.filter.section.name, "cached" to (cached != null),
+                            "movies" to r.movies.size, "series" to r.series.size, "channels" to r.channels.size,
+                            "buildMs" to android.os.SystemClock.elapsedRealtime() - agentT0,
+                            "syncing" to com.entretv.app.data.DebugLog.syncing
+                        ))
+                        // #endregion
                     }
                 }
             }

@@ -19,6 +19,9 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okio.ByteString.Companion.encodeUtf8
 import okio.FileSystem
@@ -103,7 +106,13 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
         // Una miniatura chica se vería borrosa en una tarjeta más grande.
         if (bitmap.height < MIN_HEIGHT) return
         val file = fileFor(url)
+        // Cada una en espera retiene su bitmap: con disco lento la fila crecía sin fin.
+        if (pendingWrites.value >= MAX_PENDING) return
         if (!writing.add(file.name)) return
+        pendingWrites.update { it + 1 }
+        // #region agent log
+        com.entretv.app.data.DebugLog.thumbQueue.incrementAndGet()
+        // #endregion
         scope.launch(writer) {
             try {
                 if (file.isFile) return@launch
@@ -122,6 +131,10 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
             } catch (_: Exception) {
             } finally {
                 writing.remove(file.name)
+                pendingWrites.update { it - 1 }
+                // #region agent log
+                com.entretv.app.data.DebugLog.thumbQueue.decrementAndGet()
+                // #endregion
             }
         }
     }
@@ -136,6 +149,11 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
         private const val MIN_HEIGHT = 160
         private const val MAX_HEIGHT = 450
         private const val QUALITY = 80
+        private const val MAX_PENDING = 12
+
+        private val pendingWrites = MutableStateFlow(0)
+        /** Miniaturas esperando a guardarse en disco. */
+        val pending: StateFlow<Int> = pendingWrites
         /** Tamaño con el que la precarga decodifica para dejar la miniatura hecha. */
         const val PREFETCH_WIDTH = 300
         const val PREFETCH_HEIGHT = MAX_HEIGHT

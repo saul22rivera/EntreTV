@@ -45,6 +45,9 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // #region agent log
+        com.entretv.app.data.DebugLog.init(this)
+        // #endregion
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()

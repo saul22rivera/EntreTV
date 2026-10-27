@@ -372,6 +372,11 @@ class PlaylistRepository @Inject constructor(
         val due = refreshDue(last, mode) || (auto && mode == SettingsRepository.REFRESH_AUTO && autoDue(last))
         if (!force && !due) return emptyList()
         _syncing.value = true
+        // #region agent log
+        com.entretv.app.data.DebugLog.syncing = true
+        val agentStart = android.os.SystemClock.elapsedRealtime()
+        com.entretv.app.data.DebugLog.log("PlaylistRepository.refreshIfDue", "refresh start", "B,E", mapOf("force" to force, "auto" to auto, "oneByOne" to oneByOne, "fg" to AppForeground.isForeground))
+        // #endregion
         try {
             val outcome = coroutineScope {
                 val account = async { refreshAccountInfo(p) }
@@ -385,9 +390,18 @@ class PlaylistRepository @Inject constructor(
                 fun added(section: String) = outcome.saved.filter { it.section == section }.sumOf { it.pending!!.added }
                 _updates.tryEmit(CatalogUpdate(added(SECTION_MOVIES), added(SECTION_SERIES), added(SECTION_LIVE)))
             }
+            // #region agent log
+            com.entretv.app.data.DebugLog.log("PlaylistRepository.refreshIfDue", "refresh end", "B,E", mapOf(
+                "elapsedMs" to android.os.SystemClock.elapsedRealtime() - agentStart,
+                "failed" to failed.joinToString { it.section }, "saved" to outcome.saved.joinToString { it.section }
+            ))
+            // #endregion
             return failed.map { sectionFailed(it.section, it.error!!) }
         } finally {
             _syncing.value = false
+            // #region agent log
+            com.entretv.app.data.DebugLog.syncing = false
+            // #endregion
         }
     }
 
@@ -700,16 +714,44 @@ class PlaylistRepository @Inject constructor(
     ): Fetched<T>? = withRetry {
         syncDir.mkdirs()
         val file = File.createTempFile(action, ".json", syncDir)
+        // #region agent log
+        val agentT0 = android.os.SystemClock.elapsedRealtime()
+        var agentT1 = 0L; var agentT2 = 0L
+        var agentStage = "slot"
+        // #endregion
         try {
             val print = withRequestSlot {
+                // #region agent log
+                agentT1 = android.os.SystemClock.elapsedRealtime(); agentStage = "download"
+                // #endregion
                 xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
                     val hashing = HashingSource.md5(body.source())
                     val count = file.sink().buffer().use { it.writeAll(hashing) }
                     "$count:${hashing.hash.hex()}"
                 }
             }
-            if (unchanged(print)) null
+            // #region agent log
+            agentT2 = android.os.SystemClock.elapsedRealtime(); agentStage = "parse"
+            // #endregion
+            val agentResult = if (unchanged(print)) null
             else Fetched(print, file.source().buffer().use { json.decodeFromStream(serializer, it.inputStream()) })
+            // #region agent log
+            com.entretv.app.data.DebugLog.log("PlaylistRepository.fetchIfChanged", "fetched", "B,E", mapOf(
+                "action" to action, "fg" to AppForeground.isForeground, "slotWaitMs" to agentT1 - agentT0,
+                "downloadMs" to agentT2 - agentT1, "parseMs" to android.os.SystemClock.elapsedRealtime() - agentT2,
+                "bytes" to file.length(), "changed" to (agentResult != null)
+            ))
+            // #endregion
+            agentResult
+        } catch (agentE: Throwable) {
+            // #region agent log
+            com.entretv.app.data.DebugLog.log("PlaylistRepository.fetchIfChanged", "fetch failed", "B,C,E", mapOf(
+                "action" to action, "stage" to agentStage, "type" to agentE.javaClass.name,
+                "msg" to com.entretv.app.data.DebugLog.clean(agentE.message),
+                "elapsedMs" to android.os.SystemClock.elapsedRealtime() - agentT0
+            ))
+            // #endregion
+            throw agentE
         } finally {
             file.delete()
         }
