@@ -25,7 +25,7 @@ import okhttp3.Interceptor as HttpInterceptor
 
 /** Reintentos de una tarjeta cuyo póster no llegó por la red, y la espera antes de cada uno. */
 internal const val POSTER_RETRIES = 2
-internal const val POSTER_RETRY_DELAY_MS = 8_000L
+internal const val POSTER_RETRY_DELAY_MS = 1_000L
 /** Solo distingue el pedido del reintento: no cambia la clave de la caché en memoria. */
 internal const val POSTER_RETRY_PARAM = "entre_retry"
 
@@ -77,34 +77,24 @@ class ImageFailures private constructor(private val context: Context) {
             return@Interceptor chain.proceed(request)
         }
         if (isRemembered(url)) return@Interceptor ErrorResult(null, request, BrokenImageException())
-        // #region agent log
-        val agentStart = android.os.SystemClock.elapsedRealtime()
-        // #endregion
         val result = chain.proceed(request)
         if (result is ErrorResult) onFailure(url, result.throwable)
-        // #region agent log
-        val agentMs = android.os.SystemClock.elapsedRealtime() - agentStart
-        if (agentMs > 3_000) com.entretv.app.data.DebugLog.slowLoads.incrementAndGet()
-        when {
-            result is ErrorResult -> com.entretv.app.data.DebugLog.errLoads.incrementAndGet()
-            (result as coil.request.SuccessResult).dataSource == coil.decode.DataSource.NETWORK -> {
-                com.entretv.app.data.DebugLog.netLoads.incrementAndGet(); com.entretv.app.data.DebugLog.netMs.addAndGet(agentMs)
-            }
-            result.dataSource == coil.decode.DataSource.MEMORY_CACHE -> com.entretv.app.data.DebugLog.memLoads.incrementAndGet()
-            else -> { com.entretv.app.data.DebugLog.diskLoads.incrementAndGet(); com.entretv.app.data.DebugLog.diskMs.addAndGet(agentMs) }
-        }
-        // #endregion
         result
     }
 
-    /** Para el cliente HTTP de Coil: corta al instante los pedidos a un servidor caído. */
+    /**
+     * Para el cliente HTTP de Coil: corta al instante los pedidos a un servidor caído. Solo cuentan
+     * los intentos holgados: que no conecte en el primero, de medio segundo, no lo da por caído.
+     */
     val hostBreaker = HttpInterceptor { chain ->
         val host = chain.request().url.host
         if (isDead(host)) throw DeadHostException()
         val response = try {
             chain.proceed(chain.request())
         } catch (e: IOException) {
-            if (e.isConnectFailure()) onConnectFailure(host)
+            if (e.isConnectFailure() && chain.request().tag(ImageTraffic.Relaxed::class.java) != null) {
+                onConnectFailure(host)
+            }
             throw e
         }
         connectFailures.remove(host)

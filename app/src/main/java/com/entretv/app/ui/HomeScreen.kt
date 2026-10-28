@@ -218,6 +218,9 @@ private const val ROW_PREFETCH = 8
 private const val ROW_PREFETCH_LOW_RAM = 4
 private val DeviceProfile.rowPrefetch get() = if (lowRam) ROW_PREFETCH_LOW_RAM else ROW_PREFETCH
 
+/** Lo que tarda en salir un póster que ya está en memoria: pasado eso se pide la vista previa. */
+private const val MICRO_PREVIEW_DELAY_MS = 50L
+
 private val LIVE_CARD_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
 private val POSTER_WAIT_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Accent.copy(alpha = 0.16f)))
 
@@ -689,6 +692,7 @@ fun HomeScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) {
                                 PosterThumbs.clear(context)
+                                PosterPrefetcher.forgetDone(context)
                                 ImageFailures.get(context).clear()
                             }
                             snackbar.showSnackbar(context.getString(R.string.home_images_cleared))
@@ -2533,12 +2537,30 @@ private fun PosterCard(
                 // Un póster que no llegó por la red se vuelve a pedir un par de veces; los rotos no.
                 var retry by remember(item.imageUrl) { mutableIntStateOf(0) }
                 var retryDue by remember(item.imageUrl) { mutableStateOf(false) }
+                // Si no sale de la memoria al instante, la vista previa borrosa queda debajo de la nítida.
+                var showMicro by remember(item.imageUrl) { mutableStateOf(false) }
+                if (!isLive) {
+                    LaunchedEffect(item.imageUrl) {
+                        delay(MICRO_PREVIEW_DELAY_MS)
+                        if (waiting) showMicro = true
+                    }
+                }
                 if (waiting) PosterPlaceholder(item.title)
+                if (showMicro) {
+                    AsyncImage(
+                        model = remember(item.imageUrl) { microRequest(context, item.imageUrl) },
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
                 AsyncImage(
                     model = remember(item.imageUrl, retry) {
                         if (isLive) cardImage(item.imageUrl)
                         else posterRequest(context, item.imageUrl)
-                            .apply { if (retry > 0) setParameter(POSTER_RETRY_PARAM, retry, memoryCacheKey = null) }
+                            .apply {
+                                if (retry > 0) with(ImageTraffic) { setParameter(POSTER_RETRY_PARAM, retry, memoryCacheKey = null).relaxed() }
+                            }
                             .build()
                     },
                     contentDescription = item.title,

@@ -99,6 +99,31 @@ interface VodDao {
     @Query("SELECT * FROM series WHERE playlistId = :playlistId ORDER BY added DESC, position LIMIT :limit")
     suspend fun recentSeries(playlistId: String, limit: Int): List<SeriesEntity>
 
+    /** Solo lo que necesita la descarga de pósters: de lo más nuevo a lo más viejo. */
+    @Query(
+        "SELECT id, name, categoryName, icon AS url FROM vod_movies " +
+            "WHERE playlistId = :playlistId AND icon != '' ORDER BY added DESC, position"
+    )
+    suspend fun moviePosters(playlistId: String): List<PosterRow>
+
+    @Query(
+        "SELECT id, name, categoryName, cover AS url FROM series " +
+            "WHERE playlistId = :playlistId AND cover != '' ORDER BY added DESC, position"
+    )
+    suspend fun seriesPosters(playlistId: String): List<PosterRow>
+
+    /** Todas las imágenes que una tarjeta puede mostrar, de todas las cuentas. */
+    @Query(
+        "SELECT icon FROM vod_movies WHERE icon != '' " +
+            "UNION SELECT cover FROM series WHERE cover != '' " +
+            "UNION SELECT imageUrl FROM episodes WHERE imageUrl != '' " +
+            "UNION SELECT imageUrl FROM downloads WHERE imageUrl != '' " +
+            "UNION SELECT imageUrl FROM favorites WHERE imageUrl != '' " +
+            "UNION SELECT imageUrl FROM playback_progress WHERE imageUrl != '' " +
+            "UNION SELECT imageUrl FROM hidden_items WHERE imageUrl != ''"
+    )
+    suspend fun allPosterUrls(): List<String>
+
     @Query("SELECT id FROM vod_movies WHERE playlistId = :playlistId AND categoryName IN (:categories)")
     suspend fun movieIdsIn(playlistId: String, categories: List<String>): List<String>
 
@@ -150,6 +175,14 @@ interface VodDao {
     )
     suspend fun rewriteEpisodeRoot(playlistId: String, oldRoot: String, newRoot: String)
 }
+
+/** Póster de una película o serie, sin el resto de la fila. */
+data class PosterRow(
+    val id: String,
+    val name: String,
+    val categoryName: String,
+    val url: String
+)
 
 @Dao
 interface ProgressDao {

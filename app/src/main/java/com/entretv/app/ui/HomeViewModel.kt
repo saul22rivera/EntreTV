@@ -310,8 +310,10 @@ internal object CatalogOrder {
     private val accents = Regex("\\p{Mn}+")
 
     fun liveGroup(channel: ChannelEntity): String = channel.groupTitle.ifEmpty { LIVE_GROUP }
-    fun movieGroup(movie: VodMovieEntity): String = movie.categoryName.ifEmpty { MOVIES_GROUP }
-    fun seriesGroup(series: SeriesEntity): String = series.categoryName.ifEmpty { SERIES_GROUP }
+    fun movieGroup(movie: VodMovieEntity): String = movieGroupOf(movie.categoryName)
+    fun seriesGroup(series: SeriesEntity): String = seriesGroupOf(series.categoryName)
+    fun movieGroupOf(categoryName: String): String = categoryName.ifEmpty { MOVIES_GROUP }
+    fun seriesGroupOf(categoryName: String): String = categoryName.ifEmpty { SERIES_GROUP }
 
     fun normalize(text: String): String {
         val lower = text.lowercase()
@@ -778,20 +780,8 @@ class HomeViewModel @Inject constructor(
             .let { raw ->
                 combine(raw, options, effectiveSort, trending) { r, o, order, t ->
                     val cached = synchronized(builtCache) { builtCache[r.filter] }?.takeIf { it.matches(r, o, order, t) }
-                    // #region agent log
-                    val agentT0 = android.os.SystemClock.elapsedRealtime()
-                    // #endregion
-                    (cached?.base ?: buildBase(r, o, order, t).also { base ->
+                    cached?.base ?: buildBase(r, o, order, t).also { base ->
                         synchronized(builtCache) { builtCache[r.filter] = BuiltContent(r, o, order, t, base) }
-                    }).also {
-                        // #region agent log
-                        com.entretv.app.data.DebugLog.log("HomeViewModel.content", "catalog built", "A,D", mapOf(
-                            "section" to r.filter.section.name, "cached" to (cached != null),
-                            "movies" to r.movies.size, "series" to r.series.size, "channels" to r.channels.size,
-                            "buildMs" to android.os.SystemClock.elapsedRealtime() - agentT0,
-                            "syncing" to com.entretv.app.data.DebugLog.syncing
-                        ))
-                        // #endregion
                     }
                 }
             }
@@ -1724,12 +1714,13 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Mientras Inicio está a la vista: tras una actualización que cambió el catálogo, o la
-     * primera vez del día, encarga a [PosterCacheWorker] los pósters de Películas y Series
-     * (en segundo plano y solo con Wi‑Fi o cable). Espera a que termine la actualización en curso.
+     * Mientras Inicio está a la vista: al abrir y tras una actualización que cambió el catálogo,
+     * encarga a [PosterCacheWorker] los pósters de Películas y Series que falten (solo con Wi‑Fi o
+     * cable; si ya los bajó con esta actualización termina enseguida). Espera a que termine la
+     * actualización en curso.
      */
     suspend fun catalogPostersLoop() {
-        if (posters.catalogDueToday()) catalogPostersDue.value = true
+        catalogPostersDue.value = true
         combine(catalogPostersDue, repository.syncing) { due, syncing -> due && !syncing }
             .distinctUntilChanged()
             .collectLatest { run ->
@@ -1738,7 +1729,6 @@ class HomeViewModel @Inject constructor(
                 val replace = catalogChanged
                 enqueuePosterCache(selectedPlaylistId.value, replace)
                 if (replace) catalogChanged = false
-                posters.markCatalogDone()
                 catalogPostersDue.value = false
             }
     }

@@ -18,6 +18,7 @@ import com.entretv.app.data.sync.CatalogSyncWorker
 import com.entretv.app.tv.TvHomePublisher
 import com.entretv.app.ui.AppLanguage
 import com.entretv.app.ui.ImageFailures
+import com.entretv.app.ui.ImageTraffic
 import com.entretv.app.ui.PosterThumbs
 import com.entretv.app.ui.isLowRamDevice
 import dagger.hilt.android.HiltAndroidApp
@@ -45,9 +46,6 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        // #region agent log
-        com.entretv.app.data.DebugLog.init(this)
-        // #endregion
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()
@@ -111,14 +109,16 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
             }
             // Cliente de la app con despachador propio: el de fábrica deja 5 descargas por servidor
             // y los pósters vienen casi todos del mismo. Sin caché HTTP: Coil ya guarda en disco.
-            // Plazos cortos: un póster que no llega en segundos deja el título y se reintenta después.
+            // Plazos cortos: si no conecta en medio segundo se reintenta enseguida con más margen
+            // (ImageTraffic); mientras tanto la tarjeta muestra la vista previa o el título.
             .okHttpClient {
                 httpClient.get().newBuilder()
                     .cache(null)
                     .dispatcher(Dispatcher().apply { maxRequests = 32; maxRequestsPerHost = 12 })
-                    .connectTimeout(4, TimeUnit.SECONDS)
-                    .readTimeout(8, TimeUnit.SECONDS)
-                    .callTimeout(12, TimeUnit.SECONDS)
+                    .connectTimeout(500, TimeUnit.MILLISECONDS)
+                    .readTimeout(4, TimeUnit.SECONDS)
+                    .callTimeout(10, TimeUnit.SECONDS)
+                    .addInterceptor(ImageTraffic.interceptor)
                     .addInterceptor(failures.hostBreaker)
                     .build()
             }
