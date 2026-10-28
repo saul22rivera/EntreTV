@@ -41,7 +41,8 @@ class AheadUnavailableException(cause: Throwable? = null) : IOException("Descarg
  *  - Si se corta la red, reintenta (1 s, 2 s… hasta 15 s; al volver la red, enseguida) desde
  *    el primer byte que falta. Lo ya bajado se conserva.
  *  - Un salto lejos de lo que se está bajando corta la conexión y la abre en el punto nuevo.
- *  - En disco queda solo el último título: al empezar otro se borra el anterior.
+ *  - Baja solo una ventana: unos minutos por delante de lo que lee el reproductor y un poco
+ *    por detrás; lo más viejo se borra. En disco queda solo el último título.
  *  - [client] tiene su propio Dispatcher: cancelar sus llamadas corta la conexión al instante
  *    (interrumpir el hilo no desbloquea una lectura de red).
  *  - La clave en caché es un hash de la URL: la URL lleva usuario y contraseña. Nunca se registra.
@@ -55,7 +56,20 @@ class VodAheadDownloader(
 ) {
     companion object {
         private const val FRAGMENT_BYTES = 1L * 1024 * 1024
-        private const val MIN_FREE_BYTES = 1L * 1024 * 1024 * 1024
+        private const val MIN_FREE_BYTES = 512L * 1024 * 1024
+        /** Ventaja máxima en disco sobre lo que lee el reproductor (~4 min de video). */
+        private const val AHEAD_MS = 240_000L
+        private const val MIN_AHEAD_BYTES = 24L * 1024 * 1024
+        private const val MAX_AHEAD_BYTES = 192L * 1024 * 1024
+        private const val DEFAULT_AHEAD_BYTES = 64L * 1024 * 1024
+        /** Lo ya leído que se guarda para volver atrás sin reconectar (~90 s de video). */
+        private const val BEHIND_MS = 90_000L
+        private const val MIN_BEHIND_BYTES = 8L * 1024 * 1024
+        private const val MAX_BEHIND_BYTES = 96L * 1024 * 1024
+        /** Tope de la carpeta: lo que pase de aquí (un título viejo bajado entero) se borra. */
+        private const val MAX_STORED_BYTES = 384L * 1024 * 1024
+        private const val THROTTLE_WAIT_MS = 250L
+        private const val TRIM_EVERY_MS = 5_000L
         /** Distancia "cerca" sin conocer la tasa de bits. */
         private const val DEFAULT_WINDOW_BYTES = 16L * 1024 * 1024
         private const val MIN_WINDOW_BYTES = 2L * 1024 * 1024
@@ -118,6 +132,10 @@ class VodAheadDownloader(
     /** Próximo byte que llega de la red (lo anterior ya está en disco o por guardarse). */
     @Volatile
     private var writePos = 0L
+    /** Último byte pedido por el reproductor: la descarga no se adelanta más de la ventana. */
+    @Volatile
+    private var readPos = 0L
+    private var lastTrimAt = 0L
     @Volatile
     private var contentLength = C.LENGTH_UNSET.toLong()
     @Volatile
@@ -139,8 +157,22 @@ class VodAheadDownloader(
         contentLength = C.LENGTH_UNSET.toLong()
         jobStart = 0L
         writePos = 0L
+        readPos = 0L
         _progress.value = null
         runCatching { executor.execute { prepare(key) } }.onFailure { failed = true }
+    }
+
+    /** Al abrir la app: si quedó un título bajado entero (versiones anteriores), se borra. */
+    fun trimStored() {
+        runCatching {
+            executor.execute {
+                if (url != null) return@execute
+                runCatching {
+                    val cache = cache
+                    if (cache.cacheSpace > MAX_STORED_BYTES) for (k in cache.keys.toList()) cache.removeResource(k)
+                }
+            }
+        }
     }
 
     /** Corta la descarga y cierra la conexión; lo bajado queda en disco. */
@@ -200,6 +232,7 @@ class VodAheadDownloader(
      */
     internal fun ensure(url: String, position: Long, cached: Boolean) {
         if (url != this.url || failed) throw AheadUnavailableException()
+        readPos = position
         val length = contentLength
         if (length != C.LENGTH_UNSET.toLong() && position >= length) return
         if (running) {
@@ -218,6 +251,10 @@ class VodAheadDownloader(
             if (length != C.LENGTH_UNSET.toLong()) return length
             sleepInterruptibly()
         }
+    }
+
+    internal fun noteRead(position: Long) {
+        readPos = position
     }
 
     internal fun isCached(url: String, position: Long): Boolean {
@@ -256,6 +293,49 @@ class VodAheadDownloader(
         return maxOf(length * WINDOW_MS / duration, MIN_WINDOW_BYTES)
     }
 
+    private fun bytesFor(ms: Long, min: Long, max: Long, fallback: Long): Long {
+        val length = contentLength
+        val duration = durationMs
+        if (length <= 0 || duration <= 0) return fallback
+        return (length.toDouble() * ms / duration).toLong().coerceIn(min, max)
+    }
+
+    private fun aheadBytes() = bytesFor(AHEAD_MS, MIN_AHEAD_BYTES, MAX_AHEAD_BYTES, DEFAULT_AHEAD_BYTES)
+
+    private fun behindBytes() = bytesFor(BEHIND_MS, MIN_BEHIND_BYTES, MAX_BEHIND_BYTES, MIN_BEHIND_BYTES)
+
+    /** Hilo de descarga: con la ventana llena espera a que el reproductor avance. */
+    private fun throttle(gen: Int, key: String) {
+        trimBehind(gen, key)
+        while (gen == generation && writePos - readPos > aheadBytes()) {
+            trimBehind(gen, key)
+            try {
+                wakeLock.withLock { if (gen == generation) wake.await(THROTTLE_WAIT_MS, TimeUnit.MILLISECONDS) }
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException()
+            }
+        }
+    }
+
+    /** Borra lo que quedó bastante atrás de lo que lee el reproductor. */
+    private fun trimBehind(gen: Int, key: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastTrimAt < TRIM_EVERY_MS) return
+        lastTrimAt = now
+        // #region agent log
+        com.entretv.app.data.Diag.log("ahead lead=${(writePos - readPos) / 1048576}MB limit=${aheadBytes() / 1048576}MB stored=${runCatching { cache.cacheSpace / 1048576 }.getOrDefault(-1)}MB")
+        // #endregion
+        val keepFrom = readPos - behindBytes()
+        if (keepFrom <= 0 || gen != generation) return
+        runCatching {
+            val cache = cache
+            for (span in cache.getCachedSpans(key)) {
+                if (span.position + span.length <= keepFrom) cache.removeSpan(span)
+            }
+        }
+    }
+
     @Synchronized
     private fun restart(url: String, position: Long) {
         if (url != this.url || failed) return
@@ -290,7 +370,8 @@ class VodAheadDownloader(
         if (key != this.key) return
         try {
             val cache = cache
-            for (other in cache.keys) if (other != key) cache.removeResource(other)
+            for (other in cache.keys.toList()) if (other != key) cache.removeResource(other)
+            if (cache.cacheSpace > MAX_STORED_BYTES) cache.removeResource(key)
             val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
             synchronized(this) {
                 if (key == this.key && length > 0 && contentLength == C.LENGTH_UNSET.toLong()) contentLength = length
@@ -367,9 +448,8 @@ class VodAheadDownloader(
     }
 
     private fun hasRoom(key: String, total: Long): Boolean {
-        val cached = cache.getCachedBytes(key, 0, total)
         val volume = if (dir.exists()) dir else dir.parentFile ?: dir
-        return volume.usableSpace >= total - cached + MIN_FREE_BYTES
+        return volume.usableSpace >= minOf(total, MAX_STORED_BYTES) + MIN_FREE_BYTES
     }
 
     /**
@@ -403,6 +483,7 @@ class VodAheadDownloader(
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            throttle(gen, key)
             val read = upstream.read(buffer, offset, length)
             if (read > 0 && gen == generation) writePos += read
             return read

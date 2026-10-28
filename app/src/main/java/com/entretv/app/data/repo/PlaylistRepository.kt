@@ -127,8 +127,6 @@ class PlaylistRepository @Inject constructor(
 
     /** Pocos servidores Xtream aguantan muchas descargas grandes a la vez: cortan la respuesta. */
     private val requestSlots = Semaphore(2)
-    /** Con la app a la vista, una sola descarga del catálogo: el resto de la red queda para los pósters. */
-    private val foregroundSlot = Semaphore(1)
 
     /** Huella de la última respuesta de cada sección: si no cambió, no se reescribe la base. */
     private val syncPrefs = context.getSharedPreferences("entre_sync", Context.MODE_PRIVATE)
@@ -378,6 +376,10 @@ class PlaylistRepository @Inject constructor(
         val due = refreshDue(last, mode) || (auto && mode == SettingsRepository.REFRESH_AUTO && autoDue(last))
         if (!force && !due) return emptyList()
         _syncing.value = true
+        // #region agent log
+        val diagStart = com.entretv.app.data.Diag.now()
+        com.entretv.app.data.Diag.log("sync start force=$force auto=$auto oneByOne=$oneByOne fg=${AppForeground.isForeground} last=$last")
+        // #endregion
         try {
             val outcome = coroutineScope {
                 val account = async { refreshAccountInfo(p) }
@@ -391,9 +393,15 @@ class PlaylistRepository @Inject constructor(
                 fun added(section: String) = outcome.saved.filter { it.section == section }.sumOf { it.pending!!.added }
                 _updates.tryEmit(CatalogUpdate(added(SECTION_MOVIES), added(SECTION_SERIES), added(SECTION_LIVE)))
             }
+            // #region agent log
+            com.entretv.app.data.Diag.log("sync end ms=${com.entretv.app.data.Diag.now() - diagStart} failed=${failed.joinToString { it.section + ":" + it.error?.javaClass?.simpleName }} saved=${outcome.saved.joinToString { it.section }}")
+            // #endregion
             return failed.map { sectionFailed(it.section, it.error!!) }
         } finally {
             _syncing.value = false
+            // #region agent log
+            com.entretv.app.data.Diag.log("sync finally ms=${com.entretv.app.data.Diag.now() - diagStart}")
+            // #endregion
         }
     }
 
@@ -464,7 +472,13 @@ class PlaylistRepository @Inject constructor(
 
     private suspend fun prepareSection(section: String, block: suspend () -> PendingSave?): SectionResult =
         try {
+            // #region agent log
+            val diagT = com.entretv.app.data.Diag.now()
+            // #endregion
             SectionResult(section, block(), null)
+                // #region agent log
+                .also { com.entretv.app.data.Diag.log("prepare $section ms=${com.entretv.app.data.Diag.now() - diagT} changed=${it.pending != null}") }
+                // #endregion
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -483,7 +497,13 @@ class PlaylistRepository @Inject constructor(
         val pending = results.filter { it.pending != null }
         if (pending.isEmpty()) return SyncOutcome(failed, emptyList())
         return try {
+            // #region agent log
+            val diagT = com.entretv.app.data.Diag.now()
+            // #endregion
             database.withTransaction { pending.forEach { it.pending!!.save() } }
+            // #region agent log
+            com.entretv.app.data.Diag.log("db save sections=${pending.joinToString { it.section }} ms=${com.entretv.app.data.Diag.now() - diagT}")
+            // #endregion
             pending.forEach { it.pending!!.saved() }
             SyncOutcome(failed, pending)
         } catch (e: CancellationException) {
@@ -706,24 +726,42 @@ class PlaylistRepository @Inject constructor(
     ): Fetched<T>? = withRetry {
         syncDir.mkdirs()
         val file = File.createTempFile(action, ".json", syncDir)
+        // #region agent log
+        val diagT0 = com.entretv.app.data.Diag.now()
+        var diagT1 = diagT0
+        // #endregion
         try {
-            val print = withRequestSlot {
+            val print = withRequestSlot(action) {
+                // #region agent log
+                diagT1 = com.entretv.app.data.Diag.now()
+                // #endregion
                 xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
                     val hashing = HashingSource.md5(body.source())
                     val count = file.sink().buffer().use { it.writeAll(hashing) }
                     "$count:${hashing.hash.hex()}"
                 }
             }
-            if (unchanged(print)) null
+            // #region agent log
+            val diagT2 = com.entretv.app.data.Diag.now()
+            val diagSame = unchanged(print)
+            val diagResult = if (diagSame) null
             else Fetched(print, file.source().buffer().use { json.decodeFromStream(serializer, it.inputStream()) })
+            com.entretv.app.data.Diag.log("fetch $action slotWait=${diagT1 - diagT0} download=${diagT2 - diagT1} parse=${com.entretv.app.data.Diag.now() - diagT2} kb=${file.length() / 1024} unchanged=$diagSame fg=${AppForeground.isForeground}")
+            diagResult
+            // #endregion
+        } catch (e: Exception) {
+            // #region agent log
+            com.entretv.app.data.Diag.log("fetch $action failed after ${com.entretv.app.data.Diag.now() - diagT0} ms: ${e.javaClass.simpleName}")
+            // #endregion
+            throw e
         } finally {
             file.delete()
         }
     }
 
-    private suspend fun <T> withRequestSlot(block: suspend () -> T): T = requestSlots.withPermit {
-        if (AppForeground.isForeground) foregroundSlot.withPermit { block() } else block()
-    }
+    /** Las categorías pesan pocos KB: no esperan detrás de las listas grandes. */
+    private suspend fun <T> withRequestSlot(action: String, block: suspend () -> T): T =
+        if (action.endsWith("_categories")) block() else requestSlots.withPermit { block() }
 
     private suspend fun <T> fetchOrNull(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T>? =
         try {
@@ -841,7 +879,13 @@ class PlaylistRepository @Inject constructor(
                     return@runCatching ContentDetails(plot = series.plot)
                 }
                 val root = serverRoot(p.url)
+                // #region agent log
+                val diagT = com.entretv.app.data.Diag.now()
+                // #endregion
                 val raw = xtreamApi.seriesInfo(apiUrl(p.url), p.username, p.password, seriesId)
+                // #region agent log
+                com.entretv.app.data.Diag.log("series info ms=${com.entretv.app.data.Diag.now() - diagT}")
+                // #endregion
                 val episodes = XtreamInfoParser.episodes(raw).map { ep ->
                     EpisodeEntity(
                         id = "${series.id}#${ep.id}",

@@ -104,6 +104,14 @@ android {
             matchingFallbacks += listOf("release")
             buildConfigField("String", "UPDATE_URL", "\"\"")
         }
+        // #region agent log
+        create("diag") {
+            initWith(getByName("release"))
+            isDebuggable = true
+            matchingFallbacks += listOf("release")
+            buildConfigField("String", "UPDATE_URL", "\"\"")
+        }
+        // #endregion
     }
 
     applicationVariants.all {

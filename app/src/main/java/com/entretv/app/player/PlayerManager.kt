@@ -64,6 +64,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -102,7 +103,8 @@ class PlayerManager @Inject constructor(
     companion object {
         // Algunos proveedores atan la línea al user agent: no cambiarlo sin avisar.
         const val USER_AGENT = "EntreTV/1.0 (Android)"
-        private const val CACHE_BYTES = 256L * 1024 * 1024
+        private const val CACHE_BYTES = 128L * 1024 * 1024
+        private const val AHEAD_TRIM_DELAY_MS = 20_000L
         private const val LOW_RAM_CACHE_BYTES = 96L * 1024 * 1024
         private const val LOAD_RETRIES = 6
         /** Película fallando sin parar (con red) durante esto: se muestra el error con "Reintentar". */
@@ -110,7 +112,7 @@ class PlayerManager @Inject constructor(
         /** Película cargando sin avanzar nada (con red) durante esto = trabada. */
         private const val VOD_STALL_BUFFERING_MS = 20_000L
         /** Espacio libre mínimo para intentar bajar la película al disco (el chequeo fino lo hace la descarga). */
-        private const val AHEAD_MIN_FREE_BYTES = 2L * 1024 * 1024 * 1024
+        private const val AHEAD_MIN_FREE_BYTES = 1L * 1024 * 1024 * 1024
         private const val MAX_RECONNECT_DELAY_MS = 15_000L
         private const val LONG_BUFFER_MS = 60_000
         private const val LIVE_OFFSET_LONG_BUFFER_MS = 20_000L
@@ -214,6 +216,13 @@ class PlayerManager @Inject constructor(
     // Crearlo no abre nada: la caché y el hilo nacen con la primera película.
     private val ahead: VodAheadDownloader by lazy {
         VodAheadDownloader(File(context.noBackupFilesDir, "entre_vod_ahead"), databaseProvider, aheadClient, USER_AGENT)
+    }
+
+    init {
+        scope.launch {
+            delay(AHEAD_TRIM_DELAY_MS)
+            if (currentItem == null) ahead.trimStored()
+        }
     }
 
     private val aheadSourceFactory by lazy {
@@ -389,6 +398,11 @@ class PlayerManager @Inject constructor(
 
     private val videoFixes by lazy { VideoFixMemory(context) }
 
+    // Abre el archivo de preferencias fuera del hilo principal: se consulta al llegar el video.
+    init {
+        scope.launch { videoFixes.levelFor("") }
+    }
+
     private val reconnect = Runnable {
         reconnectPending = false
         recover()
@@ -490,6 +504,9 @@ class PlayerManager @Inject constructor(
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                // #region agent log
+                com.entretv.app.data.Diag.log("player state=$state pos=${exoPlayer.currentPosition} buf=${exoPlayer.bufferedPosition} ahead=${aheadUrl != null} live=$currentIsLive dl=${ahead.progress.value}")
+                // #endregion
                 _isBuffering.value = state == Player.STATE_BUFFERING
                 _durationMs.value = if (state == Player.STATE_IDLE) 0L else exoPlayer.duration.coerceAtLeast(0L)
                 if (aheadUrl != null && _durationMs.value > 0) ahead.durationMs = _durationMs.value

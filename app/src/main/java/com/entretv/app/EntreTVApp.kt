@@ -46,6 +46,10 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // #region agent log
+        com.entretv.app.data.Diag.storage(this)
+        com.entretv.app.data.Diag.watchMain()
+        // #endregion
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()
@@ -77,7 +81,21 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
         thread(name = "catalog-sync-schedule") {
             CatalogSyncWorker.schedule(this)
             if (TvHomePublisher.isSupported(this)) tvHome.get().start(appScope)
+            removeLeftovers()
         }
+    }
+
+    /** Archivos que ya no sirven: la actualización ya instalada y pruebas de versiones viejas. */
+    private fun removeLeftovers() {
+        runCatching {
+            val stale = System.currentTimeMillis() - LEFTOVER_AGE_MS
+            cacheDir.resolve("updates").listFiles()?.forEach { if (it.lastModified() < stale) it.delete() }
+            noBackupFilesDir.listFiles()?.forEach { if (it.isFile && it.name.startsWith("agent_")) it.delete() }
+        }
+    }
+
+    private companion object {
+        const val LEFTOVER_AGE_MS = 30 * 60_000L
     }
 
     // Las imágenes se decodifican al tamaño en pantalla (AsyncImage toma el del layout).
@@ -88,7 +106,7 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
     override fun newImageLoader(): ImageLoader {
         val lowRam = isLowRamDevice(this)
         val failures = ImageFailures.get(this)
-        val thumbs = PosterThumbs(this, (if (lowRam) 150L else 500L) * 1024 * 1024, appScope).also { it.trim() }
+        val thumbs = PosterThumbs(this, PosterThumbs.maxBytes(this), appScope).also { it.trim() }
         return ImageLoader.Builder(this)
             .components {
                 add(failures.interceptor)
@@ -125,7 +143,7 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("entre_coil"))
-                    .maxSizeBytes(96L * 1024 * 1024)
+                    .maxSizeBytes(64L * 1024 * 1024)
                     .build()
             }
             .respectCacheHeaders(false)

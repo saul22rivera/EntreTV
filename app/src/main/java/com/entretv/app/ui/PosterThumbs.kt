@@ -30,11 +30,15 @@ import okio.ByteString.Companion.encodeUtf8
 import okio.FileSystem
 import okio.Path.Companion.toOkioPath
 
-/** Pedido de un póster de tarjeta: pasa por las miniaturas de [PosterThumbs]. */
+/**
+ * Pedido de un póster de tarjeta: pasa por las miniaturas de [PosterThumbs]. El original no se
+ * guarda en la caché de Coil: se mostraría siempre la miniatura y escribirlo duplicaba el disco.
+ */
 fun posterRequest(context: Context, url: String): ImageRequest.Builder =
     ImageRequest.Builder(context)
         .data(cardImage(url))
         .setParameter(PosterThumbs.PARAM, true, memoryCacheKey = null)
+        .diskCachePolicy(CachePolicy.READ_ONLY)
 
 /**
  * Versión diminuta del póster guardada en el equipo: estirada a la tarjeta se ve borrosa mientras
@@ -179,7 +183,7 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
         private const val EXT = ".webp"
         private const val MIN_HEIGHT = 160
         private const val MAX_HEIGHT = 450
-        private const val QUALITY = 80
+        private const val QUALITY = 74
         private const val MICRO_WIDTH = 16
         private const val MICRO_QUALITY = 60
         private const val MAX_PENDING = 12
@@ -188,6 +192,17 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
         private val pendingWrites = MutableStateFlow(0)
         /** Miniaturas esperando a guardarse en disco. */
         val pending: StateFlow<Int> = pendingWrites
+        private const val MAX_BYTES = 400L * 1024 * 1024
+        private const val MAX_BYTES_LOW_RAM = 150L * 1024 * 1024
+        /** Miniatura más vista previa, en promedio. */
+        private const val AVG_BYTES = 22L * 1024
+
+        /** Tope en disco de las miniaturas. */
+        fun maxBytes(context: Context): Long = if (isLowRamDevice(context)) MAX_BYTES_LOW_RAM else MAX_BYTES
+
+        /** Cuántas miniaturas caben holgadas bajo el tope (sin que el recorte borre lo recién bajado). */
+        fun capacity(context: Context): Int = (maxBytes(context) * 8 / 10 / AVG_BYTES).toInt()
+
         /** Tamaño con el que la precarga decodifica para dejar la miniatura hecha. */
         const val PREFETCH_WIDTH = 300
         const val PREFETCH_HEIGHT = MAX_HEIGHT

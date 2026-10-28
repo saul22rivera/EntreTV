@@ -792,7 +792,13 @@ class HomeViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SectionContent())
 
     private fun buildBase(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): SectionBase {
+        // #region agent log
+        val diagT = com.entretv.app.data.Diag.now()
+        // #endregion
         val base = build(r, o, order, t)
+        // #region agent log
+        com.entretv.app.data.Diag.log("catalog built section=${r.filter.section} movies=${r.movies.size} series=${r.series.size} channels=${r.channels.size} ms=${com.entretv.app.data.Diag.now() - diagT}")
+        // #endregion
         return SectionBase(
             base.content.copy(playlistId = r.filter.playlistId, section = r.filter.section, category = r.filter.category),
             base.order,

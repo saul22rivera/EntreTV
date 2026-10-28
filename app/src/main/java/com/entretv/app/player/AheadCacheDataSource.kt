@@ -66,6 +66,7 @@ class AheadCacheDataSource(private val downloader: VodAheadDownloader) : BaseDat
         if (read < 0) throw EOFException()
         position += read
         bytesRemaining -= read
+        downloader.noteRead(position)
         bytesTransferred(read)
         return read
     }

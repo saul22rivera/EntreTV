@@ -42,7 +42,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * cable y con espacio. Una vez por actualización: lo que ya está en disco se salta (si se corta
  * sigue donde quedó) y se borran las miniaturas de títulos que ya no están.
  *
- * Sigue mientras se navega, de a una y cediendo la red a los pósters en pantalla; se detiene
+ * Sigue mientras se navega, de a dos y cediendo la red a los pósters en pantalla; se detiene
  * mientras hay algo en el reproductor o se actualiza el catálogo.
  */
 @HiltWorker
@@ -66,7 +66,13 @@ class PosterCacheWorker @AssistedInject constructor(
             ?: return Result.success()
         val refreshedAt = settings.lastRefreshAt(pid)
         if (refreshedAt == 0L || posters.catalogDone(pid, refreshedAt)) return Result.success()
+        // #region agent log
+        val diagT = com.entretv.app.data.Diag.now()
+        // #endregion
         val plan = withContext(Dispatchers.IO) { plan(pid) }
+        // #region agent log
+        com.entretv.app.data.Diag.log("posters plan ms=${com.entretv.app.data.Diag.now() - diagT} total=${plan.ordered.size} missing=${plan.missing.size} pruned=${plan.pruned}")
+        // #endregion
         posters.prefetch(plan.missing, background = true, gate = { slot -> canContinue(slot) })
         if (isStopped || lowSpace) return Result.success()
         fillMicros(plan.ordered)
@@ -74,13 +80,16 @@ class PosterCacheWorker @AssistedInject constructor(
         // Con el servidor de imágenes caído casi nada llegó: la próxima vez se intenta de nuevo.
         val left = withContext(Dispatchers.IO) { stillMissing(plan.ordered) }
         if (left <= plan.ordered.size * MAX_LEFT_PERCENT / 100) posters.markCatalogDone(pid, refreshedAt)
+        // #region agent log
+        com.entretv.app.data.Diag.log("posters done ms=${com.entretv.app.data.Diag.now() - diagT} left=$left")
+        // #endregion
         return Result.success()
     }
 
     /**
      * Antes de cada póster: nada en el reproductor ni actualización en curso, los pósters en
-     * pantalla ya llegaron y el disco no tiene miniaturas en fila. Con la app a la vista baja de a una
-     * (solo [slot] 0).
+     * pantalla ya llegaron y el disco no tiene miniaturas en fila. Con la app a la vista baja de a
+     * [FOREGROUND_SLOTS].
      */
     private suspend fun canContinue(slot: Int): Boolean {
         val manager = player.get()
@@ -88,7 +97,7 @@ class PosterCacheWorker @AssistedInject constructor(
         while (!isStopped) {
             combine(manager.isPlayingFlow, manager.currentKey) { playing, key -> playing || key != null }.first { !it }
             repository.syncing.first { !it }
-            if (slot > 0) AppForeground.visible.first { !it }
+            if (slot >= FOREGROUND_SLOTS) AppForeground.visible.first { !it }
             if (ImageTraffic.active.value > 0) {
                 // Con tope: un póster colgado no deja la descarga parada para siempre.
                 withTimeoutOrNull(UI_WAIT_MAX_MS) { ImageTraffic.active.first { it == 0 } }
@@ -136,8 +145,10 @@ class PosterCacheWorker @AssistedInject constructor(
         val seriesRows = repository.seriesPosters(pid)
         val movies = sectionPosters(movieRows, PlaylistRepository.SECTION_MOVIES, o, order, azKey, CatalogOrder::movieGroupOf)
         val series = sectionPosters(seriesRows, PlaylistRepository.SECTION_SERIES, o, order, azKey, CatalogOrder::seriesGroupOf)
+        // Solo lo que entra bajo el tope: más allá, el recorte borraría lo que se acaba de bajar.
         val ordered = (interleave(movies.first, series.first) + interleave(movies.second, series.second))
             .distinctBy { cardImage(it) }
+            .take(PosterThumbs.capacity(applicationContext))
 
         // Con la base vacía (actualización a medias) no se borra nada.
         val pruned = if (movieRows.isEmpty() && seriesRows.isEmpty()) 0
@@ -216,6 +227,8 @@ class PosterCacheWorker @AssistedInject constructor(
         private const val FIRST_PER_CATEGORY = 12
         private const val SPACE_CHECK_EVERY = 25
         private const val MAX_PENDING_THUMBS = 3
+        /** Descargas a la vez con la app a la vista; sin ella, todas las de la precarga. */
+        private const val FOREGROUND_SLOTS = 2
         private const val MIN_FREE_BYTES = 1024L * 1024 * 1024
         /** Pausa tras los pósters en pantalla: suelen venir varios seguidos al moverse. */
         private const val UI_CALM_MS = 500L
