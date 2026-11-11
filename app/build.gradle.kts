@@ -138,8 +138,20 @@ val writeUpdateManifest by tasks.registering {
     val server = serverUrl
     val tmdbKey = tmdbApiKey
     val output = layout.buildDirectory.file("outputs/apk/release/update.json")
+    val archive = rootProject.layout.projectDirectory.dir("APKs").asFile
     outputs.file(output)
     doLast {
+        // Copia con nombre fijo: releases/latest/download/EntreTV.apk siempre baja la última
+        // (el código de Downloader apunta ahí). Se sube al release junto al APK con versión.
+        // En APKs/ (fuera de build/, no lo borra un clean) quedan la última como EntreTV.apk
+        // y cada versión con su número.
+        val dir = output.get().asFile.parentFile
+        File(dir, "EntreTV-$name.apk").takeIf { it.exists() }?.let { apk ->
+            apk.copyTo(File(dir, "EntreTV.apk"), overwrite = true)
+            archive.mkdirs()
+            apk.copyTo(File(archive, apk.name), overwrite = true)
+            apk.copyTo(File(archive, "EntreTV.apk"), overwrite = true)
+        }
         if (manifestUrl.isBlank()) {
             logger.warn("entretv.updateUrl está vacío: no se genera update.json.")
             return@doLast
@@ -160,10 +172,6 @@ val writeUpdateManifest by tasks.registering {
                 "  \"mandatory\": ${minCode >= (code ?: 0)}" +
                 optional + "\n}\n"
         )
-        // Copia con nombre fijo: releases/latest/download/EntreTV.apk siempre baja la última
-        // (el código de Downloader apunta ahí). Se sube al release junto al APK con versión.
-        val dir = output.get().asFile.parentFile
-        File(dir, "EntreTV-$name.apk").takeIf { it.exists() }?.copyTo(File(dir, "EntreTV.apk"), overwrite = true)
     }
 }
 tasks.matching { it.name == "assembleRelease" }.configureEach { finalizedBy(writeUpdateManifest) }

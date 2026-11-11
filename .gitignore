@@ -7,6 +7,9 @@ local.properties
 .kotlin/
 *.hprof
 
+# APKs compilados (la última como EntreTV.apk y cada versión con su número): se publican en GitHub Releases
+APKs/
+
 # Firma de release: nunca subir al repositorio
 keystore.properties
 *.jks

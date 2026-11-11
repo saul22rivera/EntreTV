@@ -33,6 +33,8 @@ La app busca actualizaciones en
    - `EntreTV-<versión>.apk` (universal: celular, tablet y TV)
    - `EntreTV.apk` (el mismo APK con nombre fijo, para el código de Downloader)
    - `update.json`
+   Además, en la carpeta `APKs\` de la raíz del proyecto quedan `EntreTV.apk` (siempre la última)
+   y `EntreTV-<versión>.apk` de cada versión compilada; esa carpeta no se borra al limpiar.
 5. En GitHub: **Releases → Draft a new release**, etiqueta `v<versión>` (por ejemplo `v1.2.0`),
    adjunta los tres archivos y publica. Debe quedar marcado como **Latest**.
 
