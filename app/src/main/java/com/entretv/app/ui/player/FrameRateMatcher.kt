@@ -46,12 +46,25 @@ private const val MAX_FPS = 121f
  *  - Solo modos con la misma resolución que la actual; si la actual ya sirve, no se cambia.
  *    Con la misma resolución la configuración no cambia y la actividad no se reinicia.
  *  - Al salir se devuelve la preferencia que tenía la ventana.
+ *  - Con [palOnly] (en vivo) solo se cambia para 25 o 50 cps, que en 60 Hz avanzan a tirones;
+ *    cualquier otro canal devuelve la frecuencia de antes. [onSwitch] recibe los Hz de cada
+ *    cambio real, para avisar del parpadeo en negro.
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun FrameRateMatchEffect(player: ExoPlayer, activity: Activity?, enabled: Boolean, contentKey: String?, hold: Boolean) {
+fun FrameRateMatchEffect(
+    player: ExoPlayer,
+    activity: Activity?,
+    enabled: Boolean,
+    contentKey: String?,
+    hold: Boolean,
+    palOnly: Boolean = false,
+    onSwitch: (String) -> Unit = {}
+) {
     val key by rememberUpdatedState(contentKey)
     val holding by rememberUpdatedState(hold)
+    val pal by rememberUpdatedState(palOnly)
+    val switched by rememberUpdatedState(onSwitch)
     val estimator = remember { FrameRateEstimator() }
     val pending = remember { PendingMatch() }
     LaunchedEffect(contentKey) {
@@ -63,12 +76,16 @@ fun FrameRateMatchEffect(player: ExoPlayer, activity: Activity?, enabled: Boolea
     }
     DisposableEffect(player, activity, enabled) {
         if (!enabled || activity == null) return@DisposableEffect onDispose {}
-        val switcher = DisplayModeSwitcher(activity.window, displayOf(activity))
+        val switcher = DisplayModeSwitcher(activity.window, displayOf(activity)) { hz -> switched(hz) }
         pending.switcher = switcher
         val mainHandler = Handler(Looper.getMainLooper())
         fun match(fps: Float, measured: Boolean) {
             val content = key ?: return
             if (fps <= 0f) return
+            if (pal && !isPal(fps)) {
+                switcher.release(content)
+                return
+            }
             if (measured && holding) pending.set(content, fps) else switcher.match(content, fps)
         }
         val formatListener = object : AnalyticsListener {
@@ -187,7 +204,13 @@ private fun displayOf(activity: Activity): Display? = runCatching {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) activity.display else activity.windowManager.defaultDisplay
 }.getOrNull()
 
-private class DisplayModeSwitcher(private val window: Window, private val display: Display?) {
+private fun isPal(fps: Float): Boolean = abs(fps - 25f) / 25f < 0.01f || abs(fps - 50f) / 50f < 0.01f
+
+private class DisplayModeSwitcher(
+    private val window: Window,
+    private val display: Display?,
+    private val onSwitch: (String) -> Unit
+) {
     private val originalModeId = window.attributes.preferredDisplayModeId
     private val originalMode: Display.Mode? = runCatching { display?.mode }.getOrNull()
     private var matchedKey: String? = null
@@ -202,7 +225,17 @@ private class DisplayModeSwitcher(private val window: Window, private val displa
         runCatching {
             window.attributes = window.attributes.apply { preferredDisplayModeId = target.modeId }
             changed = true
+            onSwitch(target.refreshRate.roundToInt().toString())
         }
+    }
+
+    /** El contenido no pide cambio: vuelve la frecuencia de antes si se había cambiado. */
+    fun release(contentKey: String) {
+        if (contentKey == matchedKey) return
+        matchedKey = contentKey
+        if (!changed) return
+        restore()
+        originalMode?.let { onSwitch(it.refreshRate.roundToInt().toString()) }
     }
 
     fun restore() {

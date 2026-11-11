@@ -42,7 +42,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * cable y con espacio. Una vez por actualización: lo que ya está en disco se salta (si se corta
  * sigue donde quedó) y se borran las miniaturas de títulos que ya no están.
  *
- * Sigue mientras se navega, de a dos y cediendo la red a los pósters en pantalla; se detiene
+ * Sigue mientras se navega, de a tres y cediendo la red a los pósters en pantalla; se detiene
  * mientras hay algo en el reproductor o se actualiza el catálogo.
  */
 @HiltWorker
@@ -66,23 +66,12 @@ class PosterCacheWorker @AssistedInject constructor(
             ?: return Result.success()
         val refreshedAt = settings.lastRefreshAt(pid)
         if (refreshedAt == 0L || posters.catalogDone(pid, refreshedAt)) return Result.success()
-        // #region agent log
-        val diagT = com.entretv.app.data.Diag.now()
-        // #endregion
         val plan = withContext(Dispatchers.IO) { plan(pid) }
-        // #region agent log
-        com.entretv.app.data.Diag.log("posters plan ms=${com.entretv.app.data.Diag.now() - diagT} total=${plan.ordered.size} missing=${plan.missing.size} pruned=${plan.pruned}")
-        // #endregion
-        posters.prefetch(plan.missing, background = true, gate = { slot -> canContinue(slot) })
-        if (isStopped || lowSpace) return Result.success()
-        fillMicros(plan.ordered)
+        posters.prefetch(plan.missing, background = true, gate = { slot -> canContinue(slot) }, parallel = BACKGROUND_PARALLEL)
         if (isStopped || lowSpace) return Result.success()
         // Con el servidor de imágenes caído casi nada llegó: la próxima vez se intenta de nuevo.
         val left = withContext(Dispatchers.IO) { stillMissing(plan.ordered) }
         if (left <= plan.ordered.size * MAX_LEFT_PERCENT / 100) posters.markCatalogDone(pid, refreshedAt)
-        // #region agent log
-        com.entretv.app.data.Diag.log("posters done ms=${com.entretv.app.data.Diag.now() - diagT} left=$left")
-        // #endregion
         return Result.success()
     }
 
@@ -189,21 +178,6 @@ class PosterCacheWorker @AssistedInject constructor(
         return head to rest
     }
 
-    /** Vistas previas de las miniaturas guardadas antes de que existieran. */
-    private suspend fun fillMicros(urls: List<String>) {
-        val (stored, micros) = withContext(Dispatchers.IO) {
-            PosterThumbs.storedKeys(applicationContext) to PosterThumbs.storedMicroKeys(applicationContext)
-        }
-        for (url in urls) {
-            val key = PosterThumbs.keyOf(cardImage(url))
-            if (key !in stored || key in micros) continue
-            if (!canContinue(0)) return
-            withContext(Dispatchers.IO) { PosterThumbs.makeMicro(applicationContext, key) }
-            // Con la app a la vista el disco es de los pósters en pantalla.
-            if (AppForeground.isForeground) delay(MICRO_GAP_MS)
-        }
-    }
-
     private fun stillMissing(urls: List<String>): Int {
         val stored = PosterThumbs.storedKeys(applicationContext)
         val failures = ImageFailures.get(applicationContext)
@@ -227,14 +201,14 @@ class PosterCacheWorker @AssistedInject constructor(
         private const val FIRST_PER_CATEGORY = 12
         private const val SPACE_CHECK_EVERY = 25
         private const val MAX_PENDING_THUMBS = 3
-        /** Descargas a la vez con la app a la vista; sin ella, todas las de la precarga. */
-        private const val FOREGROUND_SLOTS = 2
+        /** Descargas a la vez sin nada en el reproductor; con la app a la vista, [FOREGROUND_SLOTS]. */
+        private const val BACKGROUND_PARALLEL = 4
+        private const val FOREGROUND_SLOTS = 3
         private const val MIN_FREE_BYTES = 1024L * 1024 * 1024
         /** Pausa tras los pósters en pantalla: suelen venir varios seguidos al moverse. */
         private const val UI_CALM_MS = 500L
         private const val UI_WAIT_MAX_MS = 15_000L
         private const val UI_WAIT_ROUNDS = 3
-        private const val MICRO_GAP_MS = 50L
         /** Si falta más que esto al terminar, la pasada no cuenta como completa. */
         private const val MAX_LEFT_PERCENT = 2
 

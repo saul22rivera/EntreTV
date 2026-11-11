@@ -14,6 +14,7 @@ import com.entretv.app.data.local.PlaylistDao
 import com.entretv.app.data.local.ProfileDao
 import com.entretv.app.data.local.ProgressDao
 import com.entretv.app.data.local.VodDao
+import com.entretv.app.data.net.CachingDns
 import com.entretv.app.data.remote.XtreamApi
 import dagger.Module
 import dagger.Provides
@@ -63,6 +64,7 @@ object AppModule {
         // Sin interceptor de registro: las URLs de Xtream llevan usuario y contraseña.
         return OkHttpClient.Builder()
             .cache(Cache(cacheDir, 32L * 1024 * 1024))
+            .dns(CachingDns)
             .retryOnConnectionFailure(true)
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)

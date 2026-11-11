@@ -69,6 +69,9 @@ interface VodDao {
     @Query("SELECT * FROM vod_movies WHERE id = :id")
     suspend fun getMovie(id: String): VodMovieEntity?
 
+    @Query("SELECT * FROM vod_movies WHERE playlistId = :playlistId AND name LIKE '%' || :term || '%' LIMIT :limit")
+    suspend fun moviesNamed(playlistId: String, term: String, limit: Int): List<VodMovieEntity>
+
     @Query("SELECT * FROM vod_movies WHERE playlistId = :playlistId ORDER BY position, name")
     fun observeMovies(playlistId: String): Flow<List<VodMovieEntity>>
 

@@ -68,7 +68,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -108,8 +107,6 @@ import com.entretv.app.ui.label
 import com.entretv.app.ui.rowLabel
 import com.entretv.app.ui.theme.EntreBrand
 import com.entretv.app.ui.theme.EntreWordmark
-import kotlinx.coroutines.delay
-
 /** Ancho de la tira de íconos siempre visible en TV y tablet. */
 val RAIL_COLLAPSED_WIDTH = 64.dp
 
@@ -157,8 +154,6 @@ fun NavRail(
     onStrayStripFocus: () -> Unit = {},
     summaryActive: Boolean = false,
     onHome: () -> Unit = {},
-    /** TV: quedarse sobre Inicio en el menú lo muestra detrás, sin cerrar el menú. */
-    onHomePreview: () -> Unit = {},
     /** "Perfil: …" en el menú; null = sin perfiles. */
     profileLabel: String? = null,
     profileTint: Color? = null,
@@ -221,7 +216,6 @@ fun NavRail(
                 searchActive = searchActive,
                 summaryActive = summaryActive,
                 onHome = { onExpandedChange(false); onHome() },
-                onHomePreview = onHomePreview,
                 onCollapse = { onExpandedChange(false) },
                 onSearch = { onExpandedChange(false); onSearch() },
                 onSection = onSection,
@@ -513,13 +507,10 @@ private fun ExpandedPanel(
 private val TV_PANEL_WIDTH = 252.dp
 private const val TV_REVEAL_MS = 140
 
-/** Tiempo quieto sobre una sección del menú de TV antes de mostrarla detrás. */
-private const val SECTION_DWELL_MS = 250L
-
 /**
  * Menú de TV: la tira de íconos se ensancha para mostrar los nombres, sin velo encima del
- * contenido. Quedarse sobre Inicio o una sección la muestra detrás, sin OK (como Google TV);
- * derecha o Atrás vuelven. Las categorías no se repiten aquí: cada sección las trae en pantalla.
+ * contenido. Recorrerlo no cambia nada detrás: solo OK abre Inicio o una sección; derecha o Atrás
+ * vuelven a lo que ya se ve. Las categorías no se repiten aquí: cada sección las trae en pantalla.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -528,7 +519,6 @@ private fun TvExpandedPanel(
     searchActive: Boolean,
     summaryActive: Boolean,
     onHome: () -> Unit,
-    onHomePreview: () -> Unit,
     onCollapse: () -> Unit,
     onSearch: () -> Unit,
     onSection: (Section) -> Unit,
@@ -552,34 +542,8 @@ private fun TvExpandedPanel(
     }
     LaunchedEffect(Unit) { reveal.animateTo(1f, tween(TV_REVEAL_MS, easing = FastOutSlowInEasing)) }
 
-    var focusedSection by remember { mutableStateOf<Section?>(null) }
-    var homeFocused by remember { mutableStateOf(false) }
-    val shown by rememberUpdatedState(section)
-    val summary by rememberUpdatedState(summaryActive)
-    val search by rememberUpdatedState(searchActive)
-
-    LaunchedEffect(focusedSection, homeFocused) {
-        val target = focusedSection
-        if (target == null && !homeFocused) return@LaunchedEffect
-        delay(SECTION_DWELL_MS)
-        when {
-            homeFocused -> if (!summary || search) onHomePreview()
-            target != null && (target != shown || summary || search) -> onSection(target)
-        }
-    }
-
-    /** Derecha: al contenido de lo enfocado; si es lo que ya se ve, solo cierra. */
-    fun goRight() {
-        val target = focusedSection
-        when {
-            homeFocused && (!summary || search) -> onHome()
-            target != null && (target != shown || summary || search) -> {
-                onSection(target)
-                onCollapse()
-            }
-            else -> onCollapse()
-        }
-    }
+    /** Derecha cierra el menú y vuelve a lo que ya se ve: solo OK cambia de sección. */
+    fun goRight() = onCollapse()
 
     val stripPx = with(LocalDensity.current) { RAIL_COLLAPSED_WIDTH.toPx() }
     Surface(
@@ -650,8 +614,7 @@ private fun TvExpandedPanel(
                 icon = Icons.Default.Home,
                 label = stringResource(R.string.menu_home),
                 selected = homeSelected,
-                modifier = (if (homeSelected) Modifier.focusRequester(firstFocus) else Modifier)
-                    .onFocusChanged { homeFocused = it.isFocused },
+                modifier = if (homeSelected) Modifier.focusRequester(firstFocus) else Modifier,
                 onClick = onHome
             )
             Section.entries.forEach { s ->
@@ -660,11 +623,7 @@ private fun TvExpandedPanel(
                     icon = s.icon(),
                     label = s.label,
                     selected = selected,
-                    modifier = (if (selected) Modifier.focusRequester(firstFocus) else Modifier)
-                        .onFocusChanged {
-                            if (it.isFocused) focusedSection = s
-                            else if (focusedSection == s) focusedSection = null
-                        },
+                    modifier = if (selected) Modifier.focusRequester(firstFocus) else Modifier,
                     onClick = {
                         onSection(s)
                         onCollapse()

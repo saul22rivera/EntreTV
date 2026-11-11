@@ -636,6 +636,18 @@ private fun TechInfoBlock(techInfo: () -> TechInfo) {
                 .joinToString(" · ").ifEmpty { "—" }
         )
         InfoLine(stringResource(R.string.player_info_buffer), "%.1f s".format(info.bufferedMs / 1000f))
+        val q = info.quality
+        InfoLine(stringResource(R.string.player_info_startup), q.startupMs?.let { "%.1f s".format(it / 1000f) } ?: "—")
+        InfoLine(
+            stringResource(R.string.player_info_stalls),
+            q.stallPercent?.let { "${q.stalls} · %.1f %%".format(it) } ?: q.stalls.toString()
+        )
+        InfoLine(stringResource(R.string.player_info_dropped), q.droppedFrames.toString())
+        InfoLine(stringResource(R.string.player_info_switches), q.qualitySwitches.toString())
+        InfoLine(
+            stringResource(R.string.player_info_bandwidth),
+            q.bandwidthBps?.let { bitrateLabel(it.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()) } ?: "—"
+        )
     }
 }
 

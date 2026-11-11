@@ -33,6 +33,8 @@ import com.entretv.app.data.local.FavoriteEntity
 import java.text.Normalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -203,6 +205,12 @@ class PlayerViewModel @Inject constructor(
     private var zapSerial = 0
     private var zapJob: Job? = null
     private var epgJob: Job? = null
+
+    /** La misma película en HD, cuando el internet no alcanza para el 4K que se está viendo. */
+    private val _hdAlternative = MutableStateFlow<VodMovieEntity?>(null)
+    val hdAlternative: StateFlow<VodMovieEntity?> = _hdAlternative
+    /** Película para la que ya se buscó versión HD (se busca una sola vez). */
+    private var hdSearchedFor: String? = null
 
     /** Mensaje puntual: "Reanudado en 12:34" / "Siguiente episodio…". */
     private val _notice = MutableStateFlow<UiText?>(null)
@@ -468,41 +476,100 @@ class PlayerViewModel @Inject constructor(
             playerManager.isPlayingFlow.first { it }
             profileSession.markPlayed()
         }
+        viewModelScope.launch {
+            playerManager.slowForQuality.collect { slow ->
+                val movie = (_playable.value as? Playable.Movie)?.movie ?: return@collect
+                if (!slow || hdSearchedFor == movie.id) return@collect
+                hdSearchedFor = movie.id
+                _hdAlternative.value = findHdVersion(movie)
+            }
+        }
+    }
+
+    /** Misma película (mismo nombre limpio) en la misma lista, que no sea 4K. */
+    private suspend fun findHdVersion(movie: VodMovieEntity): VodMovieEntity? {
+        if (movie.playlistId.isEmpty()) return null
+        val key = titleKey(movie.name)
+        if (key.length < 2) return null
+        val term = TitleCleaner.clean(movie.name).substringBefore('(').trim()
+            .replace(Regex("[%_]"), " ").trim()
+        if (term.length < 2) return null
+        val candidates = runCatching { repository.moviesNamed(movie.playlistId, term) }.getOrDefault(emptyList())
+        return candidates
+            .filter { it.id != movie.id && !looks4k(it) && titleKey(it.name) == key }
+            .minByOrNull { if (HD_TAG.containsMatchIn(it.name) || HD_TAG.containsMatchIn(it.categoryName)) 0 else 1 }
+    }
+
+    private fun titleKey(name: String): String =
+        Normalizer.normalize(TitleCleaner.clean(name), Normalizer.Form.NFD)
+            .replace(YEAR, " ")
+            .filter { it.isLetterOrDigit() }
+            .lowercase()
+
+    private fun looks4k(movie: VodMovieEntity): Boolean =
+        UHD_TAG.containsMatchIn(movie.name) || UHD_TAG.containsMatchIn(movie.categoryName)
+
+    /** Cambia a la versión HD en el mismo minuto. */
+    fun switchToHd() {
+        val alt = _hdAlternative.value ?: return
+        _hdAlternative.value = null
+        val at = playerManager.player.currentPosition.coerceAtLeast(0L)
+        viewModelScope.launch {
+            hdSearchedFor = alt.id
+            startPlayable(Playable.Movie(alt, clean(alt.name), clean(alt.categoryName)), startAtMs = at)
+        }
     }
 
     private suspend fun load(contentKey: String, kind: String) {
-        cleanNames = settings.catalogPrefs.first().cleanNames
-        when (kind) {
-            "LIVE" -> repository.channelById(contentKey)?.let { startPlayable(Playable.LiveChannel(display(it))) }
-            "CATCHUP" -> {
-                val channel = repository.channelById(contentKey) ?: return
-                val url = guide.catchupUrl(channel, route.startSec, route.endSec)
-                if (url == null) {
-                    showNotice(uiText(R.string.player_catchup_failed), 5_000)
-                    return
+        // El título, el minuto guardado y la descarga se piden a la vez: Play no espera
+        // a que terminen uno detrás de otro.
+        coroutineScope {
+            val names = async { settings.catalogPrefs.first().cleanNames }
+            when (kind) {
+                "LIVE" -> {
+                    val channel = async { repository.channelById(contentKey) }
+                    cleanNames = names.await()
+                    channel.await()?.let { startPlayable(Playable.LiveChannel(display(it))) }
                 }
-                startPlayable(Playable.CatchUp(display(channel), route.startSec, route.title.ifBlank { channel.name }, url))
-            }
-            "MOVIE" -> {
-                val movie = repository.movieById(contentKey)
-                if (movie != null) {
-                    startPlayable(Playable.Movie(movie, clean(movie.name), clean(movie.categoryName)))
-                } else {
-                    // Descargada pero ya no figura en la lista del servidor.
-                    downloads.get(contentKey)?.let { startPlayable(Playable.Movie(it.asMovie())) }
+                "CATCHUP" -> {
+                    val channel = repository.channelById(contentKey) ?: return@coroutineScope
+                    val url = guide.catchupUrl(channel, route.startSec, route.endSec)
+                    cleanNames = names.await()
+                    if (url == null) {
+                        showNotice(uiText(R.string.player_catchup_failed), 5_000)
+                        return@coroutineScope
+                    }
+                    startPlayable(Playable.CatchUp(display(channel), route.startSec, route.title.ifBlank { channel.name }, url))
                 }
-            }
-            "EPISODE" -> {
-                val ep = repository.episodeById(contentKey)
-                if (ep != null) {
-                    val series = repository.seriesById(ep.seriesKey)
-                    _episodes.value = repository.episodeSnapshot(ep.seriesKey)
-                    val seriesTitle = series?.name?.let(::clean)
-                        ?: AppLanguage.wrap(appContext).getString(R.string.player_series_fallback)
-                    startPlayable(Playable.Episode(ep, seriesTitle, series?.cover.orEmpty()))
-                } else {
-                    downloads.get(contentKey)?.let { startPlayable(Playable.Episode(it.asEpisode(), it.title, it.imageUrl)) }
+                "MOVIE" -> {
+                    val movie = async { repository.movieById(contentKey) }
+                    val savedFile = async { downloads.get(contentKey) }
+                    cleanNames = names.await()
+                    val found = movie.await()
+                    if (found != null) {
+                        startPlayable(Playable.Movie(found, clean(found.name), clean(found.categoryName)))
+                    } else {
+                        savedFile.await()?.let { startPlayable(Playable.Movie(it.asMovie())) }
+                    }
                 }
+                "EPISODE" -> {
+                    val ep = async { repository.episodeById(contentKey) }
+                    val savedFile = async { downloads.get(contentKey) }
+                    cleanNames = names.await()
+                    val found = ep.await()
+                    if (found != null) {
+                        val series = async { repository.seriesById(found.seriesKey) }
+                        val episodes = async { repository.episodeSnapshot(found.seriesKey) }
+                        val s = series.await()
+                        _episodes.value = episodes.await()
+                        val seriesTitle = s?.name?.let(::clean)
+                            ?: AppLanguage.wrap(appContext).getString(R.string.player_series_fallback)
+                        startPlayable(Playable.Episode(found, seriesTitle, s?.cover.orEmpty()))
+                    } else {
+                        savedFile.await()?.let { startPlayable(Playable.Episode(it.asEpisode(), it.title, it.imageUrl)) }
+                    }
+                }
+                else -> cleanNames = names.await()
             }
         }
     }
@@ -517,8 +584,9 @@ class PlayerViewModel @Inject constructor(
         title = subtitle.substringAfter(" · "), streamUrl = sourceUrl, imageUrl = imageUrl
     )
 
-    private suspend fun startPlayable(p: Playable) {
+    private suspend fun startPlayable(p: Playable, startAtMs: Long? = null) {
         _playable.value = p
+        _hdAlternative.value = null
         _resizeMode.value = SettingsRepository.RESIZE_FIT
         _autoNextCanceled.value = false
         _introDone.value = false
@@ -527,9 +595,22 @@ class PlayerViewModel @Inject constructor(
         introSeekFrom = -1L
         _introEndMs.value = (p as? Playable.Episode)?.episode?.seriesKey
             ?.takeIf { it.isNotEmpty() }?.let { settings.introEnd(it) }
-        val saved = if (p is Playable.CatchUp) null else repository.progressFor(p.contentKey)
-        val resumeAt = saved?.positionMs?.takeIf { it > 30_000 && saved.durationMs > 0 && !saved.isCompleted } ?: 0L
-        val url = if (p.kind == "LIVE" || p is Playable.CatchUp) p.streamUrl else downloads.localUri(p.contentKey) ?: p.streamUrl
+        val resumeAt: Long
+        val url: String
+        if (p.kind == "LIVE" || p is Playable.CatchUp) {
+            resumeAt = 0L
+            url = p.streamUrl
+        } else {
+            val (saved, local) = coroutineScope {
+                val progress = async { repository.progressFor(p.contentKey) }
+                val file = async { downloads.localUri(p.contentKey) }
+                progress.await() to file.await()
+            }
+            resumeAt = startAtMs
+                ?: saved?.positionMs?.takeIf { it > 30_000 && saved.durationMs > 0 && !saved.isCompleted }
+                ?: 0L
+            url = local ?: p.streamUrl
+        }
 
         playerManager.play(
             url, p.title, p.subtitle,
@@ -560,9 +641,11 @@ class PlayerViewModel @Inject constructor(
             val cached = repository.upcomingEpg(p.channel)
             if (!isCurrentChannel(p.channel.id)) return
             _epg.value = cached
-            // Zapeando seguido no se pide al servidor la guía de cada canal que pasa.
+            // Zapeando seguido no se pide al servidor la guía de cada canal que pasa. Tampoco
+            // mientras el canal carga: la guía no le quita línea al video.
             epgJob = viewModelScope.launch {
                 delay(EPG_REFRESH_DELAY_MS)
+                playerManager.isBuffering.first { !it }
                 repository.refreshEpg(p.channel)
                 val fresh = repository.upcomingEpg(p.channel)
                 if (!isCurrentChannel(p.channel.id)) return@launch
@@ -743,6 +826,9 @@ class PlayerViewModel @Inject constructor(
 
     companion object {
         private val DIACRITICS = Regex("\\p{Mn}+")
+        private val YEAR = Regex("\\b(19|20)\\d{2}\\b")
+        private val UHD_TAG = Regex("\\b(4K|UHD|2160P?)\\b", RegexOption.IGNORE_CASE)
+        private val HD_TAG = Regex("\\b(FHD|HD|1080P?|720P?)\\b", RegexOption.IGNORE_CASE)
 
         /** "Saltar intro" aparece desde aquí… */
         const val INTRO_SHOW_FROM_MS = 5_000L

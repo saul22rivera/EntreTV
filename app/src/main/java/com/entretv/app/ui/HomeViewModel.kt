@@ -27,6 +27,8 @@ import com.entretv.app.data.repo.MetadataRepository
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.repo.SeriesResume
 import com.entretv.app.data.repo.SeriesResumeRule
+import com.entretv.app.data.repo.SyncStep
+import com.entretv.app.data.AppForeground
 import com.entretv.app.data.repo.TrendingTitle
 import com.entretv.app.data.settings.AccountInfo
 import com.entretv.app.data.settings.CatalogPrefs
@@ -158,7 +160,18 @@ const val SUMMARY_SERIES = "summary:series"
 const val SUMMARY_EVENTS = "summary:events"
 private const val SUMMARY_ROW_SIZE = 20
 private const val EVENTS_ROW_SIZE = 40
-private const val AUTO_CHECK_MS = 5 * 60_000L
+/** "Actualizado" queda a la vista al menos esto; más si los pósters de entrada aún cargan. */
+private const val UPDATE_DONE_SHOWN_MS = 1_200L
+/** Tope para precargar los pósters de las primeras filas antes de entrar. */
+private const val UPDATE_PREFETCH_MAX_MS = 2_000L
+/** Pósters por categoría y cuántas categorías se precargan: las primeras filas de Inicio. */
+private const val UPDATE_PREFETCH_PER_ROW = 8
+private const val UPDATE_PREFETCH_ROWS = 6
+
+enum class UpdatePhase { RUNNING, DONE, FAILED }
+
+/** Lo que muestra la pantalla de actualización: la fase y el paso de cada sección. */
+data class UpdateScreenState(val phase: UpdatePhase, val steps: Map<String, SyncStep>)
 
 /** Precarga de pósters por categoría vecina en TV; el catálogo entero lo baja [PosterCacheWorker]. */
 private const val NEIGHBOR_POSTERS = 18
@@ -273,7 +286,12 @@ private data class RawCatalog(
 private class SectionBase(
     val content: SectionContent,
     val order: SortOrder,
-    val visible: Lazy<Map<String, BrowseItem>>
+    val visible: Lazy<Map<String, BrowseItem>>,
+    /** Cada categoría ya armada. Cambiar de categoría es buscar aquí, no volver a recorrer el catálogo. */
+    val detail: Map<String, List<BrowseItem>> = emptyMap(),
+    val detailLabel: Map<String, UiText> = emptyMap(),
+    val recent: List<BrowseItem> = emptyList(),
+    val topRated: List<BrowseItem> = emptyList()
 )
 
 /** Vista ya armada y con qué datos se armó; las listas se comparan por identidad. */
@@ -308,6 +326,12 @@ internal data class CatalogOptions(
  */
 internal object CatalogOrder {
     private val accents = Regex("\\p{Mn}+")
+    /** "VOD-", "VOD ", "SERIES", "SERIES-" al inicio del nombre de una categoría de Películas o Series. */
+    private val sectionPrefix = Regex("^\\s*(?:VOD|SERIES)(?:\\s*[-|:_.]+\\s*|\\s+)")
+
+    /** Solo para mostrar: la clave de la categoría no cambia. Si no queda nada, el nombre sigue igual. */
+    fun withoutSectionPrefix(name: String): String =
+        name.replaceFirst(sectionPrefix, "").trim().takeIf { it.length >= 2 } ?: name
 
     fun liveGroup(channel: ChannelEntity): String = channel.groupTitle.ifEmpty { LIVE_GROUP }
     fun movieGroup(movie: VodMovieEntity): String = movieGroupOf(movie.categoryName)
@@ -472,6 +496,12 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setDefaultSort(order.name) }
     }
 
+    fun setHideVodCategories(enabled: Boolean) {
+        // Sin columna de categorías se vuelve a Destacados.
+        if (enabled && section.value != Section.LIVE && category.value != null) selectCategory(null)
+        viewModelScope.launch { settings.setHideVodCategories(enabled) }
+    }
+
     fun setCleanNames(enabled: Boolean) {
         viewModelScope.launch { settings.setCleanNames(enabled) }
     }
@@ -542,8 +572,20 @@ class HomeViewModel @Inject constructor(
     private val query = MutableStateFlow("")
     private val firstSync = MutableStateFlow(false)
     private val refreshing = MutableStateFlow(false)
+    private val updatePhase = MutableStateFlow<UpdatePhase?>(null)
+    private var autoRefresh: Job? = null
+    /**
+     * Abrir la app o volver a ella desde fuera: entonces se revisa si toca actualizar. Volver a
+     * Inicio desde una ficha o el reproductor no cuenta como entrar.
+     */
+    @Volatile private var entryCheckPending = true
+
+    /** Pantalla de actualización; null = no se muestra. */
+    val updateScreen: StateFlow<UpdateScreenState?> = combine(updatePhase, repository.progress) { phase, steps ->
+        phase?.let { UpdateScreenState(it, steps) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     private val message = MutableStateFlow<UiText?>(null)
-    private val section = MutableStateFlow(Section.LIVE)
+    private val section = MutableStateFlow(restoredSection())
     private val category = MutableStateFlow<String?>(null)
     /** Orden elegido en esta sesión; null = el de Configuración. */
     private val sort = MutableStateFlow<SortOrder?>(null)
@@ -761,9 +803,19 @@ class HomeViewModel @Inject constructor(
     /**
      * Solo se observa la tabla de la sección activa. La búsqueda cruza canales, películas y series.
      */
-    val content: StateFlow<SectionContent> =
-        combine(selectedPlaylistId, section, category, query.debounce(250)) { pid, s, c, q ->
-            CatalogFilter(pid, s, c, q.trim())
+    private val _content = MutableStateFlow(SectionContent())
+    val content: StateFlow<SectionContent> = _content.asStateFlow()
+
+    /** Favoritos ya leídos, para armar "Mi lista" al instante al cambiar de categoría. */
+    @Volatile private var latestFavorites: List<String> = emptyList()
+
+    /**
+     * La sección se arma una vez (sin la categoría). Moverse de categoría o entre TV, Películas
+     * y Series no vuelve a agrupar miles de títulos: usa lo ya armado.
+     */
+    private val contentPipeline: Flow<SectionContent> =
+        combine(selectedPlaylistId, section, query.debounce(250)) { pid, s, q ->
+            CatalogFilter(pid, s, null, q.trim())
         }
             .flatMapLatest { f ->
                 val pid = f.playlistId ?: return@flatMapLatest flowOf(RawCatalog(f))
@@ -785,24 +837,25 @@ class HomeViewModel @Inject constructor(
                     }
                 }
             }
-            .let { base -> combine(base, favoriteKeys) { b, keys -> withMyList(b, keys) } }
-            // stateIn compara en el hilo principal: lo igual (miles de títulos) se descarta acá.
+            .combine(category) { base, cat -> forCategory(base, cat) }
+            .combine(favoriteKeys) { base, keys ->
+                latestFavorites = keys
+                withMyList(base, keys)
+            }
             .distinctUntilChanged()
             .flowOn(Dispatchers.Default)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SectionContent())
 
     private fun buildBase(r: RawCatalog, o: CatalogOptions, order: SortOrder, t: Trending): SectionBase {
-        // #region agent log
-        val diagT = com.entretv.app.data.Diag.now()
-        // #endregion
         val base = build(r, o, order, t)
-        // #region agent log
-        com.entretv.app.data.Diag.log("catalog built section=${r.filter.section} movies=${r.movies.size} series=${r.series.size} channels=${r.channels.size} ms=${com.entretv.app.data.Diag.now() - diagT}")
-        // #endregion
+        // Las listas de cada categoría van con la sección: sin ellas Todas y cada categoría salen vacías.
         return SectionBase(
             base.content.copy(playlistId = r.filter.playlistId, section = r.filter.section, category = r.filter.category),
             base.order,
-            base.visible
+            base.visible,
+            base.detail,
+            base.detailLabel,
+            base.recent,
+            base.topRated
         )
     }
 
@@ -811,17 +864,17 @@ class HomeViewModel @Inject constructor(
         if (f.playlistId == null) return SectionBase(SectionContent(), order, lazyOf(emptyMap()))
         val c = o.cleanNames
         return when {
-            f.query.isNotEmpty() -> SectionBase(searchAll(r, o, order), order, lazyOf(emptyMap()))
+            f.query.isNotEmpty() -> searchBase(r, o, order)
             f.section == Section.LIVE -> buildContent(
-                r.channels, PlaylistRepository.SECTION_LIVE, f, o, order, trending = null,
+                r.channels, PlaylistRepository.SECTION_LIVE, o, order, null,
                 ::liveGroup, { it.id }
             ) { BrowseItem.Live(it, clean(it.name, c)) }
             f.section == Section.MOVIES -> buildContent(
-                r.movies, PlaylistRepository.SECTION_MOVIES, f, o, order, trending = t.movies,
+                r.movies, PlaylistRepository.SECTION_MOVIES, o, order, t.movies,
                 ::movieGroup, { it.id }
             ) { BrowseItem.Movie(it, clean(it.name, c)) }
             else -> buildContent(
-                r.series, PlaylistRepository.SECTION_SERIES, f, o, order, trending = t.series,
+                r.series, PlaylistRepository.SECTION_SERIES, o, order, t.series,
                 ::seriesGroup, { it.id }
             ) { BrowseItem.Show(it, clean(it.name, c)) }
         }
@@ -991,6 +1044,8 @@ class HomeViewModel @Inject constructor(
         summary.value = false
         section.value = s
         category.value = c
+        settings.rememberHomeSection(s.name)
+        publish(s, c)
     }
 
     private val cleanCache = ConcurrentHashMap<String, String>()
@@ -1015,7 +1070,6 @@ class HomeViewModel @Inject constructor(
     private fun <T> buildContent(
         items: List<T>,
         sectionKey: String,
-        f: CatalogFilter,
         o: CatalogOptions,
         requestedOrder: SortOrder,
         /** null = sección sin Top 10 (En vivo). */
@@ -1044,52 +1098,47 @@ class HomeViewModel @Inject constructor(
         val counts = shown.associateWith { n ->
             visibleRaw[n]?.size ?: allGroups[n].orEmpty().count { keyOf(it) !in o.hidden }
         }
-        val labels = shown.filter { it !in FALLBACK_GROUPS }.associateWith { clean(it, o.cleanNames) }
-
-        fun groupItems(name: String, limit: Int): List<BrowseItem> {
-            val raw = visibleRaw[name].orEmpty()
-            return if (order == SortOrder.ORIGINAL) raw.take(limit).map(wrap)
-            else sortItems(raw.map(wrap), order).take(limit)
+        val vod = sectionKey != PlaylistRepository.SECTION_LIVE
+        val labels = shown.filter { it !in FALLBACK_GROUPS }.associateWith {
+            clean(if (vod) CatalogOrder.withoutSectionPrefix(it) else it, o.cleanNames)
         }
 
-        val wrapped by lazy { visibleRaw.values.flatten().map(wrap) }
-        val recent by lazy { wrapped.filter { it.added > 0 }.sortedByDescending { it.added } }
-        val topRated by lazy { wrapped.filter { it.rating > 0f }.sortedByDescending { it.rating } }
+        // Cada título se envuelve una vez. La fila del inicio usa los primeros; la categoría, la lista entera.
+        val detail = HashMap<String, List<BrowseItem>>(visibleRaw.size)
+        visibleRaw.forEach { (name, raw) ->
+            if (raw.isEmpty()) return@forEach
+            val wrappedItems = raw.map(wrap)
+            detail[name] = if (order == SortOrder.ORIGINAL) wrappedItems else sortItems(wrappedItems, order)
+        }
+        val recent = if (trending != null) {
+            val found = ArrayList<BrowseItem>()
+            for (list in detail.values) for (item in list) if (item.added > 0) found.add(item)
+            found.sortByDescending { it.added }
+            found
+        } else emptyList()
+        val topRated = if (trending != null) {
+            val found = ArrayList<BrowseItem>()
+            for (list in detail.values) for (item in list) if (item.rating > 0f) found.add(item)
+            found.sortByDescending { it.rating }
+            found
+        } else emptyList()
         val sortOptions = when {
             items.isEmpty() -> emptyList()
             sectionKey == PlaylistRepository.SECTION_LIVE -> listOf(SortOrder.ORIGINAL, SortOrder.AZ)
             else -> SortOrder.entries.toList()
         }
-        val visible = lazy { wrapped.associateBy { it.key } }
-
-        if (f.category != null) {
-            val list = when (f.category) {
-                ALL_ROW -> if (order == SortOrder.ORIGINAL) wrapped else sortItems(wrapped, order)
-                MY_LIST_ROW -> emptyList()
-                RECENT_ROW -> if (order == SortOrder.ORIGINAL) recent else sortItems(recent, order)
-                TOP_RATED_ROW -> if (order == SortOrder.ORIGINAL) topRated else sortItems(topRated, order)
-                else -> groupItems(f.category, Int.MAX_VALUE)
+        val visible = lazy {
+            buildMap {
+                for (list in detail.values) for (item in list) putIfAbsent(item.key, item)
             }
-            return SectionBase(
-                SectionContent(
-                    categories = shown,
-                    categoryCounts = counts,
-                    categoryLabels = labels,
-                    lockedCategories = locked,
-                    rows = listOf(ContentRow(f.category, list, labels[f.category]?.let { UiText.Raw(it) } ?: rowLabel(f.category))),
-                    grid = true,
-                    sortOptions = sortOptions
-                ),
-                order, visible
-            )
         }
-        val top10 = if (trending != null && wrapped.isNotEmpty()) topTen(wrapped, trending, topRated + recent) else emptyList<BrowseItem>() to false
+        val everyone = if (trending != null) detail.values.flatten() else emptyList()
+        val top10 = if (trending != null && everyone.isNotEmpty()) topTen(everyone, trending, topRated + recent) else emptyList<BrowseItem>() to false
         val rows = buildList {
-            // Solo si el servidor informa fechas o puntuaciones de verdad.
             if (trending != null && recent.size >= 5) add(ContentRow(RECENT_ROW, recent.take(20), rowLabel(RECENT_ROW)))
             if (trending != null && topRated.size >= 5) add(ContentRow(TOP_RATED_ROW, topRated.take(20), rowLabel(TOP_RATED_ROW)))
             visibleRaw.keys.forEach { group ->
-                val list = groupItems(group, 20)
+                val list = detail[group].orEmpty().take(20)
                 if (list.isNotEmpty()) add(ContentRow(group, list, UiText.Raw(labels[group] ?: group)))
             }
         }
@@ -1105,8 +1154,62 @@ class HomeViewModel @Inject constructor(
                 top10Label = if (top10.second) uiText(R.string.home_top10_today, sectionName) else uiText(R.string.home_top10_catalog, sectionName),
                 sortOptions = sortOptions
             ),
-            order, visible
+            order, visible, detail, emptyMap(), recent, topRated
         )
+    }
+
+    /** Vista de una categoría a partir de la sección ya armada. No recorre el catálogo. */
+    private fun forCategory(base: SectionBase, category: String?): SectionBase {
+        if (category == null) return base
+        // "Todas" no junta miles de títulos en una sola lista: cada categoría sigue siendo
+        // la suya y la cuadrícula las recorre en orden. Así baja tan ligera como una chica.
+        if (category == ALL_ROW) {
+            val rows = base.content.categories.mapNotNull { name ->
+                val items = base.detail[name].orEmpty()
+                if (items.isEmpty()) null
+                else ContentRow(
+                    name,
+                    items,
+                    base.content.categoryLabels[name]?.let { UiText.Raw(it) } ?: rowLabel(name)
+                )
+            }
+            return SectionBase(
+                base.content.copy(rows = rows, grid = true, category = ALL_ROW, top10 = emptyList()),
+                base.order, base.visible, base.detail, base.detailLabel, base.recent, base.topRated
+            )
+        }
+        val list = when (category) {
+            MY_LIST_ROW -> emptyList()
+            RECENT_ROW -> if (base.order == SortOrder.ORIGINAL) base.recent else sortItems(base.recent, base.order)
+            TOP_RATED_ROW -> if (base.order == SortOrder.ORIGINAL) base.topRated else sortItems(base.topRated, base.order)
+            else -> base.detail[category].orEmpty()
+        }
+        val label = base.detailLabel[category]
+            ?: base.content.categoryLabels[category]?.let { UiText.Raw(it) }
+            ?: rowLabel(category)
+        return SectionBase(
+            base.content.copy(
+                rows = listOf(ContentRow(category, list, label)),
+                grid = true,
+                category = category,
+                top10 = emptyList()
+            ),
+            base.order, base.visible, base.detail, base.detailLabel, base.recent, base.topRated
+        )
+    }
+
+    /** Si la sección ya está armada, la muestra ya, en el mismo toque. */
+    private fun publish(s: Section, category: String?) {
+        val filter = CatalogFilter(selectedPlaylistId.value, s, null, query.value.trim())
+        val base = synchronized(builtCache) { builtCache[filter] }?.base ?: return
+        val sliced = forCategory(base, category)
+        // "Mi lista" en el inicio sí se arma aquí. En una categoría basta la lista: el conteo
+        // llega con el flujo y no hace falta recorrer todos los títulos en el toque.
+        _content.value = if (category == null || category == MY_LIST_ROW) {
+            withMyList(sliced, latestFavorites)
+        } else {
+            sliced.content.copy(myListCount = if (_content.value.section == s) _content.value.myListCount else 0)
+        }
     }
 
     // ============================ Top 10 ============================
@@ -1213,7 +1316,7 @@ class HomeViewModel @Inject constructor(
     private fun <T> List<T>.matching(names: Array<String>, tokens: List<String>): List<T> =
         filterIndexed { i, _ -> val n = names[i]; tokens.all { n.contains(it) } }
 
-    private fun searchAll(r: RawCatalog, o: CatalogOptions, order: SortOrder): SectionContent {
+    private fun searchBase(r: RawCatalog, o: CatalogOptions, order: SortOrder): SectionBase {
         val tokens = normalize(r.filter.query).split(' ').filter { it.isNotBlank() }
         val first = tokens.firstOrNull().orEmpty()
         // Con el orden original, primero los que empiezan con lo buscado.
@@ -1244,12 +1347,17 @@ class HomeViewModel @Inject constructor(
             ContentRow(SEARCH_SERIES, series, uiText(R.string.home_search_series_count, series.size)),
             ContentRow(SEARCH_LIVE, channels, uiText(R.string.home_search_channels_count, channels.size))
         )
-        val selected = groups.firstOrNull { it.title == r.filter.category }
-        return if (selected != null) {
-            SectionContent(rows = listOf(selected), grid = true, isSearch = true, sortOptions = SortOrder.entries.toList())
-        } else {
-            SectionContent(rows = groups.map { it.copy(items = it.items.take(30)) }, isSearch = true)
-        }
+        return SectionBase(
+            SectionContent(
+                rows = groups.map { it.copy(items = it.items.take(30)) },
+                isSearch = true,
+                sortOptions = SortOrder.entries.toList()
+            ),
+            order,
+            lazyOf(emptyMap()),
+            groups.associate { it.title to it.items },
+            groups.associate { it.title to it.label }
+        )
     }
 
     private fun normalize(text: String): String = CatalogOrder.normalize(text)
@@ -1459,27 +1567,40 @@ class HomeViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            contentPipeline.collect { produced ->
+                if (produced.playlistId == selectedPlaylistId.value &&
+                    produced.section == section.value &&
+                    produced.category == category.value
+                ) _content.value = produced
+            }
+        }
+        viewModelScope.launch {
             if (repository.playlists.first().isNotEmpty()) {
                 withTimeoutOrNull(AppStartup.MAX_WAIT_MS) {
                     content.first { it.rows.isNotEmpty() || it.categories.isNotEmpty() }
                 }
             }
             AppStartup.markReady()
-            // Mientras se ve la primera sección, deja listos los nombres limpios de Películas y
-            // Series con prioridad baja: con miles de títulos, entrar ya no espera esa cuenta.
+        }
+        // Películas, Series y TV se arman ya, en paralelo con la primera pantalla, para que
+        // el primer salto de sección no espere.
+        viewModelScope.launch {
             val pid = selectedPlaylistId.first { it != null } ?: return@launch
             withContext(warmDispatcher) {
+                val channels = channelTable.of(pid).first()
                 val movies = movieTable.of(pid).first()
                 val series = seriesTable.of(pid).first()
                 movies.forEach { matchKey(it.name) }
                 series.forEach { matchKey(it.name) }
                 searchNames(movieNames, movies) { it.name }
                 searchNames(seriesNames, series) { it.name }
-                // La primera entrada a Películas o Series ya encuentra sus filas armadas.
+                searchNames(channelNames, channels) { it.name }
+                // TV, Películas y Series quedan armadas: cambiar de sección no espera el recuento.
                 val o = options.first { it.playlistId == pid }
                 val order = effectiveSort.first()
                 val t = trending.value
                 listOf(
+                    RawCatalog(CatalogFilter(pid, Section.LIVE, null, ""), channels = channels),
                     RawCatalog(CatalogFilter(pid, Section.MOVIES, null, ""), movies = movies),
                     RawCatalog(CatalogFilter(pid, Section.SERIES, null, ""), series = series)
                 ).forEach { r ->
@@ -1488,6 +1609,8 @@ class HomeViewModel @Inject constructor(
                     synchronized(builtCache) { builtCache.putIfAbsent(r.filter, BuiltContent(r, o, order, t, built)) }
                 }
             }
+            // Si el usuario ya se movió a una sección que el armado dejó lista, muéstrala ya.
+            publish(section.value, category.value)
         }
         // Selecciona la primera cuenta y, al entrar, actualiza en segundo plano con lo
         // guardado ya visible, solo si toca según la frecuencia de Configuración.
@@ -1499,6 +1622,10 @@ class HomeViewModel @Inject constructor(
                     refreshIfDue()
                 }
             }
+        }
+        // Al salir de la app, la próxima vez que se vea Inicio cuenta como entrar.
+        viewModelScope.launch {
+            AppForeground.visible.collect { if (!it) entryCheckPending = true }
         }
         // Aviso al terminar una actualización que cambió algo: con novedades, o siempre si fue a mano.
         viewModelScope.launch {
@@ -1536,30 +1663,39 @@ class HomeViewModel @Inject constructor(
     fun selectPlaylist(id: String) {
         selectedPlaylistId.value = id
         category.value = null
-        refreshIfDue()
+        refreshIfDue(entry = false)
     }
 
-    private var autoRefresh: Job? = null
-
     /**
-     * Al entrar o al volver a la app: baja el catálogo solo si pasó el corte de la frecuencia
-     * de Configuración. Lo guardado sigue a la vista mientras tanto.
+     * Al entrar a la app ([entry]) o al cambiar de cuenta: baja el catálogo, con la pantalla de
+     * actualización, solo si pasó el corte de la frecuencia de Configuración.
      */
-    fun refreshIfDue() {
+    fun refreshIfDue(entry: Boolean = true) {
         if (selectedPlaylistId.value == null || autoRefresh?.isActive == true) return
+        if (entry && !entryCheckPending) return
+        entryCheckPending = false
         autoRefresh = refreshAll(manual = false)
     }
 
     /** Elegir una sección (también la misma) lleva a su inicio. */
+    private fun restoredSection(): Section = when (settings.lastHomeSection()) {
+        Section.MOVIES.name -> Section.MOVIES
+        Section.SERIES.name -> Section.SERIES
+        else -> Section.LIVE
+    }
+
     fun selectSection(s: Section) {
         summary.value = false
         section.value = s
         category.value = null
+        settings.rememberHomeSection(s.name)
+        publish(s, null)
     }
 
     fun selectCategory(c: String?) {
         summary.value = false
         category.value = c
+        publish(section.value, c)
     }
 
     /** Orden de esta sesión; elegir el de Configuración vuelve a seguirlo. */
@@ -1642,31 +1778,91 @@ class HomeViewModel @Inject constructor(
 
     fun consumeMessage() { message.value = null }
 
+    /** El aviso de "sin internet" de los intentos automáticos sale una vez hasta que uno funcione. */
+    private var offlineNoticeShown = false
+
+    private fun offlineNotice(manual: Boolean, text: UiText) {
+        if (!manual && offlineNoticeShown) return
+        offlineNoticeShown = true
+        message.value = text
+    }
+
     /**
-     * Actualiza el catálogo. Al entrar es silenciosa y respeta la frecuencia de Configuración
-     * (solo el indicador pequeño si de verdad baja algo); a mano ([manual]) siempre baja todo.
+     * Actualiza el catálogo en primer plano, con la pantalla de actualización: al entrar a la
+     * app solo si toca según la frecuencia de Configuración; a mano ([manual]) siempre baja todo.
+     * Mientras tanto no suena nada y los pósters de fondo esperan (ver [PosterCacheWorker]).
      */
     fun refreshAll(manual: Boolean = true): Job =
         viewModelScope.launch {
-            if (manual) refreshing.value = true
             val pid = selectedPlaylistId.value
             val first = pid != null && repository.needsFirstSync(pid)
+            if (!manual && !first && !repository.refreshDueNow()) return@launch
+            // Sin internet no se tapa la app para nada: se entra con lo guardado y se intenta en
+            // la próxima entrada. El primer inicio no tiene nada guardado: ahí se intenta igual.
+            if (!first && updatePhase.value == null && !online()) {
+                offlineNotice(manual, uiText(R.string.home_update_offline))
+                return@launch
+            }
             if (first) firstSync.value = true
+            refreshing.value = true
+            repository.clearProgress()
+            updatePhase.value = UpdatePhase.RUNNING
+            player.get().stop()
             val before = pid?.let { settings.lastRefreshAt(it) }
-            repository.refreshAll(force = manual, light = playerBusy())
+            var ok = true
+            repository.refreshAll(force = manual, foreground = true)
                 .onSuccess { failed ->
-                    if (failed.isNotEmpty() && (manual || first)) {
+                    if (failed.isNotEmpty()) {
+                        ok = false
                         val list = failed.reduce { acc, item -> uiText(R.string.home_refresh_list_join, acc, item) }
                         message.value = uiText(R.string.home_refresh_failed, list)
                     }
                 }
                 .onFailure {
-                    if (manual || first) message.value = uiText(R.string.home_refresh_failed_offline)
+                    ok = false
+                    offlineNotice(manual, uiText(R.string.home_refresh_failed_offline))
                 }
+            if (ok) offlineNoticeShown = false
             refreshing.value = false
             firstSync.value = false
+            // Si ya se entró con "Entrar sin esperar", la pantalla no vuelve. Con un error se queda
+            // a la vista con "Reintentar" y "Entrar igual".
+            if (updatePhase.value != null) {
+                if (ok) {
+                    updatePhase.value = UpdatePhase.DONE
+                    val warm = launch { withTimeoutOrNull(UPDATE_PREFETCH_MAX_MS) { warmEntryPosters() } }
+                    delay(UPDATE_DONE_SHOWN_MS)
+                    warm.join()
+                    if (updatePhase.value == UpdatePhase.DONE) updatePhase.value = null
+                } else {
+                    updatePhase.value = UpdatePhase.FAILED
+                }
+            }
             enqueuePostersIfSynced(pid, before)
         }
+
+    /** "Entrar sin esperar" o "Entrar igual": la actualización en curso sigue y avisa al terminar. */
+    fun enterDuringUpdate() {
+        updatePhase.value = null
+    }
+
+    /** "Reintentar" en la pantalla de actualización: vuelve a bajar todo. */
+    fun retryUpdate() {
+        if (autoRefresh?.isActive == true) return
+        autoRefresh = refreshAll(manual = true)
+    }
+
+    private fun online(): Boolean {
+        val caps = connectivity?.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** Pósters de las primeras filas de la sección a la vista, en memoria antes de entrar. */
+    private suspend fun warmEntryPosters() {
+        val s = section.value
+        if (s == Section.LIVE) return
+        posters.warm(sectionPosters(s, null, UPDATE_PREFETCH_PER_ROW).take(UPDATE_PREFETCH_ROWS * UPDATE_PREFETCH_PER_ROW))
+    }
 
     /** Si de verdad se bajó el catálogo de [pid], encarga los pósters que falten. */
     private suspend fun enqueuePostersIfSynced(pid: String?, before: Long?) {
@@ -1676,32 +1872,6 @@ class HomeViewModel @Inject constructor(
 
     private suspend fun enqueuePosterCache(pid: String?, replace: Boolean) {
         withContext(Dispatchers.IO) { PosterCacheWorker.enqueue(workManager, pid, replace) }
-    }
-
-    /** Hay algo cargado en el reproductor (también el mini reproductor de En vivo). */
-    private fun playerBusy() = player.get().currentKey.value != null
-
-    private fun unmeteredNetwork(): Boolean {
-        val caps = connectivity?.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-    }
-
-    /**
-     * Actualización automática y discreta: mientras la app está a la vista revisa cada
-     * [AUTO_CHECK_MS] si pasaron las 3 h. Nunca con algo cargado en el reproductor ni con
-     * datos móviles, y en un solo hilo de prioridad baja.
-     */
-    suspend fun autoRefreshLoop() {
-        while (true) {
-            delay(AUTO_CHECK_MS)
-            if (refreshMode.value != SettingsRepository.REFRESH_AUTO) continue
-            if (autoRefresh?.isActive == true || refreshing.value || selectedPlaylistId.value == null) continue
-            if (playerBusy() || !unmeteredNetwork()) continue
-            val pid = selectedPlaylistId.value
-            val before = pid?.let { settings.lastRefreshAt(it) }
-            repository.refreshAll(force = false, light = true, auto = true)
-            enqueuePostersIfSynced(pid, before)
-        }
     }
 
     // ============================ Precarga de pósters ============================

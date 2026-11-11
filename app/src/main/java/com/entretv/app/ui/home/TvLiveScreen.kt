@@ -86,11 +86,11 @@ import coil.compose.AsyncImage
 import com.entretv.app.R
 import com.entretv.app.data.local.ChannelEntity
 import com.entretv.app.data.local.EpgEntity
-import com.entretv.app.ui.LiveGuide
 import com.entretv.app.ui.MY_LIST_ROW
 import com.entretv.app.ui.SortOrder
 import com.entretv.app.ui.TvLiveViewModel
 import com.entretv.app.ui.asString
+import com.entretv.app.ui.player.NetworkHintPill
 import com.entretv.app.ui.rowLabel
 import com.entretv.app.ui.theme.EntreBrand
 import java.util.Date
@@ -101,7 +101,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 private enum class LiveZone { CATEGORIES, CHANNELS, PLAYER }
 
 /** Ancho de la columna de categorías en TV (En vivo, Películas y Series). */
-val TV_CATEGORY_COLUMN_WIDTH = 160.dp
+val TV_CATEGORY_COLUMN_WIDTH = 128.dp
 
 /**
  * En vivo en TV: categorías, canales y a la derecha el mini reproductor con la guía del
@@ -144,8 +144,6 @@ fun TvLiveScreen(
     val favoriteIds by viewModel.favoriteIds.collectAsState()
     val chosenCategory by viewModel.category.collectAsState()
     val playing by viewModel.playing.collectAsState()
-    val guide by viewModel.guide.collectAsState()
-    val buffering by viewModel.playerManager.isBuffering.collectAsState()
     val scope = rememberCoroutineScope()
 
     val allowedGroups = remember(categories, lockedCategories) { categories.filter { it !in lockedCategories }.toSet() }
@@ -351,10 +349,15 @@ fun TvLiveScreen(
                 .keys(setOf(Key.DirectionRight, Key.DirectionLeft)) { key ->
                     if (key == Key.DirectionRight) focusChannel() else onOpenMenu()
                 }
-                // Arriba de la primera fila no hay nada: se queda ahí.
+                // Arriba de la primera fila se sube a Guía, Buscar y Actualizar.
                 .onPreviewKeyEvent { event ->
-                    event.key == Key.DirectionUp && focusedCategory != null &&
+                    val atTop = event.key == Key.DirectionUp && focusedCategory != null &&
                         focusedCategory == if (showSort) SORT_KEY else cats.firstOrNull()
+                    if (atTop && event.type == KeyEventType.KeyDown) {
+                        exitedUp = true
+                        onExitUp()
+                    }
+                    atTop
                 }
         ) {
             if (showSort) {
@@ -456,7 +459,6 @@ fun TvLiveScreen(
             MiniPlayer(
                 viewModel = viewModel,
                 playing = playing,
-                buffering = buffering,
                 modifier = Modifier
                     .focusRequester(playerFocus)
                     .onFocusChanged {
@@ -465,16 +467,22 @@ fun TvLiveScreen(
                             playing?.let(viewModel::focus)
                         }
                     }
-                    .keys(setOf(Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown, Key.Back, Key.Escape)) { key ->
-                        if (key == Key.DirectionLeft || key == Key.Back || key == Key.Escape) {
-                            if (list.isEmpty()) focusCategory() else focusChannel()
+                    .keys(setOf(Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown, Key.Back, Key.Escape)) { key ->
+                        when (key) {
+                            // Arriba sube a Guía, Buscar y Actualizar; abajo desde ahí vuelve aquí.
+                            Key.DirectionUp -> {
+                                exitedUp = true
+                                onExitUp()
+                            }
+                            Key.DirectionLeft, Key.Back, Key.Escape -> if (list.isEmpty()) focusCategory() else focusChannel()
+                            else -> Unit
                         }
                     },
                 onClick = { playing?.let(::openFullscreen) }
             )
             Spacer(Modifier.height(12.dp))
             val guideChannel = if (zone == LiveZone.PLAYER) playing else list.firstOrNull { it.id == focusedId } ?: playing
-            GuidePanel(channel = guideChannel, guide = guide)
+            GuidePanel(channel = guideChannel, viewModel = viewModel)
         }
     }
 }
@@ -484,10 +492,11 @@ fun TvLiveScreen(
 private fun MiniPlayer(
     viewModel: TvLiveViewModel,
     playing: ChannelEntity?,
-    buffering: Boolean,
     modifier: Modifier,
     onClick: () -> Unit
 ) {
+    val buffering by viewModel.playerManager.isBuffering.collectAsState()
+    val netHint by viewModel.playerManager.networkHint.collectAsState()
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val shape = RoundedCornerShape(14.dp)
@@ -517,6 +526,11 @@ private fun MiniPlayer(
                 modifier = Modifier.fillMaxSize()
             )
             if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center).size(36.dp), strokeWidth = 3.dp)
+            NetworkHintPill(
+                hint = netHint,
+                compact = true,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+            )
             if (focused) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -548,8 +562,9 @@ private fun MiniPlayer(
 }
 
 @Composable
-private fun GuidePanel(channel: ChannelEntity?, guide: LiveGuide) {
+private fun GuidePanel(channel: ChannelEntity?, viewModel: TvLiveViewModel) {
     if (channel == null) return
+    val guide by viewModel.guide.collectAsState()
     val context = LocalContext.current
     val timeFormat = remember(context) { android.text.format.DateFormat.getTimeFormat(context) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }

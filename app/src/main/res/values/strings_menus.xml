@@ -58,11 +58,11 @@
     <string name="settings_frame_rate_off">Apagado</string>
     <string name="settings_frame_rate_auto">Automático · recomendado en TV</string>
     <string name="settings_tunneling">Modo túnel (TV)</string>
-    <string name="settings_tunneling_desc">El video y el audio van directo al chip de la TV: más fluido en algunos equipos. Si notas cortes, falta de sonido o desfase, apágalo. Se aplica desde el siguiente video.</string>
+    <string name="settings_tunneling_desc">El video y el audio van directo al chip de la TV. En los equipos donde suele ayudar se enciende solo. Si notas cortes, falta de sonido o desfase, apágalo. Se aplica desde el siguiente video.</string>
     <string name="settings_skip_intro">Botón Saltar intro</string>
     <string name="settings_skip_intro_desc">Aparece en los primeros minutos de cada episodio. Si adelantas a mano la intro de una serie, la próxima vez salta justo hasta ahí.</string>
     <string name="settings_buffer">Búfer de arranque</string>
-    <string name="settings_buffer_desc">Segundos de video que se cargan antes de empezar y después de un corte. En vivo usa la mitad para arrancar más rápido.</string>
+    <string name="settings_buffer_desc">Segundos de video que se guardan por delante y después de un corte. La imagen entra enseguida, en vivo y en películas; este valor aguanta el corte.</string>
     <string name="settings_buffer_0">0 s · arranca al instante, puede trabarse más</string>
     <string name="settings_buffer_3">3 s · equilibrado (recomendado)</string>
     <string name="settings_buffer_5">5 s · más estable</string>
@@ -76,10 +76,9 @@
 
     <string name="settings_section_catalog">Catálogo</string>
     <string name="settings_refresh">Actualizar el catálogo</string>
-    <string name="settings_refresh_desc">Se actualiza de fondo mientras sigues viendo; lo que no cambió no se vuelve a guardar.</string>
+    <string name="settings_refresh_desc">Se actualiza al entrar a la app, cuando toca según esta opción, o con el botón Actualizar. Nunca de fondo; lo que no cambió no se vuelve a guardar.</string>
     <string name="settings_refresh_daily">Una vez al día (la primera vez que entras)</string>
     <string name="settings_refresh_thrice">Tres veces al día (0:00, 8:00 y 9:00)</string>
-    <string name="settings_refresh_auto">Automática y discreta (cada 3 h con Wi‑Fi, sin interrumpir lo que ves)</string>
     <string name="settings_refresh_manual">Solo manual</string>
     <string name="settings_refresh_now">Actualizar ahora</string>
     <string name="settings_default_sort">Orden por defecto</string>
@@ -90,6 +89,8 @@
     <string name="settings_sort_recent">Recientes · lo último agregado primero</string>
     <string name="settings_clean_names">Limpiar nombres</string>
     <string name="settings_clean_names_desc">Quita prefijos y etiquetas como “ES:”, “US|” o “[HD]”.</string>
+    <string name="settings_hide_vod_categories">Ocultar categorías en Películas y Series</string>
+    <string name="settings_hide_vod_categories_desc">Todo se ve desde Destacados, a pantalla completa. En vivo conserva sus categorías.</string>
     <string name="settings_organize">Organizar categorías</string>
     <string name="settings_organize_desc">Ocultar, reordenar y marcar como adultos</string>
     <string name="settings_hidden">Títulos y canales ocultos</string>
@@ -118,6 +119,27 @@
     <string name="settings_section_app">Aplicación</string>
     <string name="settings_check_updates">Buscar actualizaciones</string>
     <string name="settings_installed_version">Versión instalada: %1$s</string>
+    <string name="settings_speed_test">Probar mi internet</string>
+    <string name="settings_speed_test_desc">Mide tu internet y el servidor de contenido</string>
+    <string name="settings_storage_tip">EntreTV está instalada en una memoria USB, que es más lenta. Para que las películas carguen mejor, muévela al almacenamiento interno: Configuración de la TV › Apps › EntreTV › Almacenamiento.</string>
+    <string name="speed_test_title">Probar mi internet</string>
+    <string name="speed_test_note">Tarda unos 15 segundos. Si algo se estaba viendo, se detiene.</string>
+    <string name="speed_test_phase_internet">Midiendo tu internet…</string>
+    <string name="speed_test_phase_server">Midiendo el servidor de contenido…</string>
+    <string name="speed_test_internet">Tu internet</string>
+    <string name="speed_test_server">Servidor de contenido</string>
+    <string name="speed_test_mbps">%1$s Mbps</string>
+    <string name="speed_test_ping">ping %1$d ms</string>
+    <string name="speed_test_failed">no se pudo medir</string>
+    <string name="speed_test_quality_4k">Puedes ver hasta 4K sin cortes.</string>
+    <string name="speed_test_quality_fhd">Puedes ver hasta Full HD sin cortes; el 4K puede trabarse.</string>
+    <string name="speed_test_quality_hd">Puedes ver en HD sin cortes; Full HD y 4K pueden trabarse.</string>
+    <string name="speed_test_quality_sd">Solo alcanza para calidad básica; HD y 4K se van a trabar.</string>
+    <string name="speed_test_problem_server">Tu internet va bien, pero el servidor de contenido va lento: el problema no está en tu casa.</string>
+    <string name="speed_test_problem_home">Lo que limita es la velocidad de tu internet.</string>
+    <string name="speed_test_unstable">Conexión inestable: el ping varía mucho. Conecta la TV por cable de red o al wifi de 5 GHz y, si tu módem lo permite, dale prioridad a la TV.</string>
+    <string name="speed_test_offline">No hay internet. Revisa el cable o el wifi.</string>
+    <string name="speed_test_again">Probar de nuevo</string>
 
     <!-- Tarjeta de la cuenta -->
     <string name="settings_status_expired">Vencida</string>

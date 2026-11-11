@@ -9,6 +9,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -75,6 +77,13 @@ private fun detectLowRam(context: Context): Boolean {
 private fun systemProperty(key: String): String? = runCatching {
     Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, key) as? String
 }.getOrNull()
+
+/**
+ * Capa de escala del foco. En un equipo justo no se crea: cada póster con capa propia
+ * obliga a la GPU a redibujar y la navegación se siente torpe.
+ */
+fun Modifier.focusScale(scale: Float, animate: Boolean): Modifier =
+    if (!animate) this else graphicsLayer { scaleX = scale; scaleY = scale }
 
 /** Agrandado al enfocar; en equipos con poca memoria queda fijo y el foco lo marca el borde. */
 @Composable

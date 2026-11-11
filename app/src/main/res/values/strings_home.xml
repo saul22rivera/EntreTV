@@ -46,6 +46,22 @@
     <!-- Preparando el catálogo -->
     <string name="home_preparing_title">Preparando tu catálogo…</string>
     <string name="home_preparing_message">La primera vez tarda un poco. Después se abre al instante.</string>
+    <string name="update_title_running">Actualizando contenido</string>
+    <string name="update_title_done">Actualizado</string>
+    <string name="update_title_failed">Actualización incompleta</string>
+    <string name="update_subtitle_running">Dejamos todo al día. Solo un momento.</string>
+    <string name="update_subtitle_done">Entrando…</string>
+    <string name="update_subtitle_failed">Puedes reintentar o entrar con lo que ya tenías.</string>
+    <string name="catalog_update_retry">Reintentar</string>
+    <string name="update_enter_anyway">Entrar igual</string>
+    <string name="home_update_offline">Sin conexión: se muestra lo guardado. Se actualizará al entrar con internet.</string>
+    <string name="update_step_waiting">En espera</string>
+    <string name="update_step_downloading">Actualizando…</string>
+    <string name="update_step_saving">Guardando…</string>
+    <string name="update_step_done">Actualizado</string>
+    <string name="update_step_failed">No se pudo actualizar</string>
+    <string name="update_enter_now">Entrar sin esperar</string>
+    <string name="update_enter_now_hint">La actualización sigue mientras usas la app.</string>
 
     <!-- Cabecera -->
     <string name="home_home">Inicio</string>

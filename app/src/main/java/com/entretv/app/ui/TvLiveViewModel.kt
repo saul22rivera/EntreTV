@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -125,9 +126,17 @@ class TvLiveViewModel @Inject constructor(
             val fetch = stale && cached.size < GUIDE_SIZE
             emit(LiveGuide(channel.id, cached, loading = fetch))
             if (fetch) {
-                fetchedAt[channel.id] = now
+                // La guía por red espera a que el canal ya esté en pantalla. En muchos
+                // servidores la guía y el video salen de la misma conexión: pedirlas juntas
+                // deja el zap esperando.
+                delay(GUIDE_AFTER_ZAP_MS)
+                playerManager.isBuffering.first { !it }
+                if (focused.value?.id != channel.id) return@transformLatest
+                fetchedAt[channel.id] = System.currentTimeMillis()
                 repository.refreshEpg(channel)
-                emit(LiveGuide(channel.id, repository.upcomingEpg(channel, GUIDE_SIZE), loading = false))
+                if (focused.value?.id == channel.id) {
+                    emit(LiveGuide(channel.id, repository.upcomingEpg(channel, GUIDE_SIZE), loading = false))
+                }
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LiveGuide())
@@ -176,7 +185,8 @@ class TvLiveViewModel @Inject constructor(
     }
 
     private companion object {
-        const val GUIDE_DEBOUNCE_MS = 400L
+        const val GUIDE_DEBOUNCE_MS = 600L
+        const val GUIDE_AFTER_ZAP_MS = 200L
         const val GUIDE_SIZE = 4
         const val GUIDE_REFRESH_MS = 10 * 60_000L
         const val RESUME_LIVE_EDGE_AFTER_MS = 30_000L

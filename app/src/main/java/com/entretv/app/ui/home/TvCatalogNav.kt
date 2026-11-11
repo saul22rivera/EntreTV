@@ -20,8 +20,8 @@ import kotlin.math.abs
  * y anchos, y saltaba a otro índice o al "Ver todo" del encabezado.
  *
  * Cada fila es un ítem del LazyColumn con la clave de [rowOrder]; sus elementos se registran
- * con [tvNavItem]. Una fila puede tener debajo su botón "Ver todo" (clave de la fila +
- * [ALL_SUFFIX]): es una parada más al bajar, dentro del mismo ítem del LazyColumn.
+ * con [tvNavItem]. Una fila puede tener arriba su título enfocable, que la abre completa (clave
+ * de la fila + [ALL_SUFFIX]): es una parada más, dentro del mismo ítem del LazyColumn.
  */
 @Stable
 class TvCatalogNav {
@@ -98,13 +98,35 @@ class TvCatalogNav {
         return when (key) {
             Key.DirectionUp, Key.DirectionDown -> true
             Key.DirectionRight -> {
-                // "Ver todo" está solo en su renglón: derecha no tiene adónde ir.
+                // El título está solo en su renglón: derecha no tiene adónde ir.
                 if (current.row.endsWith(ALL_SUFFIX)) return true
                 val total = rows[current.row]?.layoutInfo?.totalItemsCount ?: return false
                 current.index >= total - 1
             }
             else -> false
         }
+    }
+
+    /**
+     * Vuelve a [slot] (al cerrar una categoría o una ficha): compone su fila si no está a la vista,
+     * desplaza la fila hasta el póster y le da el foco. La lista no se mueve si la fila ya se ve.
+     */
+    suspend fun focusSlot(slot: Slot): Boolean {
+        val column = columnState
+        val targetColumn = columnIndex(slot.row)
+        if (column != null && targetColumn >= 0 && column.layoutInfo.visibleItemsInfo.none { it.key == columnKey(slot.row) }) {
+            column.scrollToItem(targetColumn)
+            withFrameNanos { }
+        }
+        if (requesters[slot] == null && !slot.row.endsWith(ALL_SUFFIX)) {
+            val state = rows[slot.row] ?: return false
+            val total = state.layoutInfo.totalItemsCount
+            if (total == 0) return false
+            state.scrollToItem(slot.index.coerceIn(0, total - 1))
+            withFrameNanos { }
+        }
+        val requester = requesters[slot] ?: return false
+        return runCatching { requester.requestFocus() }.isSuccess
     }
 
     /**

@@ -186,9 +186,8 @@ fun DetailsScreen(
         onPlayEpisode(ep.id)
     }
 
-    // Debe coincidir con los items de la LazyColumn: hero, actions, info?, cast?, seasons, episodios.
+    // Debe coincidir con los items de la LazyColumn: hero, actions, cast?, seasons, episodios.
     val firstEpisodeIndex = 3 +
-        (if (details?.hasExtraInfo() == true) 1 else 0) +
         (if (details?.castMembers?.isNotEmpty() == true) 1 else 0)
     val episodeTarget by rememberUpdatedState(
         lastEpisodeId?.let { id -> seasonEpisodes.indexOfFirst { it.id == id } }
@@ -453,11 +452,6 @@ fun DetailsScreen(
                 }
 
                 details?.let { d ->
-                    if (d.hasExtraInfo()) {
-                        item(key = "info") {
-                            InfoCard(d, viewModel.isSeries, profile, Modifier.padding(horizontal = profile.edge, vertical = 16.dp))
-                        }
-                    }
                     if (d.castMembers.isNotEmpty()) {
                         item(key = "cast") {
                             CastRow(d.castMembers, profile)
@@ -585,116 +579,6 @@ fun DetailsScreen(
             },
             onDismiss = { confirmStop = false }
         )
-    }
-}
-
-private fun ContentDetails.hasExtraInfo(): Boolean =
-    releaseDate.isNotEmpty() || originalTitle.isNotEmpty() || originalLanguage.isNotEmpty() ||
-        countries.isNotEmpty() || companies.isNotEmpty() || certification.isNotEmpty() || voteCount > 0 ||
-        budget > 0 || revenue > 0 || seasons > 0 || networks.isNotEmpty() || status.isNotEmpty() || genre.isNotEmpty()
-
-private fun money(value: Long): String =
-    "US$ " + NumberFormat.getIntegerInstance(Locale("es", "MX")).format(value)
-
-@Composable
-private fun releaseLabel(raw: String): String {
-    val parts = raw.take(10).split('-')
-    if (parts.size != 3) return raw
-    val months = stringArrayResource(R.array.details_months_short)
-    val month = parts[1].toIntOrNull()?.let { months.getOrNull(it - 1) } ?: return raw
-    return stringResource(R.string.details_date, parts[2].trimStart('0'), month, parts[0])
-}
-
-/** El estado se guarda en la ficha ya traducido al español (MetadataRepository.status). */
-private val statusLabels = mapOf(
-    "En emisión" to R.string.meta_status_returning,
-    "Finalizada" to R.string.meta_status_ended,
-    "Cancelada" to R.string.meta_status_canceled,
-    "En producción" to R.string.meta_status_in_production,
-    "Anunciada" to R.string.meta_status_planned,
-    "Piloto" to R.string.meta_status_pilot,
-    "Estrenada" to R.string.meta_status_released,
-    "Posproducción" to R.string.meta_status_post_production,
-    "Rumor" to R.string.meta_status_rumored
-)
-
-@Composable
-private fun contentStatusLabel(status: String): String = statusLabels[status]?.let { stringResource(it) } ?: status
-
-/** El idioma original se guarda con su nombre en español (MetadataRepository.languageName). */
-@Composable
-private fun originalLanguageLabel(stored: String): String {
-    val locale = LocalConfiguration.current.locales[0]
-    return remember(stored, locale) {
-        if (locale.language == "es") return@remember stored
-        val spanish = Locale("es", "MX")
-        Locale.getISOLanguages()
-            .firstOrNull { Locale(it).getDisplayLanguage(spanish).equals(stored, ignoreCase = true) }
-            ?.let { code -> Locale(code).getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) } }
-            ?: stored
-    }
-}
-
-/** Ficha técnica (TMDB y servidor). Enfocable para que en TV el D-pad pueda pasar por ella. */
-@Composable
-private fun InfoCard(d: ContentDetails, isSeries: Boolean, profile: DeviceProfile, modifier: Modifier) {
-    val rows = buildList {
-        if (d.releaseDate.isNotEmpty()) {
-            add(stringResource(if (isSeries) R.string.details_premiere else R.string.details_release_date) to releaseLabel(d.releaseDate))
-        } else if (d.year.isNotEmpty()) add(stringResource(R.string.details_year) to d.year)
-        if (d.durationLabel.isNotEmpty()) {
-            add(stringResource(if (isSeries) R.string.details_episode_duration else R.string.details_duration) to d.durationLabel)
-        }
-        if (d.genre.isNotEmpty()) add(stringResource(R.string.details_genres) to d.genre)
-        if (d.rating.isNotEmpty()) {
-            val votes = NumberFormat.getIntegerInstance(Locale("es", "MX")).format(d.voteCount)
-            add(
-                stringResource(R.string.details_rating) to
-                    if (d.voteCount > 0) pluralStringResource(R.plurals.details_rating_votes, d.voteCount, d.rating, votes)
-                    else "★ ${d.rating}"
-            )
-        }
-        if (d.certification.isNotEmpty()) add(stringResource(R.string.details_certification) to d.certification)
-        if (isSeries) {
-            if (d.seasons > 0) add(stringResource(R.string.details_seasons) to d.seasons.toString())
-            if (d.episodes > 0) add(stringResource(R.string.details_episodes) to d.episodes.toString())
-            if (d.networks.isNotEmpty()) add(stringResource(R.string.details_network) to d.networks)
-            if (d.status.isNotEmpty()) add(stringResource(R.string.details_status) to contentStatusLabel(d.status))
-        } else if (d.status.isNotEmpty() && d.status != "Estrenada") {
-            add(stringResource(R.string.details_status) to contentStatusLabel(d.status))
-        }
-        if (d.originalTitle.isNotEmpty()) add(stringResource(R.string.details_original_title) to d.originalTitle)
-        if (d.originalLanguage.isNotEmpty()) {
-            add(stringResource(R.string.details_original_language) to originalLanguageLabel(d.originalLanguage))
-        }
-        if (d.countries.isNotEmpty()) add(stringResource(R.string.details_country) to d.countries)
-        if (d.companies.isNotEmpty()) add(stringResource(R.string.details_production) to d.companies)
-        if (d.budget > 0) add(stringResource(R.string.details_budget) to money(d.budget))
-        if (d.revenue > 0) add(stringResource(R.string.details_revenue) to money(d.revenue))
-    }
-    if (rows.isEmpty()) return
-    val source = remember { MutableInteractionSource() }
-    val focused by source.collectIsFocusedAsState()
-    val shape = RoundedCornerShape(16.dp)
-    val labelStyle = if (profile.isTv) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium
-    val valueStyle = if (profile.isTv) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
-    Column(
-        modifier
-            .widthIn(max = 820.dp)
-            .fillMaxWidth()
-            .clip(shape)
-            .background(EntreBrand.Panel)
-            .then(if (focused) Modifier.border(2.dp, EntreBrand.Accent, shape) else Modifier)
-            .focusable(interactionSource = source)
-            .padding(16.dp)
-    ) {
-        Text(stringResource(R.string.details_info_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-        rows.forEach { (label, value) ->
-            Row(Modifier.padding(vertical = 3.dp)) {
-                Text(label, style = labelStyle, color = EntreBrand.TextDim, modifier = Modifier.width(if (profile.isTv) 220.dp else 140.dp))
-                Text(value, style = valueStyle, color = EntreBrand.Text, modifier = Modifier.weight(1f))
-            }
-        }
     }
 }
 

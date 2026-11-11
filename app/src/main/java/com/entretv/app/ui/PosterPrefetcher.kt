@@ -50,8 +50,9 @@ class PosterPrefetcher @Inject constructor(@ApplicationContext private val conte
     suspend fun prefetch(
         urls: List<String>,
         background: Boolean = false,
-        gate: (suspend (slot: Int) -> Boolean)? = null
-    ) = load(urls, gate) { url ->
+        gate: (suspend (slot: Int) -> Boolean)? = null,
+        parallel: Int = PREFETCH_PARALLEL
+    ) = load(urls, gate, parallel) { url ->
         val card = cardImage(url)
         if (PosterThumbs.exists(context, card) || failures.isRemembered(card)) null
         else posterRequest(context, url)
@@ -83,6 +84,7 @@ class PosterPrefetcher @Inject constructor(@ApplicationContext private val conte
     private suspend fun load(
         urls: List<String>,
         gate: (suspend (slot: Int) -> Boolean)? = null,
+        parallel: Int = PREFETCH_PARALLEL,
         request: (String) -> ImageRequest?
     ) {
         if (urls.isEmpty()) return
@@ -90,7 +92,7 @@ class PosterPrefetcher @Inject constructor(@ApplicationContext private val conte
         val next = AtomicInteger()
         withContext(Dispatchers.IO) {
             coroutineScope {
-                repeat(minOf(PREFETCH_PARALLEL, urls.size)) { slot ->
+                repeat(minOf(parallel, urls.size)) { slot ->
                     launch {
                         while (true) {
                             val url = urls.getOrNull(next.getAndIncrement()) ?: break

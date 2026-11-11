@@ -50,8 +50,8 @@ private const val FEATURED_KEY = "__featured"
 /** Clave de la fila Ordenar, arriba de todo en las columnas de categorías. */
 internal const val SORT_KEY = "__sort"
 
-/** Tiempo quieto sobre una categoría antes de cargarla: recorrer la lista no recalcula cada paso. */
-private const val SELECT_DELAY_MS = 350L
+/** Las vecinas se preparan al quedar quieto. La categoría enfocada se abre al momento. */
+private const val PREFETCH_DELAY_MS = 160L
 
 /** Menú de órdenes de la cabecera y de la fila Ordenar. Con [focusCurrent] arranca sobre el orden actual. */
 @Composable
@@ -145,7 +145,9 @@ fun TvCategoryColumn(
     /** Órdenes posibles; con menos de dos no hay fila Ordenar. */
     sortOptions: List<SortOrder> = emptyList(),
     sort: SortOrder = SortOrder.ORIGINAL,
-    onSort: (SortOrder) -> Unit = {}
+    onSort: (SortOrder) -> Unit = {},
+    /** Arriba desde la primera fila: a Buscar y Actualizar de la cabecera. */
+    onExitUp: () -> Unit = {}
 ) {
     val showSort = sortOptions.size > 1
     val entries: List<String?> = remember(categories) {
@@ -190,8 +192,8 @@ fun TvCategoryColumn(
     LaunchedEffect(focusedKey) {
         val key = focusedKey?.takeIf { it != SORT_KEY } ?: return@LaunchedEffect
         val name = if (key == FEATURED_KEY) null else key
-        delay(SELECT_DELAY_MS)
         if (name != currentSelected && name !in locked) onSelect(name)
+        delay(PREFETCH_DELAY_MS)
         val index = entries.indexOf(name)
         onRest(
             listOfNotNull(entries.getOrNull(index - 1), entries.getOrNull(index + 1))
@@ -208,9 +210,11 @@ fun TvCategoryColumn(
             .onFocusChanged { onFocusChange(it.hasFocus) }
             // Actúa al bajar la tecla y consume también al soltarla.
             .onPreviewKeyEvent { event ->
-                // Arriba de la primera fila no hay nada: se queda ahí.
+                // Arriba de la primera fila se sube a la cabecera.
                 if (event.key == Key.DirectionUp) {
-                    return@onPreviewKeyEvent focusedKey == if (showSort) SORT_KEY else FEATURED_KEY
+                    val atTop = focusedKey == if (showSort) SORT_KEY else FEATURED_KEY
+                    if (atTop && event.type == KeyEventType.KeyDown) onExitUp()
+                    return@onPreviewKeyEvent atTop
                 }
                 if (event.key != Key.DirectionRight && event.key != Key.DirectionLeft) return@onPreviewKeyEvent false
                 if (event.type == KeyEventType.KeyDown) {

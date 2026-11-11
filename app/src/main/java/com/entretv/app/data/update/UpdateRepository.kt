@@ -11,6 +11,7 @@ import com.entretv.app.BuildConfig
 import com.entretv.app.R
 import com.entretv.app.data.repo.PlaylistRepository
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.player.PlaybackActivity
 import com.entretv.app.ui.UiText
 import com.entretv.app.ui.uiText
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -107,6 +108,7 @@ class UpdateRepository @Inject constructor(
     val manual: StateFlow<Boolean> = _manual.asStateFlow()
 
     private var downloadJob: Job? = null
+    private var silentCheck: Job? = null
 
     val isConfigured: Boolean get() = BuildConfig.UPDATE_URL.isNotBlank()
     val currentVersionName: String get() = BuildConfig.VERSION_NAME
@@ -123,7 +125,13 @@ class UpdateRepository @Inject constructor(
             return
         }
         _state.value = if (manual) UpdateState.Checking else UpdateState.Idle
-        scope.launch {
+        if (!manual && silentCheck?.isActive == true) return
+        val job = scope.launch {
+            // La búsqueda en silencio no compite con un video: espera a que se cierre.
+            if (!manual) {
+                PlaybackActivity.awaitIdle()
+                if (_state.value !is UpdateState.Idle) return@launch
+            }
             val result = runCatching { fetchInfo() }
             prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
             val info = result.getOrNull()
@@ -137,6 +145,7 @@ class UpdateRepository @Inject constructor(
             // Obligatoria: se baja sola; el diálogo bloquea la app mientras tanto.
             if (info != null && info.isRequired) download(info)
         }
+        if (!manual) silentCheck = job
     }
 
     /** Servidor y clave de TMDB remotos: se aplican aunque no haya versión nueva. */

@@ -1,8 +1,10 @@
 package com.entretv.app.player
 
 import android.content.Context
+import android.os.Build
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -71,6 +73,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
@@ -81,16 +84,18 @@ fun Format.isCoverArt(): Boolean =
 /**
  * Motor de reproducción EntreTV: único reproductor de la app.
  *
- *  - En vivo va directo a la red; solo películas y episodios pasan por la caché en disco.
+ *  - En vivo y las películas van directo de la red al decodificador, sin escribir el video en
+ *    disco: en un TV box la flash no alcanza a grabar y leer un 4K a la vez, y un MP4 con el
+ *    índice al final se queda saltando de un extremo al otro. La caché de disco solo guarda
+ *    los primeros segundos que se piden desde la ficha.
  *  - En vivo hay un vigilante: si el video se congela, se queda cargando o el servidor corta,
  *    se recupera solo y sin límite de intentos, escalando: saltar al directo → volver a
  *    preparar → reconstruir la fuente, con espera creciente (0 s, 1 s, 2 s… hasta 15 s).
  *  - Si vuelve la red, reintenta de inmediato.
  *  - Películas y episodios reintentan desde el mismo minuto sin límite mientras haya red (el
  *    error aparece tras 30 min seguidos fallando); sin red esperan y siguen solos al volver.
- *  - Con red no medida, la película o episodio se baja entero al disco por delante de la
- *    reproducción con una sola conexión ([VodAheadDownloader]); si no se puede, se guardan
- *    hasta 5 min en memoria.
+ *  - La película se guarda por delante en memoria (no en disco), con techo para no llenar el
+ *    heap y provocar pausas del recolector.
  *  - Nunca se registran URLs: llevan usuario y contraseña.
  */
 @OptIn(UnstableApi::class)
@@ -111,8 +116,6 @@ class PlayerManager @Inject constructor(
         private const val VOD_GIVE_UP_MS = 30 * 60_000L
         /** Película cargando sin avanzar nada (con red) durante esto = trabada. */
         private const val VOD_STALL_BUFFERING_MS = 20_000L
-        /** Espacio libre mínimo para intentar bajar la película al disco (el chequeo fino lo hace la descarga). */
-        private const val AHEAD_MIN_FREE_BYTES = 1L * 1024 * 1024 * 1024
         private const val MAX_RECONNECT_DELAY_MS = 15_000L
         private const val LONG_BUFFER_MS = 60_000
         private const val LIVE_OFFSET_LONG_BUFFER_MS = 20_000L
@@ -123,23 +126,48 @@ class PlayerManager @Inject constructor(
         private const val STALL_FROZEN_MS = 8_000L
         /** Tras recuperarse, cuánto tiene que andar bien para volver a empezar la escalera. */
         private const val STABLE_MS = 20_000L
-        private const val LIVE_MIN_SPEED = 0.97f
-        private const val LIVE_MAX_SPEED = 1.03f
+        // Sin cambios de velocidad en vivo: a 0,97 o 1,03 el video repite o salta cuadros y se ve
+        // robótico. Si se atrasa mucho del directo se salta una vez (ver checkLiveDrift).
+        private const val LIVE_MIN_SPEED = 1f
+        private const val LIVE_MAX_SPEED = 1f
         /** ~3 s de una película 1080p típica: alcanza para la cabecera y el primer cuadro. */
         private const val PRELOAD_BYTES = 2L * 1024 * 1024
-        /** Lo que "Reproducir" espera a que la precarga suelte la conexión y la caché. */
-        private const val PRELOAD_RELEASE_WAIT_MS = 250L
         /** Sonido avanzando sin ningún cuadro de video durante esto = imagen trabada. */
-        private const val NO_PICTURE_MS = 3_000L
+        private const val NO_PICTURE_MS = 6_000L
         /** Al empezar, tras un salto o un reinicio del video se vigila más seguido y con menos espera. */
         private const val FAST_PICTURE_WINDOW_MS = 15_000L
         private const val FAST_PICTURE_TICK_MS = 500L
-        private const val NO_PICTURE_FAST_MS = 1_500L
+        /**
+         * Un HEVC 4K en MediaTek/Amlogic tarda varios segundos en dar el primer cuadro.
+         * Con menos de esto se reinicia el decodificador (y antes se pasaba a software, que no
+         * mantiene el 4K) y la película arranca a tirones.
+         */
+        private const val NO_PICTURE_FAST_MS = 4_000L
         /** "Reparar imagen" sin otro toque durante esto = funcionó; se recuerda para ese tipo de video. */
         private const val REPAIR_SETTLE_MS = 20_000L
+        private val noAheadProgress = MutableStateFlow<Float?>(null)
         private const val MAX_PICTURE_FIXES = 3
         /** Pausa entre quitar y volver a poner la pista de video: si no, el cambio no llega a soltar el decodificador. */
         private const val VIDEO_RESTART_GAP_MS = 300L
+        /** Trabones en vivo dentro de [WEAK_NET_WINDOW_MS] que bajan un escalón de calidad. */
+        private const val WEAK_NET_STALLS = 2
+        private const val WEAK_NET_WINDOW_MS = 60_000L
+        /** Sin trabones durante esto se sube un escalón; más largo que la bajada para no ir y venir. */
+        private const val WEAK_NET_RAISE_MS = 60_000L
+        private const val HINT_TICK_MS = 500L
+        /** En vivo, desde esta altura nunca se decodifica por software. */
+        private const val LIVE_SOFTWARE_MAX_HEIGHT = 720
+        /** Precarga de una película con internet justo: nunca más que esto. */
+        private const val MAX_VOD_PREBUFFER_MS = 120_000L
+        /** Escalera tras trabones en el mismo título: lo que se junta para seguir. */
+        private val VOD_STALL_LADDER_MS = longArrayOf(0L, 0L, 10_000L, 20_000L, 30_000L)
+        /** Precarga a partir de la cual el aviso muestra cuánto falta aunque ya se haya mostrado. */
+        private const val LONG_WAIT_MS = 15_000L
+        /** En vivo: atrasado del directo más que su distancia objetivo + esto → salto al directo. */
+        private const val LIVE_JUMP_BEHIND_MS = 20_000L
+        private const val LIVE_JUMP_COOLDOWN_MS = 60_000L
+        /** En vivo: cargando y sin un byte durante esto → conexión nueva, sin esperar el vigilante largo. */
+        private const val LIVE_SILENT_MS = 6_000L
         private val XTREAM_LIVE = Regex("/live/[^/]+/[^/]+/\\d+\\.(m3u8|ts)$", RegexOption.IGNORE_CASE)
     }
 
@@ -176,20 +204,32 @@ class PlayerManager @Inject constructor(
         )
     }
 
-    // Comparte el pool de conexiones de la app, pero sin caché HTTP ni interceptores.
+    // Pool y despachador propios: el de la app lo comparten el catálogo y los pósters, y un
+    // 4K no puede esperar turno ni compartir las pocas conexiones que deja el panel.
     // followSslRedirects permite redirecciones http ⇄ https, comunes en paneles IPTV.
+    /** Velocidad real que llega al reproductor y reglas del aviso de internet. */
+    private val netQuality = NetworkQuality()
+
+    // Los sockets del video van marcados como video (DSCP): los routers con WMM los priorizan.
     private val streamClient: OkHttpClient = okHttpClient.newBuilder()
         .cache(null)
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 4
+            maxRequestsPerHost = 2
+        })
+        .connectionPool(ConnectionPool(2, 5, TimeUnit.MINUTES))
         .apply {
             interceptors().clear()
             networkInterceptors().clear()
         }
+        .addInterceptor(netQuality.interceptor)
+        .socketFactory(VideoSocketFactory)
         .followRedirects(true)
         .followSslRedirects(true)
         .retryOnConnectionFailure(true)
         .connectTimeout(10, TimeUnit.SECONDS)
-        // Un stream que deja de mandar datos se detecta rápido y se reconecta.
-        .readTimeout(15, TimeUnit.SECONDS)
+        // Un 4K a veces se queda callado unos segundos entre ráfagas; 15 s cortaba la película.
+        .readTimeout(25, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.SECONDS)
         .build()
 
@@ -213,10 +253,13 @@ class PlayerManager @Inject constructor(
         streamClient.newBuilder().dispatcher(Dispatcher()).build()
     }
 
-    // Crearlo no abre nada: la caché y el hilo nacen con la primera película.
-    private val ahead: VodAheadDownloader by lazy {
+    // Ya no se usa para ver la película (el disco trababa el 4K). Solo se abre si quedó
+    // una descarga vieja que hay que recortar, nunca en el camino de la reproducción.
+    private val aheadHolder = lazy {
         VodAheadDownloader(File(context.noBackupFilesDir, "entre_vod_ahead"), databaseProvider, aheadClient, USER_AGENT)
     }
+    private val ahead: VodAheadDownloader get() = aheadHolder.value
+    private fun aheadIfStarted(): VodAheadDownloader? = if (aheadHolder.isInitialized()) ahead else null
 
     init {
         scope.launch {
@@ -280,8 +323,9 @@ class PlayerManager @Inject constructor(
         ProgressiveMediaSource.Factory(httpFactory, extractors).setLoadErrorHandlingPolicy(errorPolicy)
     }
 
+    /** Película y episodio: red → memoria → decodificador. Sin caché de disco en el camino. */
     private val vodSourceFactory by lazy {
-        DefaultMediaSourceFactory(vodDataFactory).setLoadErrorHandlingPolicy(vodErrorPolicy)
+        DefaultMediaSourceFactory(httpFactory).setLoadErrorHandlingPolicy(vodErrorPolicy)
     }
 
     /** Descargas: se leen del disco directo, sin pasar por la caché de video. */
@@ -328,7 +372,8 @@ class PlayerManager @Inject constructor(
         }.stateIn(scope, SharingStarted.Eagerly, false)
 
     /** Parte de la película ya bajada al disco (0..1); null si no se está bajando adelantada. */
-    val aheadDownloaded: StateFlow<Float?> get() = ahead.progress
+    val aheadDownloaded: StateFlow<Float?>
+        get() = aheadIfStarted()?.progress ?: noAheadProgress
 
     /** Pistas de audio, subtítulos y video del contenido actual. */
     private val _tracks = MutableStateFlow(Tracks.EMPTY)
@@ -345,6 +390,35 @@ class PlayerManager @Inject constructor(
     private val _currentKey = MutableStateFlow<String?>(null)
     val currentKey: StateFlow<String?> = _currentKey
 
+    /** Aviso discreto de internet: solo mientras el video está detenido cargando (ver [NetworkQuality]). */
+    private val _networkHint = MutableStateFlow<NetworkHint?>(null)
+    val networkHint: StateFlow<NetworkHint?> = _networkHint
+
+    /** Película o episodio 4K que no alcanza con este internet: la pantalla ofrece verlo en HD. */
+    private val _slowForQuality = MutableStateFlow(false)
+    val slowForQuality: StateFlow<Boolean> = _slowForQuality
+
+    /** Lo que la película junta antes de arrancar o seguir (precarga y escalera); lo lee el búfer. */
+    @Volatile
+    private var vodTargetUs = 0L
+    private var bufferControl: UserBufferLoadControl? = null
+    private var lastLiveJumpAt = 0L
+
+    private val wifiLock: WifiManager.WifiLock? by lazy {
+        val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return@lazy null
+        @Suppress("DEPRECATION")
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        runCatching { wifi.createWifiLock(mode, "EntreTV:video").apply { setReferenceCounted(false) } }.getOrNull()
+    }
+
+    private val hintTick = object : Runnable {
+        override fun run() {
+            updateNetwork()
+            if (currentItem != null) mainHandler.postDelayed(this, HINT_TICK_MS)
+        }
+    }
+
     /** Se dispara cuando un contenido VOD termina (para auto-next de episodios). */
     var onEnded: (() -> Unit)? = null
 
@@ -354,7 +428,24 @@ class PlayerManager @Inject constructor(
     private var currentItem: MediaItem? = null
     private lateinit var trackSelector: DefaultTrackSelector
     private val isTv: Boolean by lazy { isTvDevice(context) }
+
+    /**
+     * En Amlogic, Shield, Fire TV y similares el primer cuadro vale aunque el decodificador
+     * haya nacido un instante antes que la pantalla. Reiniciarlo ahí solo retrasa la película.
+     * En MediaTek y parecidos sí hace falta: si no, queda el sonido sin imagen.
+     */
+    private val restartIfEarlyDecoder: Boolean by lazy {
+        val id = listOf(Build.HARDWARE, Build.BOARD, Build.DEVICE, Build.MODEL)
+            .joinToString(" ") { it.lowercase() }
+        val good = listOf("amlogic", "meson", "nvidia", "tegra", "darcy", "foster", "mdarcy", "aft", "exynos", "qcom", "msm")
+        val bad = listOf("mtk", "mediatek", "mt58", "mt67", "mt81", "hisi", "hi375", "realtek", "rtd")
+        bad.any { it in id } || good.none { it in id }
+    }
     private var currentUrl: String = ""
+    /** URL del canal tal como llegó a [play], antes de elegir formato. */
+    private var currentRequestedUrl: String = ""
+    /** Formato (.m3u8 o .ts) que anduvo en cada canal Xtream cuando el de Configuración falló. Solo esta sesión. */
+    private val workingLiveFormat = HashMap<String, String>()
     private var reconnectAttempts = 0
     private var reconnectPending = false
     private var lastPositionMs = C.TIME_UNSET
@@ -398,6 +489,14 @@ class PlayerManager @Inject constructor(
 
     private val videoFixes by lazy { VideoFixMemory(context) }
 
+    private val quality = PlaybackQuality()
+
+    // Modo red débil, por contenido.
+    private val recentStalls = ArrayDeque<Long>()
+    private var lastStallAt = 0L
+    /** Tope de bitrate de video puesto por el modo red débil; [Int.MAX_VALUE] = sin tope. */
+    private var weakNetCapBps = Int.MAX_VALUE
+
     // Abre el archivo de preferencias fuera del hilo principal: se consulta al llegar el video.
     init {
         scope.launch { videoFixes.levelFor("") }
@@ -412,6 +511,7 @@ class PlayerManager @Inject constructor(
         override fun run() {
             checkStall()
             checkPicture()
+            checkWeakNetRaise()
             mainHandler.postDelayed(this, WATCHDOG_TICK_MS)
         }
     }
@@ -448,8 +548,9 @@ class PlayerManager @Inject constructor(
     private fun buildPlayer(): ExoPlayer {
         val loadControl = UserBufferLoadControl(
             targetBufferBytes(), longVodBufferBytes(), lowRam,
-            { startBufferMs }, { maxBufferMs }, { currentIsLive }, { vodLongBuffer }
+            { startBufferMs }, { maxBufferMs }, { currentIsLive }, { vodLongBuffer }, { vodTargetUs }
         )
+        bufferControl = loadControl
 
         trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -459,7 +560,7 @@ class PlayerManager @Inject constructor(
                 .build()
         }
 
-        // Corrige la distancia al directo con cambios de velocidad que no se notan (±3 %).
+        // Velocidad fija: la distancia al directo se corrige con un salto, no acelerando el video.
         val liveSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
             .setFallbackMinPlaybackSpeed(LIVE_MIN_SPEED)
             .setFallbackMaxPlaybackSpeed(LIVE_MAX_SPEED)
@@ -500,13 +601,11 @@ class PlayerManager @Inject constructor(
                     _reconnecting.value = false
                     lastProgressAt = SystemClock.elapsedRealtime()
                     vodFailingSince = 0L
+                    rememberLiveFormat()
                 }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                // #region agent log
-                com.entretv.app.data.Diag.log("player state=$state pos=${exoPlayer.currentPosition} buf=${exoPlayer.bufferedPosition} ahead=${aheadUrl != null} live=$currentIsLive dl=${ahead.progress.value}")
-                // #endregion
                 _isBuffering.value = state == Player.STATE_BUFFERING
                 _durationMs.value = if (state == Player.STATE_IDLE) 0L else exoPlayer.duration.coerceAtLeast(0L)
                 if (aheadUrl != null && _durationMs.value > 0) ahead.durationMs = _durationMs.value
@@ -582,6 +681,11 @@ class PlayerManager @Inject constructor(
                 onVideoFormat(format)
             }
         })
+        exoPlayer.addAnalyticsListener(quality)
+        quality.onStall = {
+            netQuality.onStall()
+            onLiveStall()
+        }
         _trackParams.value = exoPlayer.trackSelectionParameters
 
         runCatching {
@@ -606,6 +710,7 @@ class PlayerManager @Inject constructor(
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             .setTrackTypeDisabled(C.TRACK_TYPE_IMAGE, true)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !p.subtitlesByDefault)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
         if (p.subtitlesByDefault) {
             builder.setPreferredTextLanguages(p.contentLanguage).setSelectUndeterminedTextLanguage(false)
         } else {
@@ -634,29 +739,48 @@ class PlayerManager @Inject constructor(
      * Canales en vivo de Xtream (/live/usuario/clave/123.m3u8): se pide el formato elegido en
      * Configuración. Las URLs de listas M3U se dejan como vienen.
      */
-    private fun liveUrl(url: String): String {
-        val match = XTREAM_LIVE.find(url.substringBefore('?')) ?: return url
-        val ext = match.groupValues[1]
-        val wanted = prefs.liveFormat
-        if (ext.equals(wanted, ignoreCase = true)) return url
+    private fun liveUrl(url: String): String =
+        withLiveFormat(url, workingLiveFormat[url] ?: prefs.liveFormat) ?: url
+
+    /** La URL Xtream de vivo con otra extensión; null si no es de Xtream. */
+    private fun withLiveFormat(url: String, wanted: String): String? {
+        val match = XTREAM_LIVE.find(url.substringBefore('?')) ?: return null
+        if (match.groupValues[1].equals(wanted, ignoreCase = true)) return url
         return url.replaceRange(match.groups[1]!!.range, wanted)
     }
 
+    /** El mismo canal Xtream en el otro formato (.m3u8 ⇄ .ts); null si no es de Xtream. */
+    private fun otherLiveFormat(url: String): String? {
+        val ext = XTREAM_LIVE.find(url.substringBefore('?'))?.groupValues?.get(1) ?: return null
+        val other = if (ext.equals(SettingsRepository.LIVE_TS, ignoreCase = true)) SettingsRepository.LIVE_HLS
+        else SettingsRepository.LIVE_TS
+        return withLiveFormat(url, other)
+    }
+
+    /** Si el formato en uso no es el pedido en Configuración y el canal anda, se recuerda para el próximo zap. */
+    private fun rememberLiveFormat() {
+        val requested = currentRequestedUrl
+        if (!currentIsLive || requested.isEmpty() || currentUrl == liveUrl(requested)) return
+        val ext = XTREAM_LIVE.find(currentUrl.substringBefore('?'))?.groupValues?.get(1) ?: return
+        workingLiveFormat[requested] = ext.lowercase(Locale.ROOT)
+    }
+
     /**
-     * Decodificadores de video en el orden del ajuste: hardware o software primero. Los otros
-     * quedan detrás para que el video igual arranque si el preferido no puede (con
-     * setEnableDecoderFallback, uno que falla al iniciar pasa al siguiente de esta lista).
-     * [softwareVideo] lo pone el vigilante de imagen o un error del decodificador.
+     * Decodificadores de video. En automático y en hardware solo entra el del chip: si el de
+     * software queda en la lista, el fallback lo usa cuando el 4K tarda en arrancar y la
+     * película se traba. El de software solo entra si el usuario lo eligió, si el vigilante lo
+     * pide para un video que no es 4K, o si el equipo no tiene decodificador de hardware.
      */
     private fun decoderInfos(mimeType: String, secure: Boolean, tunneling: Boolean): List<MediaCodecInfo> {
         val infos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
         if (!MimeTypes.isVideo(mimeType)) return infos
-        if (softwareVideo) return infos.sortedByDescending { it.softwareOnly }
-        return when (prefs.decoder) {
-            SettingsRepository.DECODER_HARDWARE -> infos.sortedByDescending { it.hardwareAccelerated }
-            SettingsRepository.DECODER_SOFTWARE -> infos.sortedByDescending { it.softwareOnly }
-            else -> infos
+        if (prefs.decoder == SettingsRepository.DECODER_SOFTWARE || softwareVideo) {
+            return infos.sortedByDescending { it.softwareOnly }
         }
+        // Automático y hardware: solo el chip. El fallback a software no sostiene un 4K
+        // (se ve a tirones) y es lo que un reproductor como Dantoo no hace nunca.
+        val hardware = infos.filter { it.hardwareAccelerated }
+        return hardware.ifEmpty { infos }
     }
 
     /** Fija una pista concreta de audio o subtítulos. */
@@ -796,7 +920,7 @@ class PlayerManager @Inject constructor(
             surfaceSizedAt = SystemClock.elapsedRealtime()
             if (currentItem != null) {
                 resetPictureWait()
-                if (decoderBeforeSurface && isTv) autoRestartVideo()
+                if (decoderBeforeSurface && isTv && restartIfEarlyDecoder) autoRestartVideo()
             }
         }
         surfaceHasSize = hasSize
@@ -807,7 +931,7 @@ class PlayerManager @Inject constructor(
         val surface = player.surfaceSize
         val sized = surface.width > 0 && surface.height > 0
         decoderBeforeSurface = !sized || initializedAtMs < surfaceSizedAt
-        if (decoderBeforeSurface && sized && isTv) autoRestartVideo()
+                if (decoderBeforeSurface && sized && isTv && restartIfEarlyDecoder) autoRestartVideo()
     }
 
     /** Primer video de cada contenido: aplica lo que [VideoFixMemory] recuerda para su tipo. */
@@ -821,7 +945,10 @@ class PlayerManager @Inject constructor(
             // El decodificador ya se creó con el formato: hay que soltarlo para que nazca el de software.
             // No gasta el reinicio por pantalla tardía: el nuevo también puede nacer sin pantalla.
             VideoFixMemory.LEVEL_SOFTWARE -> {
-                if (!softwareVideo) {
+                // Un 4K recordado en software se traba siempre: se olvida y se queda en el chip.
+                // En vivo, 720p o más por software no mantiene 50 cuadros: se ve robótico.
+                if (format.height > 1080) videoFixes.remember(key, VideoFixMemory.LEVEL_NONE)
+                else if (!softwareVideo && !(currentIsLive && format.height >= LIVE_SOFTWARE_MAX_HEIGHT)) {
                     useSoftwareVideo()
                     restartVideo()
                 }
@@ -895,9 +1022,159 @@ class PlayerManager @Inject constructor(
         proactiveRestartPending = false
         val video = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
         val other = if (pictureFixes == 2) realVideoTrack(video, exclude = video.firstOrNull { it.isSelected }) else null
-        if (pictureFixes >= 2 && other == null) useSoftwareVideo()
+        val height = player.videoFormat?.height ?: 0
+        val softwareMax = if (currentIsLive) LIVE_SOFTWARE_MAX_HEIGHT - 1 else 1080
+        if (pictureFixes >= 2 && other == null && height in 1..softwareMax) useSoftwareVideo()
         restartVideo(other)
     }
+
+    /**
+     * Cada [HINT_TICK_MS] con algo en el reproductor: mide la velocidad que llega, calcula cuánto
+     * debe juntar la película antes de seguir y decide el aviso de internet.
+     */
+    private fun updateNetwork() {
+        val now = SystemClock.elapsedRealtime()
+        netQuality.sample(now)
+        val live = currentIsLive
+        val need = requiredBps()
+        val loading = player.playWhenReady && player.playbackState == Player.STATE_BUFFERING
+        if (!live) vodTargetUs = vodTargetMs(now, need, loading) * 1_000L
+        val buffering = loading && !_reconnecting.value && !_offline.value && _error.value == null
+        val waitedUs = bufferControl?.neededUs ?: 0L
+        val percent = if (buffering && waitedUs > 0L) {
+            (player.totalBufferedDuration * 100_000L / waitedUs).toInt().coerceIn(0, 99)
+        } else null
+        val longWait = !live && vodTargetUs >= LONG_WAIT_MS * 1_000L
+        val hint = netQuality.hint(_currentKey.value, buffering, need, percent, longWait, now)
+        if (_networkHint.value != hint) _networkHint.value = hint
+        if (!live && hint?.kind == NetworkHint.Kind.SLOW && (player.videoFormat?.height ?: 0) > 1080) {
+            _slowForQuality.value = true
+        }
+        if (live) checkLiveDrift(now)
+    }
+
+    /** Bits por segundo que pide el contenido; null si no se sabe. */
+    private fun requiredBps(): Long? {
+        if (!currentIsLive) {
+            val bytes = netQuality.contentBytes
+            val duration = player.duration
+            if (bytes > 0L && duration > 0L && duration != C.TIME_UNSET) return bytes * 8_000L / duration
+        }
+        val video = player.videoFormat?.takeUnless { it.isCoverArt() } ?: return null
+        val videoBps = listOf(video.bitrate, video.averageBitrate, video.peakBitrate).firstOrNull { it > 0 } ?: return null
+        val audioBps = player.audioFormat?.bitrate?.takeIf { it > 0 } ?: 0
+        return (videoBps + audioBps).toLong()
+    }
+
+    /**
+     * Lo que junta la película antes de seguir, en ms: la escalera de trabones del título (10, 20
+     * y 30 s) y, si el internet no alcanza, lo que falta para terminarla sin cortes (tope
+     * [MAX_VOD_PREBUFFER_MS]). Nunca más de lo que entra en memoria.
+     */
+    private fun vodTargetMs(now: Long, needBps: Long?, loading: Boolean): Long {
+        if (currentItem == null || currentUrl.startsWith("file:")) return 0L
+        val stalls = quality.snapshot().stalls
+        var target = VOD_STALL_LADDER_MS[stalls.coerceIn(0, VOD_STALL_LADDER_MS.size - 1)]
+        val duration = player.duration
+        // Solo cargando: reproduciendo con el búfer lleno casi no se baja y la velocidad parece baja.
+        val speed = if (loading) netQuality.speedBps(now) else null
+        if (needBps != null && needBps > 0L && speed != null && speed in 1 until needBps &&
+            duration > 0L && duration != C.TIME_UNSET
+        ) {
+            val remaining = (duration - player.currentPosition).coerceAtLeast(0L)
+            val missing = (remaining * (1.0 - speed.toDouble() / needBps)).toLong()
+            target = maxOf(target, missing.coerceAtMost(MAX_VOD_PREBUFFER_MS))
+        }
+        if (needBps != null && needBps > 0L) {
+            val memoryMs = longVodBufferBytes().toLong() * 8L * 8L / 10L * 1_000L / needBps
+            target = target.coerceAtMost(memoryMs)
+        }
+        return target
+    }
+
+    /** Distancia al directo al empezar a ver; se rearma tras una pausa. */
+    private var liveBaseOffsetMs = C.TIME_UNSET
+
+    /**
+     * En vivo la velocidad no cambia: si el canal se atrasó más de [LIVE_JUMP_BEHIND_MS] respecto de
+     * cómo empezó (cortes de red), se salta al directo una vez, con [LIVE_JUMP_COOLDOWN_MS] de margen.
+     * Una pausa del usuario no cuenta: al seguir se toma la distancia nueva.
+     */
+    private fun checkLiveDrift(now: Long) {
+        if (!player.playWhenReady) {
+            liveBaseOffsetMs = C.TIME_UNSET
+            return
+        }
+        if (!player.isPlaying || !player.isCurrentMediaItemLive) return
+        val offset = player.currentLiveOffset
+        if (offset == C.TIME_UNSET) return
+        val base = liveBaseOffsetMs
+        if (base == C.TIME_UNSET || offset < base) {
+            liveBaseOffsetMs = offset
+            return
+        }
+        if (offset - base > LIVE_JUMP_BEHIND_MS && now - lastLiveJumpAt > LIVE_JUMP_COOLDOWN_MS) {
+            lastLiveJumpAt = now
+            liveBaseOffsetMs = C.TIME_UNSET
+            player.seekToDefaultPosition()
+        }
+    }
+
+    private fun holdWifi(hold: Boolean) {
+        val lock = wifiLock ?: return
+        runCatching { if (hold) { if (!lock.isHeld) lock.acquire() } else if (lock.isHeld) lock.release() }
+    }
+
+    /**
+     * Modo red débil: [WEAK_NET_STALLS] trabones en vivo dentro de [WEAK_NET_WINDOW_MS] bajan el
+     * tope de video a la calidad anterior a la que se ve. Solo actúa si el canal trae varias
+     * calidades y el usuario no fijó una a mano; un TS de una sola calidad queda igual.
+     */
+    private fun onLiveStall() {
+        if (!currentIsLive || currentItem == null) return
+        val now = SystemClock.elapsedRealtime()
+        lastStallAt = now
+        recentStalls.addLast(now)
+        while (recentStalls.isNotEmpty() && now - recentStalls.first() > WEAK_NET_WINDOW_MS) recentStalls.removeFirst()
+        if (recentStalls.size < WEAK_NET_STALLS || videoChosenByUser()) return
+        recentStalls.clear()
+        val current = player.videoFormat?.bitrate?.takeIf { it > 0 } ?: return
+        val lower = videoVariantBitrates().filter { it < current }.maxOrNull() ?: return
+        setWeakNetCap(lower)
+    }
+
+    /** Tras [WEAK_NET_RAISE_MS] sin trabones sube un escalón; arriba del todo quita el tope. */
+    private fun checkWeakNetRaise() {
+        if (weakNetCapBps == Int.MAX_VALUE || !currentIsLive || currentItem == null) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastStallAt < WEAK_NET_RAISE_MS) return
+        lastStallAt = now
+        setWeakNetCap(videoVariantBitrates().filter { it > weakNetCapBps }.minOrNull() ?: Int.MAX_VALUE)
+    }
+
+    private fun setWeakNetCap(bps: Int) {
+        weakNetCapBps = bps
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setMaxVideoBitrate(bps)
+            .build()
+    }
+
+    private fun videoChosenByUser(): Boolean {
+        val params = player.trackSelectionParameters
+        return C.TRACK_TYPE_VIDEO in params.disabledTrackTypes ||
+            params.overrides.keys.any { it.type == C.TRACK_TYPE_VIDEO }
+    }
+
+    /** Bitrates de las calidades de video que el equipo puede reproducir. */
+    private fun videoVariantBitrates(): List<Int> =
+        player.currentTracks.groups.asSequence()
+            .filter { it.type == C.TRACK_TYPE_VIDEO }
+            .flatMap { group -> (0 until group.length).asSequence().filter { group.isTrackSupported(it) }.map { group.getTrackFormat(it) } }
+            .filterNot { it.isCoverArt() }
+            .map { it.bitrate }
+            .filter { it > 0 }
+            .distinct()
+            .toList()
 
     fun setSpeed(speed: Float) {
         player.setPlaybackSpeed(speed)
@@ -914,7 +1191,8 @@ class PlayerManager @Inject constructor(
             videoBitrate = video?.bitrate?.takeIf { it > 0 } ?: video?.averageBitrate?.takeIf { it > 0 },
             audioCodec = audio?.sampleMimeType,
             audioChannels = audio?.channelCount?.takeIf { it > 0 },
-            bufferedMs = player.totalBufferedDuration
+            bufferedMs = player.totalBufferedDuration,
+            quality = quality.snapshot()
         )
     }
 
@@ -932,10 +1210,18 @@ class PlayerManager @Inject constructor(
         return mb * 1024 * 1024
     }
 
-    /** Techo del búfer de 5 min de película sin descarga al disco. */
+    /**
+     * Techo en bytes del búfer de una película. Más de esto, en el heap de Java, dispara pausas
+     * del recolector que se ven como tirones. 160 MB cubren ~30 s de un 4K pesado.
+     */
     private fun longVodBufferBytes(): Int {
         val heapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        return if (!lowRam && heapMb >= 512) 256 * 1024 * 1024 else targetBufferBytes()
+        val mb = when {
+            lowRam || heapMb <= 192 -> 64
+            heapMb <= 384 -> 112
+            else -> 160
+        }
+        return mb * 1024 * 1024
     }
 
     /**
@@ -963,7 +1249,8 @@ class PlayerManager @Inject constructor(
         }
         // Película que el decodificador de video no pudo seguir: un reintento con el de software
         // (el fallback de Media3 solo cubre el arranque del decodificador, no fallas a mitad).
-        if (!currentIsLive && !softwareVideo && error is ExoPlaybackException &&
+        val videoHeight = (error as? ExoPlaybackException)?.rendererFormat?.height ?: 0
+        if (!currentIsLive && !softwareVideo && videoHeight in 1..1080 && error is ExoPlaybackException &&
             error.type == ExoPlaybackException.TYPE_RENDERER && MimeTypes.isVideo(error.rendererFormat?.sampleMimeType)
         ) {
             softwareVideo = true
@@ -1084,8 +1371,16 @@ class PlayerManager @Inject constructor(
             }
             else -> {
                 val position = player.currentPosition
-                if (currentIsLive) player.setMediaSource(sourceFor(item, currentUrl))
-                else player.setMediaSource(sourceFor(item, currentUrl), position.coerceAtLeast(0L))
+                if (currentIsLive) {
+                    // Canal Xtream que no vuelve: cada reconstrucción prueba el otro formato, sin abrir otra conexión.
+                    val source = otherLiveFormat(currentUrl)?.let { swapped ->
+                        currentUrl = swapped
+                        item.buildUpon().setUri(swapped).build().also { currentItem = it }
+                    } ?: item
+                    player.setMediaSource(sourceFor(source, currentUrl))
+                } else {
+                    player.setMediaSource(sourceFor(item, currentUrl), position.coerceAtLeast(0L))
+                }
                 player.prepare()
             }
         }
@@ -1120,7 +1415,10 @@ class PlayerManager @Inject constructor(
                     scheduleRecovery()
                 }
             }
-            Player.STATE_BUFFERING -> if (now - lastProgressAt > STALL_BUFFERING_MS) scheduleRecovery()
+            // Cargando sin que llegue nada: la conexión quedó muda, se abre otra sin esperar más.
+            Player.STATE_BUFFERING -> if (now - lastProgressAt > STALL_BUFFERING_MS ||
+                (now - lastProgressAt > LIVE_SILENT_MS && netQuality.msSinceData(now) > LIVE_SILENT_MS)
+            ) scheduleRecovery()
             else -> lastProgressAt = now
         }
     }
@@ -1200,23 +1498,10 @@ class PlayerManager @Inject constructor(
         recover()
     }
 
-    /**
-     * Bajar la película entera al disco: solo por http, archivo único (no listas HLS/DASH), con
-     * red no medida y espacio libre. Se decide al empezar el título para no cambiar de camino a mitad.
-     */
-    private fun aheadAllowed(url: String): Boolean {
-        if (!url.startsWith("http", ignoreCase = true)) return false
-        val path = url.substringBefore('?').lowercase(Locale.ROOT)
-        if (path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd")) return false
-        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
-        if (cm.activeNetwork == null || cm.isActiveNetworkMetered) return false
-        return runCatching { context.noBackupFilesDir.usableSpace >= AHEAD_MIN_FREE_BYTES }.getOrDefault(false)
-    }
-
     private fun sourceFor(item: MediaItem, url: String): MediaSource {
         // Nunca dos conexiones al mismo proveedor: fuera del camino adelantado, su descarga se corta.
         val useAhead = !currentIsLive && url == aheadUrl
-        if (useAhead) ahead.attach(url) else ahead.stop()
+        if (useAhead) ahead.attach(url) else aheadIfStarted()?.stop()
         vodLongBuffer = !currentIsLive && !useAhead && !url.startsWith("file:")
         if (url.startsWith("file:")) return localSourceFactory.createMediaSource(item)
         if (useAhead) return aheadSourceFactory.createMediaSource(item)
@@ -1246,13 +1531,24 @@ class PlayerManager @Inject constructor(
             player.playWhenReady = true
             return
         }
-        cancelPreload(PRELOAD_RELEASE_WAIT_MS)
+        cancelPreload()
         cancelRecovery()
+        quality.start()
+        netQuality.startContent()
+        vodTargetUs = 0L
+        _networkHint.value = null
+        _slowForQuality.value = false
+        liveBaseOffsetMs = C.TIME_UNSET
+        lastLiveJumpAt = 0L
+        recentStalls.clear()
+        lastStallAt = 0L
+        weakNetCapBps = Int.MAX_VALUE
         reconnectAttempts = 0
         _reconnectAttempt.value = 0
         _reconnecting.value = false
         _error.value = null
         currentIsLive = isLive
+        currentRequestedUrl = if (isLive) url else ""
         videoRestartToken++
         resetPictureWait()
         pictureFixes = 0
@@ -1270,8 +1566,9 @@ class PlayerManager @Inject constructor(
         currentUrl = url
         _currentKey.value = contentKey.ifEmpty { null }
         _vodActive.value = !isLive && !url.startsWith("file:")
-        aheadUrl = if (!isLive && aheadAllowed(url)) url else null
-        ahead.durationMs = C.TIME_UNSET
+        // No se baja la película al disco mientras se ve: esa copia es lo que traba el 4K.
+        aheadUrl = null
+        aheadIfStarted()?.durationMs = C.TIME_UNSET
         vodFailingSince = 0L
         lastPositionMs = C.TIME_UNSET
         lastBufferedMs = C.TIME_UNSET
@@ -1310,6 +1607,10 @@ class PlayerManager @Inject constructor(
         player.playWhenReady = true
         mainHandler.removeCallbacks(watchdog)
         mainHandler.postDelayed(watchdog, WATCHDOG_TICK_MS)
+        mainHandler.removeCallbacks(hintTick)
+        mainHandler.postDelayed(hintTick, HINT_TICK_MS)
+        holdWifi(!url.startsWith("file:"))
+        PlaybackActivity.set(true)
     }
 
     // ============================ Precarga ============================
@@ -1358,6 +1659,12 @@ class PlayerManager @Inject constructor(
         mainHandler.removeCallbacks(watchdog)
         mainHandler.removeCallbacks(fastPicture)
         mainHandler.removeCallbacks(rememberRepair)
+        mainHandler.removeCallbacks(hintTick)
+        holdWifi(false)
+        PlaybackActivity.set(false)
+        _networkHint.value = null
+        _slowForQuality.value = false
+        vodTargetUs = 0L
         currentItem = null
         _currentKey.value = null
         _vodActive.value = false
@@ -1368,7 +1675,7 @@ class PlayerManager @Inject constructor(
         player.clearMediaItems()
         // Corta la conexión; lo bajado queda para volver a entrar al mismo título.
         aheadUrl = null
-        ahead.stop()
+        aheadIfStarted()?.stop()
         vodLongBuffer = false
     }
 
@@ -1379,7 +1686,10 @@ class PlayerManager @Inject constructor(
         mainHandler.removeCallbacks(watchdog)
         mainHandler.removeCallbacks(fastPicture)
         mainHandler.removeCallbacks(rememberRepair)
-        ahead.release()
+        mainHandler.removeCallbacks(hintTick)
+        holdWifi(false)
+        PlaybackActivity.set(false)
+        aheadIfStarted()?.release()
         runCatching {
             context.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback)
         }

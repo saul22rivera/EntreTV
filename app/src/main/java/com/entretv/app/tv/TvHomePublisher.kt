@@ -24,6 +24,7 @@ import com.entretv.app.data.repo.SeriesResume
 import com.entretv.app.data.repo.SeriesResumeRule
 import com.entretv.app.data.settings.ParentalControl
 import com.entretv.app.data.settings.SettingsRepository
+import com.entretv.app.player.PlaybackActivity
 import com.entretv.app.ui.TitleCleaner
 import com.entretv.app.ui.isTvDevice
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -66,7 +67,8 @@ class TvHomePublisher @Inject constructor(
 
     /**
      * Sigue los cambios mientras la app está abierta. Mientras se reproduce el progreso se guarda
-     * cada 5 s y la espera no se cumple: se publica al pausar, salir o quitar algo de la fila.
+     * cada 5 s y la espera no se cumple: se publica al salir o al quitar algo de la fila. Con
+     * algo en el reproductor (aunque esté en pausa) se espera: no le quita red al video.
      */
     @OptIn(FlowPreview::class)
     fun start(scope: CoroutineScope) {
@@ -97,12 +99,14 @@ class TvHomePublisher @Inject constructor(
 
     suspend fun publishWatchNext() {
         if (!isSupported(context)) return
+        PlaybackActivity.awaitIdle()
         lock.withLock { withContext(Dispatchers.IO) { guarded("watch next") { syncWatchNext(watchNextEntries()) } } }
     }
 
     /** Sin [force], como mucho una vez por día (el catálogo se actualiza una o dos veces por día). */
     suspend fun refreshChannel(force: Boolean) {
         if (!isSupported(context)) return
+        PlaybackActivity.awaitIdle()
         lock.withLock { withContext(Dispatchers.IO) { guarded("channel") { syncChannel(force) } } }
     }
 

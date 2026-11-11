@@ -1,6 +1,7 @@
 package com.entretv.app.data.settings
 
 import android.content.Context
+import android.os.Build
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -54,7 +55,9 @@ data class PlayerPrefs(
 data class CatalogPrefs(
     /** Nombre de [com.entretv.app.ui.SortOrder]. */
     val defaultSort: String = SettingsRepository.DEFAULT_SORT,
-    val cleanNames: Boolean = true
+    val cleanNames: Boolean = true,
+    /** TV: Películas y Series sin columna de categorías, todo desde Destacados. */
+    val hideVodCategories: Boolean = false
 )
 
 /** Datos de la cuenta que manda el servidor al iniciar sesión y en cada actualización. */
@@ -121,14 +124,14 @@ class SettingsRepository @Inject constructor(
         const val REFRESH_DAILY = 1
         /** Primera vez del día y otra vez después de cada corte de [PlaylistRepository.THRICE_CUTOFF_HOURS]. */
         const val REFRESH_THRICE_DAILY = 3
-        /** Primera vez del día y cada 3 h con la app abierta, sin reproducir y con Wi‑Fi o cable. */
-        const val REFRESH_AUTO = 4
         /** Solo con el botón Actualizar. */
         const val REFRESH_MANUAL = 5
-        val REFRESH_MODES = listOf(REFRESH_DAILY, REFRESH_THRICE_DAILY, REFRESH_AUTO, REFRESH_MANUAL)
-        // Opciones de la 1.3.0: "Siempre" (0) y "Dos veces al día" (2) pasan a la automática.
+        val REFRESH_MODES = listOf(REFRESH_DAILY, REFRESH_THRICE_DAILY, REFRESH_MANUAL)
+        // Opciones viejas: "Siempre" (0), "Dos veces al día" (2) y la automática de fondo (4)
+        // pasan a una vez al día: el catálogo ya no se actualiza solo de fondo.
         private const val LEGACY_ALWAYS = 0
         private const val LEGACY_TWICE_DAILY = 2
+        private const val LEGACY_AUTO = 4
 
         private val KEY_REFRESH_MODE = intPreferencesKey("refresh_mode")
         private val KEY_BUFFER_SECONDS = intPreferencesKey("start_buffer_seconds")
@@ -139,6 +142,11 @@ class SettingsRepository @Inject constructor(
         private val KEY_DECODER = intPreferencesKey("decoder_mode")
         private val KEY_FRAME_RATE = intPreferencesKey("frame_rate_mode")
         private val KEY_TUNNELING = booleanPreferencesKey("tunneling")
+        private const val KEY_LAST_SECTION = "last_home_section"
+        private val TUNNEL_BAD = listOf("mtk", "mediatek", "mt58", "mt67", "mt81", "hisi", "hi375", "realtek", "rtd")
+        private val TUNNEL_GOOD = listOf(
+            "amlogic", "meson", "nvidia", "tegra", "darcy", "foster", "mdarcy", "aft", "exynos", "qcom", "msm"
+        )
         private val KEY_SHOW_CLOCK = booleanPreferencesKey("show_clock")
         private val KEY_SUBTITLE_SIZE = intPreferencesKey("subtitle_size")
         private val KEY_SUBTITLE_COLOR = intPreferencesKey("subtitle_color")
@@ -146,6 +154,7 @@ class SettingsRepository @Inject constructor(
         private val KEY_SUBTITLE_POSITION = intPreferencesKey("subtitle_position")
         private val KEY_DEFAULT_SORT = stringPreferencesKey("default_sort")
         private val KEY_CLEAN_NAMES = booleanPreferencesKey("clean_names")
+        private val KEY_HIDE_VOD_CATEGORIES = booleanPreferencesKey("hide_vod_categories")
         private val KEY_PIN_HASH = stringPreferencesKey("parental_pin_hash")
         private val KEY_DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
         private val KEY_SERVER_OVERRIDE = stringPreferencesKey("remote_server_url")
@@ -206,8 +215,8 @@ class SettingsRepository @Inject constructor(
 
     val refreshMode: Flow<Int> = context.settingsStore.data.map {
         when (val mode = it[KEY_REFRESH_MODE]) {
-            LEGACY_ALWAYS, LEGACY_TWICE_DAILY -> REFRESH_AUTO
             in REFRESH_MODES -> mode!!
+            // LEGACY_ALWAYS, LEGACY_TWICE_DAILY, LEGACY_AUTO o sin elegir.
             else -> REFRESH_DAILY
         }
     }.distinctUntilChanged()
@@ -284,7 +293,10 @@ class SettingsRepository @Inject constructor(
             decoder = it[KEY_DECODER]?.takeIf { d -> d in DECODER_AUTO..DECODER_SOFTWARE } ?: DECODER_AUTO,
             // Sin elegir queda apagado, también en TV.
             frameRateMode = it[KEY_FRAME_RATE]?.takeIf { m -> m in FRAME_RATE_OFF..FRAME_RATE_AUTO } ?: FRAME_RATE_OFF,
-            tunneling = isTv && it[KEY_TUNNELING] == true,
+            // Sin tocar el ajuste: en chips que lo aprovechan (Amlogic, Shield, Fire TV) queda
+            // prendido. En MediaTek y similares queda apagado: ahí el túnel suele dejar la imagen
+            // en negro. Si el usuario lo cambia, manda lo que guardó.
+            tunneling = isTv && (it[KEY_TUNNELING] ?: tunnelSuitsThisTv()),
             skipIntroButton = it[KEY_SKIP_INTRO] ?: false
         )
     }.distinctUntilChanged()
@@ -310,6 +322,26 @@ class SettingsRepository @Inject constructor(
     }
 
     private val isTv: Boolean by lazy { isTvDevice(context) }
+
+    private val navPrefs by lazy { context.getSharedPreferences("entre_nav", Context.MODE_PRIVATE) }
+
+    /** Última sección de Inicio (LIVE, MOVIES, SERIES). Null si todavía no eligió. */
+    fun lastHomeSection(): String? = navPrefs.getString(KEY_LAST_SECTION, null)
+
+    fun rememberHomeSection(name: String) {
+        navPrefs.edit().putString(KEY_LAST_SECTION, name).apply()
+    }
+
+    /**
+     * El modo túnel manda el video directo al chip. En Amlogic, NVIDIA y Fire TV suele ir más
+     * liso. En MediaTek, HiSilicon y Realtek a menudo corta el video: ahí no se enciende solo.
+     */
+    private fun tunnelSuitsThisTv(): Boolean {
+        val id = listOf(Build.HARDWARE, Build.BOARD, Build.DEVICE, Build.MODEL)
+            .joinToString(" ") { it.lowercase() }
+        if (TUNNEL_BAD.any { it in id }) return false
+        return TUNNEL_GOOD.any { it in id }
+    }
 
     suspend fun setFrameRateMode(mode: Int) {
         context.settingsStore.edit { it[KEY_FRAME_RATE] = mode }
@@ -346,7 +378,8 @@ class SettingsRepository @Inject constructor(
     val catalogPrefs: Flow<CatalogPrefs> = context.settingsStore.data.map {
         CatalogPrefs(
             defaultSort = it[KEY_DEFAULT_SORT] ?: DEFAULT_SORT,
-            cleanNames = it[KEY_CLEAN_NAMES] ?: true
+            cleanNames = it[KEY_CLEAN_NAMES] ?: true,
+            hideVodCategories = it[KEY_HIDE_VOD_CATEGORIES] ?: false
         )
     }.distinctUntilChanged()
 
@@ -397,6 +430,10 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setCleanNames(enabled: Boolean) {
         context.settingsStore.edit { it[KEY_CLEAN_NAMES] = enabled }
+    }
+
+    suspend fun setHideVodCategories(enabled: Boolean) {
+        context.settingsStore.edit { it[KEY_HIDE_VOD_CATEGORIES] = enabled }
     }
 
     suspend fun setPinHash(hash: String) {

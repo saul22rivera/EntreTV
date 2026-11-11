@@ -46,10 +46,6 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        // #region agent log
-        com.entretv.app.data.Diag.storage(this)
-        com.entretv.app.data.Diag.watchMain()
-        // #endregion
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()
@@ -79,7 +75,7 @@ class EntreTVApp : Application(), ImageLoaderFactory, Configuration.Provider {
         downloads.resumePending()
         // WorkManager abre su base al primer uso: fuera del hilo principal para no demorar el arranque.
         thread(name = "catalog-sync-schedule") {
-            CatalogSyncWorker.schedule(this)
+            CatalogSyncWorker.cancelScheduled(this)
             if (TvHomePublisher.isSupported(this)) tvHome.get().start(appScope)
             removeLeftovers()
         }

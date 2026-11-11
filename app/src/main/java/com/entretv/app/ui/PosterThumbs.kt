@@ -16,7 +16,6 @@ import coil.request.ImageRequest
 import coil.request.ImageResult
 import coil.request.Options
 import coil.request.SuccessResult
-import coil.size.Size
 import com.entretv.app.data.backgroundExecutor
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -39,20 +38,6 @@ fun posterRequest(context: Context, url: String): ImageRequest.Builder =
         .data(cardImage(url))
         .setParameter(PosterThumbs.PARAM, true, memoryCacheKey = null)
         .diskCachePolicy(CachePolicy.READ_ONLY)
-
-/**
- * Versión diminuta del póster guardada en el equipo: estirada a la tarjeta se ve borrosa mientras
- * llega la nítida. Nunca va a la red: si no está, el pedido falla.
- */
-fun microRequest(context: Context, url: String): ImageRequest =
-    ImageRequest.Builder(context)
-        .data(cardImage(url))
-        .setParameter(PosterThumbs.PARAM_MICRO, true, memoryCacheKey = "1")
-        .size(Size.ORIGINAL)
-        .diskCachePolicy(CachePolicy.DISABLED)
-        .networkCachePolicy(CachePolicy.DISABLED)
-        .crossfade(false)
-        .build()
 
 private class MissingMicroException : Exception("sin vista previa")
 
@@ -164,7 +149,6 @@ class PosterThumbs(context: Context, private val maxBytes: Long, private val sco
                 val tmp = File(dir, file.name + ".tmp")
                 val ok = tmp.outputStream().use { out -> scaled.compress(webpLossy(), QUALITY, out) }
                 if (ok) tmp.renameTo(file) else tmp.delete()
-                if (ok) writeMicro(microDir, file.name, scaled)
                 if (scaled !== source) scaled.recycle()
                 if (source !== bitmap) source.recycle()
             } catch (_: Exception) {

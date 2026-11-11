@@ -13,9 +13,9 @@ import kotlin.math.min
 /**
  * Como [DefaultLoadControl], pero los dos límites salen de Configuración y se leen en
  * cada decisión, ajustados según sea en vivo o película/episodio:
- *  - búfer de arranque: segundos que se juntan antes de empezar o tras un trabón. En vivo se
- *    usa la mitad (entra antes al canal); en VOD tras un trabón se pide 1,5 veces (no se
- *    vuelve a cortar enseguida).
+ *  - búfer de arranque: segundos que se juntan antes de empezar o tras un trabón. En vivo y en
+ *    una película la imagen entra en cuanto hay un instante (tope 0,6 s en vivo y 0,5 s en VOD).
+ *    Tras un trabón, el VOD pide 1,5 veces el búfer elegido (no se vuelve a cortar enseguida).
  *  - búfer máximo: hasta cuántos segundos por delante se descarga (15, 30 o 60). En VOD se
  *    guarda el doble y se mantiene lleno; en vivo el borde del directo lo limita igual.
  *
@@ -23,10 +23,15 @@ import kotlin.math.min
  * con poca memoria eso provoca tirones del recolector o cierres por falta de RAM. En esos
  * equipos ([lowRam]) VOD no guarda el doble y el máximo no pasa de 50 s.
  *
- * Película o episodio por la red sin descarga adelantada al disco ([longVodBuffer]): se guardan
- * hasta 5 min por delante en memoria, con techo [longVodBufferBytes] (no en equipos con poca memoria).
+ * Película o episodio por la red ([longVodBuffer]): se guarda por delante en memoria hasta 5 min,
+ * con techo [longVodBufferBytes] para que un 4K no llene el heap. El tiempo manda sobre ese techo
+ * en los primeros segundos, así un bitrate alto no corta la carga antes de tener video.
  *
  * Las descargas (archivos locales) usan los mismos valores que la red.
+ *
+ * Película con internet justo ([vodTargetUs]): antes de empezar o de seguir tras un trabón se junta
+ * lo que pide el reproductor (precarga según velocidad y escalera de trabones). Nunca más de lo que
+ * entra en memoria: con el techo lleno arranca igual, si no se quedaría esperando para siempre.
  */
 @OptIn(UnstableApi::class)
 class UserBufferLoadControl private constructor(
@@ -37,7 +42,8 @@ class UserBufferLoadControl private constructor(
     private val startBufferMs: () -> Int,
     private val maxBufferMs: () -> Int,
     private val isLive: () -> Boolean,
-    private val longVodBuffer: () -> Boolean
+    private val longVodBuffer: () -> Boolean,
+    private val vodTargetUs: () -> Long
 ) : DefaultLoadControl(
     bufferAllocator,
     /* minBufferMs = */ MIN_BUFFER_MS,
@@ -49,8 +55,8 @@ class UserBufferLoadControl private constructor(
     /* bufferForPlaybackAfterRebufferMs = */ 5_000,
     /* bufferForPlaybackAfterRebufferForLocalPlaybackMs = */ 5_000,
     targetBufferBytes,
-    /* prioritizeTimeOverSizeThresholds = */ false,
-    /* prioritizeTimeOverSizeThresholdsForLocalPlayback = */ false,
+    /* prioritizeTimeOverSizeThresholds = */ !lowRam,
+    /* prioritizeTimeOverSizeThresholdsForLocalPlayback = */ !lowRam,
     DEFAULT_BACK_BUFFER_DURATION_MS,
     DEFAULT_RETAIN_BACK_BUFFER_FROM_KEYFRAME
 ) {
@@ -61,11 +67,17 @@ class UserBufferLoadControl private constructor(
         startBufferMs: () -> Int,
         maxBufferMs: () -> Int,
         isLive: () -> Boolean,
-        longVodBuffer: () -> Boolean
+        longVodBuffer: () -> Boolean,
+        vodTargetUs: () -> Long
     ) : this(
         DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE), targetBufferBytes, longVodBufferBytes, lowRam,
-        startBufferMs, maxBufferMs, isLive, longVodBuffer
+        startBufferMs, maxBufferMs, isLive, longVodBuffer, vodTargetUs
     )
+
+    /** Lo que se espera juntar antes de arrancar o seguir (la última decisión); 0 si nada. */
+    @Volatile
+    var neededUs: Long = 0L
+        private set
 
     private companion object {
         const val MIN_BUFFER_MS = 15_000
@@ -88,13 +100,29 @@ class UserBufferLoadControl private constructor(
         var neededUs = when {
             parameters.rebuffering && live -> max(userUs, MIN_AFTER_REBUFFER_US)
             parameters.rebuffering -> (userUs * 3 / 2).coerceIn(MIN_AFTER_REBUFFER_US, MAX_VOD_AFTER_REBUFFER_US)
-            live -> userUs / 2
-            else -> userUs
+            // El vivo arranca en cuanto hay un instante de imagen (tope 0,6 s). El búfer
+            // elegido sigue valiendo para aguantar un corte, no para retrasar el zap.
+            live -> if (userUs == 0L) 0L else min(userUs / 2, 600_000L)
+            // Igual la película: no se esperan los 3 o 9 s de Configuración para el primer
+            // cuadro. Esos segundos se siguen guardando por delante y tras un corte.
+            else -> if (userUs == 0L) 0L else min(userUs, 500_000L)
         }
         if (parameters.targetLiveOffsetUs != C.TIME_UNSET) {
             neededUs = min(parameters.targetLiveOffsetUs / 2, neededUs)
         }
+        if (!live) neededUs = max(neededUs, vodTargetUs())
+        this.neededUs = neededUs
+        if (!live && (bufferAllocator.totalBytesAllocated >= vodBytesCap() * 9L / 10 || bufferedUs >= vodTimeCapUs())) return true
         return neededUs <= 0 || bufferedUs >= neededUs
+    }
+
+    private fun vodBytesCap(): Int = if (!lowRam && longVodBuffer()) longVodBufferBytes else targetBufferBytes
+
+    /** Donde [shouldContinueLoading] deja de cargar una película. */
+    private fun vodTimeCapUs(): Long {
+        if (!lowRam && longVodBuffer()) return LONG_VOD_BUFFER_MS * 1_000L
+        val userCapMs = maxBufferMs().coerceIn(MIN_BUFFER_MS, if (lowRam) LOW_RAM_MAX_BUFFER_MS else MAX_USER_BUFFER_MS)
+        return userCapMs * (if (lowRam) 1_000L else 2_000L)
     }
 
     /** Corta la descarga al llegar al búfer máximo; el resto (memoria) lo decide la base. */

@@ -323,9 +323,6 @@ class VodAheadDownloader(
         val now = SystemClock.elapsedRealtime()
         if (now - lastTrimAt < TRIM_EVERY_MS) return
         lastTrimAt = now
-        // #region agent log
-        com.entretv.app.data.Diag.log("ahead lead=${(writePos - readPos) / 1048576}MB limit=${aheadBytes() / 1048576}MB stored=${runCatching { cache.cacheSpace / 1048576 }.getOrDefault(-1)}MB")
-        // #endregion
         val keepFrom = readPos - behindBytes()
         if (keepFrom <= 0 || gen != generation) return
         runCatching {

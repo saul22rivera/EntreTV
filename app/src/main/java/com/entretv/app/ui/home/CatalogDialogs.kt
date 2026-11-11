@@ -111,6 +111,9 @@ fun SettingsPanel(
     onManageProfiles: () -> Unit,
     appVersion: String,
     onCheckUpdates: () -> Unit,
+    onSpeedTest: () -> Unit,
+    /** La app está en una memoria USB (almacenamiento adoptado): se sugiere moverla. */
+    storageTip: Boolean,
     appLanguage: String,
     onAppLanguageChange: (String) -> Unit,
     showClock: Boolean,
@@ -138,6 +141,7 @@ fun SettingsPanel(
     maxBufferSeconds: Int,
     defaultSort: SortOrder,
     cleanNames: Boolean,
+    hideVodCategories: Boolean,
     hiddenCount: Int,
     pinSet: Boolean,
     unlocked: Boolean,
@@ -145,6 +149,7 @@ fun SettingsPanel(
     onMaxBufferChange: (Int) -> Unit,
     onDefaultSortChange: (SortOrder) -> Unit,
     onCleanNamesChange: (Boolean) -> Unit,
+    onHideVodCategoriesChange: (Boolean) -> Unit,
     onOrganize: () -> Unit,
     onHiddenItems: () -> Unit,
     onCreatePin: () -> Unit,
@@ -232,6 +237,16 @@ fun SettingsPanel(
 
             Divider()
             SectionTitle(stringResource(R.string.settings_section_playback))
+            ActionLine(stringResource(R.string.settings_speed_test), stringResource(R.string.settings_speed_test_desc), onSpeedTest)
+            if (storageTip) {
+                Text(
+                    stringResource(R.string.settings_storage_tip),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = EntreBrand.Accent,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+            Spacer(Modifier.height(10.dp))
             SettingLabel(
                 stringResource(R.string.settings_live_format),
                 stringResource(R.string.settings_live_format_desc)
@@ -298,7 +313,6 @@ fun SettingsPanel(
             listOf(
                 SettingsRepository.REFRESH_DAILY to R.string.settings_refresh_daily,
                 SettingsRepository.REFRESH_THRICE_DAILY to R.string.settings_refresh_thrice,
-                SettingsRepository.REFRESH_AUTO to R.string.settings_refresh_auto,
                 SettingsRepository.REFRESH_MANUAL to R.string.settings_refresh_manual
             ).forEach { (mode, label) ->
                 RadioLine(stringResource(label), refreshMode == mode) { onRefreshModeChange(mode) }
@@ -316,6 +330,14 @@ fun SettingsPanel(
                 checked = cleanNames,
                 onChange = onCleanNamesChange
             )
+            if (isTv) {
+                SwitchLine(
+                    title = stringResource(R.string.settings_hide_vod_categories),
+                    subtitle = stringResource(R.string.settings_hide_vod_categories_desc),
+                    checked = hideVodCategories,
+                    onChange = onHideVodCategoriesChange
+                )
+            }
             ActionLine(stringResource(R.string.settings_organize), stringResource(R.string.settings_organize_desc), onOrganize)
             ActionLine(
                 stringResource(R.string.settings_hidden),
@@ -803,7 +825,7 @@ private fun PinKey(
 // ============================ Piezas comunes ============================
 
 @Composable
-private fun PanelDialog(
+internal fun PanelDialog(
     title: String,
     onDismiss: () -> Unit,
     extraAction: Pair<String, () -> Unit>? = null,

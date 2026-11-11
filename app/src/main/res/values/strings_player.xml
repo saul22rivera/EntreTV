@@ -54,6 +54,16 @@
     <string name="player_offline">Sin conexión · se reanuda al volver la red</string>
     <string name="player_reconnecting">Reconectando…</string>
     <string name="player_reconnecting_attempt">Reconectando… (intento %1$d)</string>
+    <string name="player_net_slow">Internet lento</string>
+    <string name="player_net_unstable">Internet inestable</string>
+    <string name="player_net_speed">%1$s Mbps</string>
+    <string name="player_net_speed_need">%1$s de %2$s Mbps</string>
+    <string name="player_net_loading">Cargando %1$d %%</string>
+    <string name="player_net_preparing">Preparando para ver sin cortes</string>
+    <string name="player_net_preparing_percent">Preparando para ver sin cortes · %1$d %%</string>
+    <string name="player_watch_hd">Ver en HD</string>
+    <string name="player_watch_hd_hint">Tu internet no alcanza para este 4K</string>
+    <string name="player_frame_rate_switch">Ajustando la pantalla a %1$s Hz</string>
     <string name="player_now_program">Ahora · %1$s</string>
     <string name="player_feedback_rewind">−%1$d s · %2$s</string>
     <string name="player_feedback_forward">+%1$d s · %2$s</string>
@@ -130,6 +140,11 @@
     <string name="player_info_frame_rate">Cuadros por segundo</string>
     <string name="player_info_video_bitrate">Tasa de video</string>
     <string name="player_info_buffer">Búfer</string>
+    <string name="player_info_startup">Tiempo de arranque</string>
+    <string name="player_info_stalls">Trabones</string>
+    <string name="player_info_dropped">Cuadros perdidos</string>
+    <string name="player_info_switches">Cambios de calidad</string>
+    <string name="player_info_bandwidth">Velocidad de red</string>
     <string name="player_selected">Seleccionado</string>
 
     <!-- Pistas -->

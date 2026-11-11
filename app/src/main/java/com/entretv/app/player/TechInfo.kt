@@ -8,5 +8,6 @@ data class TechInfo(
     val videoBitrate: Int?,
     val audioCodec: String?,
     val audioChannels: Int?,
-    val bufferedMs: Long
+    val bufferedMs: Long,
+    val quality: PlaybackQuality.Snapshot
 )

@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -99,6 +100,9 @@ import retrofit2.HttpException
 
 /** Lo que trajo una actualización que cambió el catálogo: títulos y canales que no estaban. */
 data class CatalogUpdate(val newMovies: Int = 0, val newSeries: Int = 0, val newChannels: Int = 0)
+
+/** Paso de cada sección en la actualización que se ve en pantalla. */
+enum class SyncStep { WAITING, DOWNLOADING, SAVING, DONE, FAILED }
 
 /** Error de inicio de sesión con un mensaje listo para mostrar en el idioma de la app. */
 class AccountException(val text: UiText) : Exception() {
@@ -127,6 +131,9 @@ class PlaylistRepository @Inject constructor(
 
     /** Pocos servidores Xtream aguantan muchas descargas grandes a la vez: cortan la respuesta. */
     private val requestSlots = Semaphore(2)
+    /** Con la pantalla de actualización nada más usa la red: las tres secciones bajan a la vez. */
+    private val foregroundSlots = Semaphore(3)
+    @Volatile private var foregroundSync = false
 
     /** Huella de la última respuesta de cada sección: si no cambió, no se reescribe la base. */
     private val syncPrefs = context.getSharedPreferences("entre_sync", Context.MODE_PRIVATE)
@@ -146,6 +153,19 @@ class PlaylistRepository @Inject constructor(
     private val _syncing = MutableStateFlow(false)
     /** True mientras se baja el catálogo: al entrar, a mano o en la actualización programada. */
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+
+    private val _progress = MutableStateFlow<Map<String, SyncStep>>(emptyMap())
+    /** Sección → paso de la actualización en curso o de la última; vacío si todavía no hubo. */
+    val progress: StateFlow<Map<String, SyncStep>> = _progress.asStateFlow()
+
+    private fun step(section: String, value: SyncStep) {
+        _progress.update { it + (section to value) }
+    }
+
+    /** Antes de abrir la pantalla de actualización: no muestra los pasos de la anterior. */
+    fun clearProgress() {
+        _progress.value = emptyMap()
+    }
 
     private val _updates = MutableSharedFlow<CatalogUpdate>(extraBufferCapacity = 1)
     /** Cada actualización que cambió algo de lo guardado (no la primera descarga). */
@@ -177,6 +197,8 @@ class PlaylistRepository @Inject constructor(
 
     suspend fun channelById(id: String): ChannelEntity? = channelDao.getById(id)
     suspend fun movieById(id: String): VodMovieEntity? = vodDao.getMovie(id)
+    suspend fun moviesNamed(playlistId: String, term: String, limit: Int = 40): List<VodMovieEntity> =
+        vodDao.moviesNamed(playlistId, term, limit)
     suspend fun seriesById(id: String): SeriesEntity? = vodDao.getSeries(id)
     suspend fun episodeById(id: String): EpisodeEntity? = vodDao.getEpisode(id)
     suspend fun channelSnapshot(playlistId: String): List<ChannelEntity> =
@@ -345,23 +367,29 @@ class PlaylistRepository @Inject constructor(
     // ============================ Actualización del catálogo ============================
 
     /**
-     * Actualización al entrar: lo guardado se ve al instante y esto corre en segundo plano.
-     * Sin [force] se respeta la frecuencia de Configuración (ver [refreshDue]); con [auto], la
-     * revisión cada 3 h de la automática. [light] (o poca memoria) baja una sección detrás de
-     * otra en un solo hilo y guarda cada una apenas llega, para no competir con el video.
+     * Actualización al entrar a la app (si toca, ver [refreshDue]) o con el botón Actualizar
+     * ([force]). Nunca corre sola de fondo. [foreground]: con la pantalla de actualización,
+     * las tres secciones a la vez y con tres descargas. [light] (o poca memoria) baja una
+     * sección detrás de otra en un solo hilo y guarda cada una apenas llega.
      * Cada sección (canales, películas, series) es independiente: si una falla se conserva lo guardado.
      * Con [force] se baja todo igual, pero lo que no cambió tampoco se reescribe.
      *
      * @return secciones que no se pudieron actualizar, con el motivo.
      */
-    suspend fun refreshAll(force: Boolean = false, light: Boolean = false, auto: Boolean = false): Result<List<UiText>> {
-        val oneByOne = light || lowRam
+    suspend fun refreshAll(force: Boolean = false, light: Boolean = false, foreground: Boolean = false): Result<List<UiText>> {
+        // Poca memoria: aun con la pantalla, de a una (tres listas enormes a la vez no caben).
+        val oneByOne = lowRam || (light && !foreground)
         return withContext(if (oneByOne) lightDispatcher else syncDispatcher) {
             runCatching {
                 refreshLock.withLock {
-                    // Restos de una descarga cortada porque se cerró la app.
-                    syncDir.listFiles()?.forEach { it.delete() }
-                    playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force, auto, oneByOne) }
+                    foregroundSync = foreground
+                    try {
+                        // Restos de una descarga cortada porque se cerró la app.
+                        syncDir.listFiles()?.forEach { it.delete() }
+                        playlistDao.getAll().flatMap { playlist -> refreshIfDue(playlist, force, oneByOne) }
+                    } finally {
+                        foregroundSync = false
+                    }
                 }
             }.onFailure { logSyncFailure("refresh", it) }
         }
@@ -370,16 +398,19 @@ class PlaylistRepository @Inject constructor(
     /** True si la lista nunca se descargó completa (primer inicio de sesión). */
     suspend fun needsFirstSync(playlistId: String): Boolean = settings.lastRefreshAt(playlistId) == 0L
 
-    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean, auto: Boolean, oneByOne: Boolean): List<UiText> {
+    /** True si alguna cuenta tiene que actualizarse al entrar, según la frecuencia de Configuración. */
+    suspend fun refreshDueNow(): Boolean {
+        val mode = settings.refreshMode.first()
+        return playlistDao.getAll().any { refreshDue(settings.lastRefreshAt(it.id), mode) }
+    }
+
+    private suspend fun refreshIfDue(p: PlaylistEntity, force: Boolean, oneByOne: Boolean): List<UiText> {
         val last = settings.lastRefreshAt(p.id)
         val mode = settings.refreshMode.first()
-        val due = refreshDue(last, mode) || (auto && mode == SettingsRepository.REFRESH_AUTO && autoDue(last))
-        if (!force && !due) return emptyList()
+        if (!force && !refreshDue(last, mode)) return emptyList()
+        _progress.value = if (p.type == "M3U") mapOf(SECTION_LIVE to SyncStep.WAITING)
+        else listOf(SECTION_MOVIES, SECTION_SERIES, SECTION_LIVE).associateWith { SyncStep.WAITING }
         _syncing.value = true
-        // #region agent log
-        val diagStart = com.entretv.app.data.Diag.now()
-        com.entretv.app.data.Diag.log("sync start force=$force auto=$auto oneByOne=$oneByOne fg=${AppForeground.isForeground} last=$last")
-        // #endregion
         try {
             val outcome = coroutineScope {
                 val account = async { refreshAccountInfo(p) }
@@ -393,15 +424,9 @@ class PlaylistRepository @Inject constructor(
                 fun added(section: String) = outcome.saved.filter { it.section == section }.sumOf { it.pending!!.added }
                 _updates.tryEmit(CatalogUpdate(added(SECTION_MOVIES), added(SECTION_SERIES), added(SECTION_LIVE)))
             }
-            // #region agent log
-            com.entretv.app.data.Diag.log("sync end ms=${com.entretv.app.data.Diag.now() - diagStart} failed=${failed.joinToString { it.section + ":" + it.error?.javaClass?.simpleName }} saved=${outcome.saved.joinToString { it.section }}")
-            // #endregion
             return failed.map { sectionFailed(it.section, it.error!!) }
         } finally {
             _syncing.value = false
-            // #region agent log
-            com.entretv.app.data.Diag.log("sync finally ms=${com.entretv.app.data.Diag.now() - diagStart}")
-            // #endregion
         }
     }
 
@@ -440,7 +465,16 @@ class PlaylistRepository @Inject constructor(
                     }
                 }
                 val sections = listOf(SECTION_LIVE, SECTION_MOVIES, SECTION_SERIES)
-                if (oneByOne) {
+                if (foregroundSync && !oneByOne) {
+                    // Con la pantalla de actualización no se ve Inicio rearmarse: cada sección se
+                    // guarda en cuanto llega y la siguiente no la espera.
+                    sections.map { section ->
+                        async {
+                            val result = prepare(section).let { if (it.error is SerializationException) prepare(section) else it }
+                            saveSections(listOf(result))
+                        }
+                    }.awaitAll().reduce(SyncOutcome::plus)
+                } else if (oneByOne) {
                     // Cada sección se guarda y se suelta antes de bajar la siguiente: menos memoria a la vez.
                     sections.fold(SyncOutcome(emptyList(), emptyList())) { acc, section ->
                         val result = prepare(section).let { if (it.error is SerializationException) prepare(section) else it }
@@ -472,17 +506,15 @@ class PlaylistRepository @Inject constructor(
 
     private suspend fun prepareSection(section: String, block: suspend () -> PendingSave?): SectionResult =
         try {
-            // #region agent log
-            val diagT = com.entretv.app.data.Diag.now()
-            // #endregion
+            step(section, SyncStep.DOWNLOADING)
             SectionResult(section, block(), null)
-                // #region agent log
-                .also { com.entretv.app.data.Diag.log("prepare $section ms=${com.entretv.app.data.Diag.now() - diagT} changed=${it.pending != null}") }
-                // #endregion
+                // Sin cambios no hay nada que guardar: ya está al día.
+                .also { step(section, if (it.pending == null) SyncStep.DONE else SyncStep.SAVING) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logSyncFailure(section, e)
+            step(section, SyncStep.FAILED)
             SectionResult(section, null, e)
         }
 
@@ -497,19 +529,15 @@ class PlaylistRepository @Inject constructor(
         val pending = results.filter { it.pending != null }
         if (pending.isEmpty()) return SyncOutcome(failed, emptyList())
         return try {
-            // #region agent log
-            val diagT = com.entretv.app.data.Diag.now()
-            // #endregion
             database.withTransaction { pending.forEach { it.pending!!.save() } }
-            // #region agent log
-            com.entretv.app.data.Diag.log("db save sections=${pending.joinToString { it.section }} ms=${com.entretv.app.data.Diag.now() - diagT}")
-            // #endregion
             pending.forEach { it.pending!!.saved() }
+            pending.forEach { step(it.section, SyncStep.DONE) }
             SyncOutcome(failed, pending)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logSyncFailure("save", e)
+            pending.forEach { step(it.section, SyncStep.FAILED) }
             SyncOutcome(failed + pending.map { SectionResult(it.section, null, e) }, emptyList())
         }
     }
@@ -726,34 +754,16 @@ class PlaylistRepository @Inject constructor(
     ): Fetched<T>? = withRetry {
         syncDir.mkdirs()
         val file = File.createTempFile(action, ".json", syncDir)
-        // #region agent log
-        val diagT0 = com.entretv.app.data.Diag.now()
-        var diagT1 = diagT0
-        // #endregion
         try {
             val print = withRequestSlot(action) {
-                // #region agent log
-                diagT1 = com.entretv.app.data.Diag.now()
-                // #endregion
                 xtreamApi.action(apiUrl(p.url), p.username, p.password, action).use { body ->
                     val hashing = HashingSource.md5(body.source())
                     val count = file.sink().buffer().use { it.writeAll(hashing) }
                     "$count:${hashing.hash.hex()}"
                 }
             }
-            // #region agent log
-            val diagT2 = com.entretv.app.data.Diag.now()
-            val diagSame = unchanged(print)
-            val diagResult = if (diagSame) null
+            if (unchanged(print)) null
             else Fetched(print, file.source().buffer().use { json.decodeFromStream(serializer, it.inputStream()) })
-            com.entretv.app.data.Diag.log("fetch $action slotWait=${diagT1 - diagT0} download=${diagT2 - diagT1} parse=${com.entretv.app.data.Diag.now() - diagT2} kb=${file.length() / 1024} unchanged=$diagSame fg=${AppForeground.isForeground}")
-            diagResult
-            // #endregion
-        } catch (e: Exception) {
-            // #region agent log
-            com.entretv.app.data.Diag.log("fetch $action failed after ${com.entretv.app.data.Diag.now() - diagT0} ms: ${e.javaClass.simpleName}")
-            // #endregion
-            throw e
         } finally {
             file.delete()
         }
@@ -761,7 +771,8 @@ class PlaylistRepository @Inject constructor(
 
     /** Las categorías pesan pocos KB: no esperan detrás de las listas grandes. */
     private suspend fun <T> withRequestSlot(action: String, block: suspend () -> T): T =
-        if (action.endsWith("_categories")) block() else requestSlots.withPermit { block() }
+        if (action.endsWith("_categories")) block()
+        else (if (foregroundSync) foregroundSlots else requestSlots).withPermit { block() }
 
     private suspend fun <T> fetchOrNull(p: PlaylistEntity, action: String, serializer: KSerializer<T>): Fetched<T>? =
         try {
@@ -879,13 +890,7 @@ class PlaylistRepository @Inject constructor(
                     return@runCatching ContentDetails(plot = series.plot)
                 }
                 val root = serverRoot(p.url)
-                // #region agent log
-                val diagT = com.entretv.app.data.Diag.now()
-                // #endregion
                 val raw = xtreamApi.seriesInfo(apiUrl(p.url), p.username, p.password, seriesId)
-                // #region agent log
-                com.entretv.app.data.Diag.log("series info ms=${com.entretv.app.data.Diag.now() - diagT}")
-                // #endregion
                 val episodes = XtreamInfoParser.episodes(raw).map { ep ->
                     EpisodeEntity(
                         id = "${series.id}#${ep.id}",
@@ -1057,9 +1062,6 @@ class PlaylistRepository @Inject constructor(
         /** Cortes de "Tres veces al día": manda el más reciente que ya pasó. */
         val THRICE_CUTOFF_HOURS = listOf(0, 8, 9)
 
-        /** La automática vuelve a revisar con la app abierta cada este tiempo. */
-        const val AUTO_INTERVAL_MS = 3 * 60 * 60_000L
-
         /**
          * Toca actualizar al entrar según [mode]: si la última fue antes del corte más reciente
          * (la medianoche; con tres veces al día, también las 8:00 y las 9:00). Solo manual no
@@ -1074,10 +1076,6 @@ class PlaylistRepository @Inject constructor(
                 else -> last < lastCutoff(listOf(0), now)
             }
         }
-
-        /** Automática: pasaron [AUTO_INTERVAL_MS] desde la última. */
-        fun autoDue(last: Long, now: Long = System.currentTimeMillis()): Boolean =
-            last <= 0L || last > now || now - last >= AUTO_INTERVAL_MS
 
         private fun lastCutoff(hours: List<Int>, now: Long): Long {
             val cal = Calendar.getInstance().apply {

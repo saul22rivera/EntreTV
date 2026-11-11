@@ -46,6 +46,22 @@
     <!-- Preparando el catálogo -->
     <string name="home_preparing_title">Preparing your catalog…</string>
     <string name="home_preparing_message">The first time takes a little while. After that it opens instantly.</string>
+    <string name="update_title_running">Updating content</string>
+    <string name="update_title_done">Up to date</string>
+    <string name="update_title_failed">Update incomplete</string>
+    <string name="update_subtitle_running">Getting everything up to date. Just a moment.</string>
+    <string name="update_subtitle_done">Opening…</string>
+    <string name="update_subtitle_failed">You can retry or enter with what you already had.</string>
+    <string name="catalog_update_retry">Retry</string>
+    <string name="update_enter_anyway">Enter anyway</string>
+    <string name="home_update_offline">No connection: showing what was saved. It will update when you enter with internet.</string>
+    <string name="update_step_waiting">Waiting</string>
+    <string name="update_step_downloading">Updating…</string>
+    <string name="update_step_saving">Saving…</string>
+    <string name="update_step_done">Updated</string>
+    <string name="update_step_failed">Couldn\'t update</string>
+    <string name="update_enter_now">Enter without waiting</string>
+    <string name="update_enter_now_hint">The update keeps going while you use the app.</string>
 
     <!-- Cabecera -->
     <string name="home_home">Home</string>

@@ -25,6 +25,9 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -143,7 +146,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -189,9 +191,11 @@ import com.entretv.app.ui.home.tvNavItem
 import com.entretv.app.ui.home.OrganizeCategoriesDialog
 import com.entretv.app.ui.home.PinDialog
 import com.entretv.app.ui.home.SettingsPanel
+import com.entretv.app.ui.home.SpeedTestDialog
 import com.entretv.app.ui.home.PILL_SPACE
 import com.entretv.app.ui.home.RAIL_COLLAPSED_WIDTH
 import com.entretv.app.ui.home.SortMenu
+import com.entretv.app.ui.home.UpdateOverlay
 import com.entretv.app.ui.profile.ProfileActions
 import com.entretv.app.ui.profile.ProfileMenu
 import com.entretv.app.ui.profile.profileColor
@@ -216,10 +220,11 @@ private val DPAD_KEYS = setOf(Key.DirectionUp, Key.DirectionDown, Key.DirectionL
 /** Pósters de la fila siguiente que se arman (y bajan) antes de llegar a ella. */
 private const val ROW_PREFETCH = 8
 private const val ROW_PREFETCH_LOW_RAM = 4
-private val DeviceProfile.rowPrefetch get() = if (lowRam) ROW_PREFETCH_LOW_RAM else ROW_PREFETCH
-
-/** Lo que tarda en salir un póster que ya está en memoria: pasado eso se pide la vista previa. */
-private const val MICRO_PREVIEW_DELAY_MS = 50L
+private val DeviceProfile.rowPrefetch get() = when {
+    lowRam -> ROW_PREFETCH_LOW_RAM
+    isTv -> ROW_PREFETCH_LOW_RAM
+    else -> ROW_PREFETCH
+}
 
 private val LIVE_CARD_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Panel))
 private val POSTER_WAIT_BRUSH = Brush.verticalGradient(listOf(EntreBrand.PanelHigh, EntreBrand.Accent.copy(alpha = 0.16f)))
@@ -263,7 +268,10 @@ private fun PosterPlaceholder(title: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, coil.annotation.ExperimentalCoilApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, coil.annotation.ExperimentalCoilApi::class,
+    ExperimentalLayoutApi::class
+)
 @Composable
 fun HomeScreen(
     onOpen: (BrowseItem) -> Unit,
@@ -303,15 +311,15 @@ fun HomeScreen(
     val hiddenItems by viewModel.hiddenItems.collectAsState()
     val organizeList by viewModel.organizeList.collectAsState()
     val organizingSection by viewModel.organizingSection.collectAsState()
-    // Si la app quedó abierta desde ayer, al volver a ella después del corte también se actualiza.
+    // Al volver a la app desde fuera, si pasó el corte de la frecuencia, se actualiza al entrar.
     LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refreshIfDue() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch { viewModel.catalogPostersLoop() }
-            viewModel.autoRefreshLoop()
+            viewModel.catalogPostersLoop()
         }
     }
+    val updateScreen by viewModel.updateScreen.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var showAccount by rememberSaveable { mutableStateOf(false) }
@@ -319,6 +327,8 @@ fun HomeScreen(
     var confirmAdult by remember { mutableStateOf<GuardedChange?>(null) }
     var showResetAll by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showSpeedTest by remember { mutableStateOf(false) }
+    val speedTestViewModel: SpeedTestViewModel = hiltViewModel()
     var showOrganize by rememberSaveable { mutableStateOf(false) }
     var showHidden by rememberSaveable { mutableStateOf(false) }
     var categoryMenu by remember { mutableStateOf<String?>(null) }
@@ -331,7 +341,10 @@ fun HomeScreen(
     var tvHomeChosen by rememberSaveable { mutableStateOf(false) }
     val showSummary = (profile.compactRail || (profile.isTv && tvHomeChosen)) && ui.summary && !searching
     // TV: En vivo es la vista de categorías, canales y mini reproductor.
-    val tvLive = profile.isTv && ui.section == Section.LIVE && !searching && ui.category == null && !showSummary
+    // Lo que se pinta sigue al catálogo ya armado, no al botón del menú: si no, un frame
+    // de diferencia vacía la pantalla al pasar de TV a Películas o Series.
+    val browsingSection = content.section?.takeIf { content.playlistId == ui.selectedPlaylistId } ?: ui.section
+    val tvLive = profile.isTv && browsingSection == Section.LIVE && !searching && ui.category == null && !showSummary
     var liveCategory by remember { mutableStateOf<String?>(null) }
     // "Ver todo" de Seguir viendo: vale para la vista donde se abrió (resumen o sección).
     val continueContext = if (showSummary) "summary" else ui.section.name
@@ -355,6 +368,7 @@ fun HomeScreen(
     val catalogFocus = remember { FocusRequester() }
     val searchFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.isImeVisible
     val headerFocus = remember { FocusRequester() }
     val tvNav = remember(profile.isTv) { if (profile.isTv) TvCatalogNav() else null }
     var catalogHasFocus by remember { mutableStateOf(false) }
@@ -368,6 +382,32 @@ fun HomeScreen(
         } finally {
             catalogFocusFromCode.set(false)
         }
+    }
+
+    // Filas de Destacados: su posición sigue mientras se ve una categoría y al volver de la ficha.
+    val rowsListState = rememberSaveable(if (searching) "search" else ui.section.name, saver = LazyListState.Saver) { LazyListState() }
+    // TV: fila y póster (o título) desde donde se abrió una categoría o una ficha, como "índice|fila".
+    // Al volver, el foco regresa ahí y la lista queda como estaba.
+    var returnSlot by rememberSaveable { mutableStateOf<String?>(null) }
+    var categoryFromRows by rememberSaveable { mutableStateOf(false) }
+    fun rememberReturnSlot() {
+        returnSlot = tvNav?.focused?.let { "${it.index}|${it.row}" }
+    }
+    suspend fun focusReturnSlot(): Boolean {
+        val saved = returnSlot ?: return false
+        val nav = tvNav ?: return false
+        val index = saved.substringBefore('|').toIntOrNull() ?: return false
+        val slot = TvCatalogNav.Slot(saved.substringAfter('|'), index)
+        repeat(4) {
+            withFrameNanos { }
+            catalogFocusFromCode.set(true)
+            val ok = try { nav.focusSlot(slot) } finally { catalogFocusFromCode.set(false) }
+            if (ok) {
+                returnSlot = null
+                return true
+            }
+        }
+        return false
     }
     // En vivo decide adónde va el foco (categoría, canal o mini reproductor): se le avisa.
     var liveFocusRequests by remember { mutableIntStateOf(0) }
@@ -440,18 +480,26 @@ fun HomeScreen(
     }
 
     // Una vista corta no se puede deslizar para traer la píldora de vuelta.
-    LaunchedEffect(ui.section, ui.category, ui.summary) {
+    LaunchedEffect(ui.section, ui.summary) {
         pillVisible.value = true
         tvNav?.reset()
     }
+    LaunchedEffect(ui.category) { pillVisible.value = true }
 
+    // Solo si el catálogo que se pinta es de otra cuenta o de otra sección. Cambiar de
+    // categoría no vacía la pantalla: la lista nueva reemplaza a la anterior en el sitio.
     val contentStale = content.playlistId != ui.selectedPlaylistId ||
-        content.section != ui.section || content.category != ui.category
+        (content.section != null && content.section != ui.section)
 
     // TV, Películas y Series: categorías en columna a la izquierda, como En vivo.
-    val tvCategoryColumn = profile.isTv && !searching && !showSummary && ui.section != Section.LIVE && ui.playlists.isNotEmpty()
+    // Con "Ocultar categorías" Películas y Series van a pantalla completa desde Destacados.
+    val hideVodColumn = profile.isTv && catalogPrefs.hideVodCategories && browsingSection != Section.LIVE
+    val tvCategoryColumn = profile.isTv && !searching && !showSummary && browsingSection != Section.LIVE &&
+        ui.playlists.isNotEmpty() && !hideVodColumn
     var tvCatsHaveFocus by remember { mutableStateOf(false) }
     var tvCatsFocusRequests by remember { mutableIntStateOf(0) }
+    // Última columna armada por cuenta y sección; "" guarda la última de cualquiera.
+    val tvColumnMemory = remember { HashMap<String, SectionContent>() }
     // OK sobre una categoría que todavía se calcula: el foco pasa al contenido cuando esté listo.
     var contentFocusPending by remember { mutableStateOf(false) }
 
@@ -463,21 +511,31 @@ fun HomeScreen(
     // "con foco" sin ningún póster enfocado, así que esa primera vez no se confía en catalogHasFocus.
     val summaryReady = if (showSummary) viewModel.summaryContent.collectAsState().value.ready else false
     val shownStale = if (showSummary) !summaryReady else contentStale
-    LaunchedEffect(railExpanded, shownStale, showSummary) {
-        if (!railExpanded && !shownStale && profile.isTv) {
+    val updating = updateScreen != null
+    LaunchedEffect(railExpanded, shownStale, showSummary, updating) {
+        if (!railExpanded && !shownStale && !updating && profile.isTv) {
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
             withFrameNanos { }
             if (focusRestored && catalogHasFocus) {
                 railWasOpen = false
                 return@LaunchedEffect
             }
-            // Derecha o Atrás en el menú de TV vuelven un paso: a la columna de categorías si la hay.
+            // Derecha o Atrás en el menú de TV vuelven un paso, con un solo pedido de foco: a la
+            // columna de categorías si la hay, si no a En vivo o a los pósters.
             if (railWasOpen) {
                 railWasOpen = false
-                if (focusRestored && tvCategoryColumn) {
-                    tvCatsFocusRequests++
-                    return@LaunchedEffect
+                focusRestored = true
+                contentFocusPending = false
+                when {
+                    searchOpen && ui.query.isBlank() -> runCatching { searchFocus.requestFocus() }
+                    tvCategoryColumn -> tvCatsFocusRequests++
+                    tvLive -> liveFocusRequests++
+                    else -> {
+                        val last = tvNav?.lastRequester()
+                        if (!(last != null && focusInCatalog(last))) runCatching { catalogFocus.requestFocus() }
+                    }
                 }
+                return@LaunchedEffect
             }
             // Recorriendo la columna de categorías el contenido cambia solo: el foco se queda en ella.
             if (focusRestored && tvCatsHaveFocus && !contentFocusPending) return@LaunchedEffect
@@ -486,11 +544,17 @@ fun HomeScreen(
                 focusRestored = true
                 val restored = focusInCatalog(restoreFocus)
                 withFrameNanos { }
-                if (restored && catalogHasFocus) return@LaunchedEffect
+                if (restored && catalogHasFocus) {
+                    returnSlot = null
+                    return@LaunchedEffect
+                }
+                // El póster todavía no estaba compuesto: se trae su fila y se enfoca.
+                if (focusReturnSlot()) return@LaunchedEffect
             }
             focusRestored = true
-            // Recién abierta la búsqueda el foco es del campo: En vivo se lo quitaba.
-            if (searchOpen && ui.query.isBlank()) {
+            // Con la búsqueda abierta el foco es del campo: escribir o borrar no baja a los
+            // resultados. A ellos se baja con la flecha, ya cerrado el teclado.
+            if (searchOpen) {
                 runCatching { searchFocus.requestFocus() }
                 return@LaunchedEffect
             }
@@ -539,10 +603,25 @@ fun HomeScreen(
         runCatching { catalogFocus.requestFocus() }
     }
 
+    var searchWasOpen by remember { mutableStateOf(false) }
     LaunchedEffect(searchOpen) {
         if (searchOpen) {
+            searchWasOpen = true
             delay(150)
             runCatching { searchFocus.requestFocus() }
+        } else if (searchWasOpen && profile.isTv) {
+            // Al cerrar la búsqueda el foco vuelve al contenido, una sola vez.
+            searchWasOpen = false
+            withFrameNanos { }
+            if (catalogHasFocus || tvCatsHaveFocus || railExpanded) return@LaunchedEffect
+            when {
+                tvCategoryColumn -> tvCatsFocusRequests++
+                tvLive -> liveFocusRequests++
+                else -> {
+                    val last = tvNav?.lastRequester()
+                    if (!(last != null && focusInCatalog(last))) runCatching { catalogFocus.requestFocus() }
+                }
+            }
         }
     }
 
@@ -585,7 +664,18 @@ fun HomeScreen(
         setRailExpanded(false)
     }
 
-    val onItemClick: (BrowseItem) -> Unit = onOpen
+    val onItemClick: (BrowseItem) -> Unit = { item ->
+        rememberReturnSlot()
+        onOpen(item)
+    }
+
+    // TV: al cerrar con Atrás una categoría abierta desde Destacados, el foco vuelve a su fila.
+    val backOnRows = ui.category == null && content.category == null && !content.grid
+    LaunchedEffect(backOnRows) {
+        if (!backOnRows || !categoryFromRows) return@LaunchedEffect
+        categoryFromRows = false
+        if (profile.isTv) focusReturnSlot()
+    }
     // Dejar presionado agrega o quita de Mi lista; el menú completo va con la tecla Menú.
     val onItemLongClick: (BrowseItem) -> Unit = viewModel::toggleFavorite
     // En "Seguir viendo" dejar presionado abre el menú: ahí sirve quitarlo o empezar de nuevo.
@@ -706,20 +796,23 @@ fun HomeScreen(
                     headerFocus = headerFocus,
                     showClock = showClock,
                     lastUpdate = lastUpdateLabel(lastRefreshAt),
-                    sortOptions = if (content.grid && !contentStale && content.rows.sumOf { it.items.size } > 1) {
+                    // Sin columna de categorías, Ordenar queda en la cabecera también en Destacados.
+                    sortOptions = if (content.grid && content.rows.sumOf { it.items.size } > 1 ||
+                        hideVodColumn && !showSummary && !searching && !contentStale
+                    ) {
                         content.sortOptions
                     } else emptyList(),
                     sort = ui.sort,
                     onSort = viewModel::selectSort
                 )
 
-                if (profile.isPhone && !showSummary && !searchOpen && !contentStale) {
+                if (profile.isPhone && !showSummary && !searchOpen && content.categories.isNotEmpty()) {
                     CategoryChips(
                         categories = content.categories,
                         labels = content.categoryLabels,
                         locked = content.lockedCategories,
                         myListCount = content.myListCount,
-                        selected = ui.category,
+                        selected = content.category,
                         onSelect = ::openCategory,
                         contentPadding = PaddingValues(horizontal = profile.edge),
                         modifier = Modifier.padding(vertical = 4.dp)
@@ -738,14 +831,22 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .padding(horizontal = profile.edge, vertical = 4.dp)
                             .focusRequester(searchFocus)
-                            // El campo de texto se queda con las flechas: en TV abajo baja a los resultados.
+                            // Con el teclado abierto las flechas son suyas y Atrás solo lo cierra, sin
+                            // salir del campo. Ya cerrado, en TV abajo baja a los resultados.
                             .onPreviewKeyEvent { event ->
-                                if (!profile.isTv || event.key != Key.DirectionDown || ui.query.isBlank()) return@onPreviewKeyEvent false
-                                if (event.type == KeyEventType.KeyDown) {
-                                    keyboard?.hide()
-                                    runCatching { catalogFocus.requestFocus() }
+                                if (!profile.isTv) return@onPreviewKeyEvent false
+                                when {
+                                    imeVisible && (event.key == Key.Back || event.key == Key.Escape) -> {
+                                        if (event.type == KeyEventType.KeyUp) keyboard?.hide()
+                                        true
+                                    }
+                                    imeVisible -> false
+                                    event.key != Key.DirectionDown || ui.query.isBlank() -> false
+                                    else -> {
+                                        if (event.type == KeyEventType.KeyDown) runCatching { catalogFocus.requestFocus() }
+                                        true
+                                    }
                                 }
-                                true
                             },
                         placeholder = { Text(stringResource(R.string.home_search_placeholder)) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
@@ -799,27 +900,40 @@ fun HomeScreen(
                 ) {
                     Row(Modifier.fillMaxSize()) {
                     if (tvCategoryColumn) {
-                        // Mientras se calcula otra sección no se muestran las categorías de la anterior.
-                        val fresh = content.section == ui.section && content.playlistId == ui.selectedPlaylistId
+                        // Mientras se calcula la sección la columna no se vacía: muestra la última
+                        // lista armada de esa sección o, si es la primera vez, la de la anterior.
+                        val fresh = content.playlistId == ui.selectedPlaylistId && content.section == browsingSection
+                        val columnKey = "${ui.selectedPlaylistId}/${browsingSection.name}"
+                        if (fresh && content.categories.isNotEmpty()) {
+                            tvColumnMemory[columnKey] = content
+                            tvColumnMemory[""] = content
+                        }
+                        val ownColumn = if (fresh) content else tvColumnMemory[columnKey]
+                        val column = ownColumn ?: tvColumnMemory[""] ?: content
                         TvCategoryColumn(
-                            categories = if (fresh) content.categories else emptyList(),
-                            labels = content.categoryLabels,
-                            counts = if (fresh) content.categoryCounts else emptyMap(),
-                            locked = content.lockedCategories,
-                            myListCount = if (fresh) content.myListCount else 0,
-                            selected = ui.category,
+                            categories = column.categories,
+                            labels = column.categoryLabels,
+                            counts = column.categoryCounts,
+                            locked = column.lockedCategories,
+                            myListCount = column.myListCount,
+                            selected = content.category,
                             // Con el menú abierto la sección puede cambiar detrás: la que aparece no se lleva el foco.
-                            focusRequests = if (railExpanded) 0 else tvCatsFocusRequests,
-                            onSelect = viewModel::selectCategory,
+                            // Tampoco al borrar la búsqueda: el foco se queda en el campo.
+                            focusRequests = if (railExpanded || searchOpen) 0 else tvCatsFocusRequests,
+                            // Las categorías prestadas de otra sección se ven, pero solo se abren las suyas.
+                            onSelect = { name ->
+                                if (ownColumn != null || name == null || name == ALL_ROW || name == MY_LIST_ROW) viewModel.selectCategory(name)
+                            },
                             onRest = viewModel::prefetchNeighbors,
                             onOpenLocked = ::openCategory,
                             onRight = ::focusTvContent,
                             onLeft = { setRailExpanded(true) },
                             onFocusChange = { tvCatsHaveFocus = it },
                             modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 12.dp),
-                            sortOptions = if (fresh) content.sortOptions else emptyList(),
+                            sortOptions = column.sortOptions,
                             sort = ui.sort,
-                            onSort = viewModel::selectSort
+                            onSort = viewModel::selectSort,
+                            onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } }
                         )
                     }
                     Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -930,28 +1044,30 @@ fun HomeScreen(
                                 modifier = catalogModifier
                             )
                         }
-                        // Mientras se calcula la nueva sección no se muestran las filas de la anterior:
-                        // el foco caería en un póster que desaparece y las flechas dejarían de responder.
-                        contentStale || ui.playlists.isEmpty() ->
+                        ui.playlists.isEmpty() ->
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator()
                             }
-                        tvLive -> TvLiveScreen(
+                        tvLive -> {
+                            // Mientras se arma En vivo sigue la última lista de canales: sin rueda de carga.
+                            val liveKey = "${ui.selectedPlaylistId}/${Section.LIVE.name}"
+                            val liveFresh = content.playlistId == ui.selectedPlaylistId && content.section == Section.LIVE
+                            if (liveFresh && content.categories.isNotEmpty()) tvColumnMemory[liveKey] = content
+                            val live = if (liveFresh) content else tvColumnMemory[liveKey]
+                            TvLiveScreen(
                             playlistId = ui.selectedPlaylistId,
-                            categories = content.categories,
-                            categoryLabels = content.categoryLabels,
-                            lockedCategories = content.lockedCategories,
+                            categories = live?.categories.orEmpty(),
+                            categoryLabels = live?.categoryLabels.orEmpty(),
+                            lockedCategories = live?.lockedCategories.orEmpty(),
                             onOpenMenu = { setRailExpanded(true) },
                             onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
                             onFullscreen = { onPlayLiveFullscreen(it.id) },
-                            canTakeFocus = !railExpanded,
-                            focusRequests = if (railExpanded) 0 else liveFocusRequests,
+                            canTakeFocus = !railExpanded && !searchOpen,
+                            focusRequests = if (railExpanded || searchOpen) 0 else liveFocusRequests,
                             onExitUp = { runCatching { (if (searchOpen) searchFocus else headerFocus).requestFocus() } },
                             onOpenGuide = { category -> ui.selectedPlaylistId?.let { onOpenGuide(it, category) } },
                             onCategoryShown = { liveCategory = it },
-                            sortOptions = if (content.section == ui.section && content.playlistId == ui.selectedPlaylistId) {
-                                content.sortOptions
-                            } else emptyList(),
+                            sortOptions = live?.sortOptions.orEmpty(),
                             sort = ui.sort,
                             onSort = viewModel::selectSort,
                             modifier = Modifier
@@ -961,18 +1077,19 @@ fun HomeScreen(
                                     if (it.hasFocus && railExpanded) railExpanded = false
                                 }
                                 .focusRequester(catalogFocus)
-                        )
+                            )
+                        }
                         ui.firstSync && nothingYet && !searching -> PreparingCatalog()
                         content.grid -> CatalogGrid(
                             profile = profile,
                             content = content,
-                            title = when (ui.category) {
+                            title = when (val category = content.category) {
                                 SEARCH_MOVIES -> stringResource(R.string.home_search_movies_for, ui.query.trim())
                                 SEARCH_SERIES -> stringResource(R.string.home_search_series_for, ui.query.trim())
                                 SEARCH_LIVE -> stringResource(R.string.home_search_channels_for, ui.query.trim())
-                                MY_LIST_ROW -> stringResource(R.string.home_my_list_in_section, ui.section.label)
-                                ALL_ROW -> stringResource(R.string.home_all_in_section, ui.section.label)
-                                else -> ui.category?.let { content.categoryLabels[it] ?: rowLabel(it).asString() }.orEmpty()
+                                MY_LIST_ROW -> stringResource(R.string.home_my_list_in_section, browsingSection.label)
+                                ALL_ROW -> stringResource(R.string.home_all_in_section, browsingSection.label)
+                                else -> category?.let { content.categoryLabels[it] ?: rowLabel(it).asString() }.orEmpty()
                             },
                             emptyText = when {
                                 searching -> stringResource(R.string.home_search_empty, ui.query.trim())
@@ -983,7 +1100,7 @@ fun HomeScreen(
                             onBack = { viewModel.selectCategory(null) },
                             // El orden va en el botón de la cabecera; en TV tampoco hay título.
                             showTitle = !profile.isTv || !tvCategoryColumn,
-                            stateKey = "${ui.section}|${ui.category}|${ui.query.trim()}",
+                            stateKey = "${browsingSection}|${content.category}|${ui.query.trim()}",
                             sort = ui.sort,
                             bottomSpace = bottomSpace,
                             focusMemory = focusMemory,
@@ -1015,8 +1132,13 @@ fun HomeScreen(
                             onContinueMenu = openContinueMenu,
                             onFocusContinue = onFocusContinue,
                             onContinueSeeAll = openContinueAll,
-                            onSeeAll = { row -> openCategory(row.title) },
-                            modifier = catalogModifier
+                            onSeeAll = { row ->
+                                rememberReturnSlot()
+                                categoryFromRows = true
+                                openCategory(row.title)
+                            },
+                            modifier = catalogModifier,
+                            rowsState = rowsListState
                         )
                     }
                     }
@@ -1029,21 +1151,19 @@ fun HomeScreen(
                     profile = profile,
                     section = ui.section,
                     searchActive = searchOpen,
-                    // Mientras se calcula la sección nueva, las de la anterior no se ofrecen.
-                    categories = if (searching || contentStale) emptyList() else content.categories,
-                    categoryCounts = if (contentStale) emptyMap() else content.categoryCounts,
+                    categories = if (searching) emptyList() else content.categories,
+                    categoryCounts = content.categoryCounts,
                     categoryLabels = content.categoryLabels,
                     lockedCategories = content.lockedCategories,
-                    selectedCategory = ui.category,
+                    selectedCategory = content.category,
                     showCategories = !searching && !showSummary,
-                    myListCount = if (contentStale) 0 else content.myListCount,
+                    myListCount = content.myListCount,
                     expanded = railExpanded,
                     pillVisible = pillVisible.value,
                     onExpandedChange = ::setRailExpanded,
                     onSearch = ::openSearch,
                     summaryActive = showSummary,
                     onHome = ::goHome,
-                    onHomePreview = ::showTvHome,
                     onSection = {
                         if (searchOpen) {
                             viewModel.onQueryChange("")
@@ -1274,6 +1394,11 @@ fun HomeScreen(
             },
             appVersion = updateViewModel.versionName,
             onCheckUpdates = updateViewModel::checkNow,
+            onSpeedTest = {
+                speedTestViewModel.start()
+                showSpeedTest = true
+            },
+            storageTip = remember { appOnAdoptedStorage(context) },
             appLanguage = remember { AppLanguage.current(context) },
             onAppLanguageChange = { AppLanguage.set(context, it) },
             showClock = showClock,
@@ -1304,6 +1429,7 @@ fun HomeScreen(
             maxBufferSeconds = maxBufferSeconds,
             defaultSort = SortOrder.fromName(catalogPrefs.defaultSort),
             cleanNames = catalogPrefs.cleanNames,
+            hideVodCategories = catalogPrefs.hideVodCategories,
             hiddenCount = hiddenItems.size,
             pinSet = pinSet,
             unlocked = parentalUnlocked,
@@ -1311,6 +1437,7 @@ fun HomeScreen(
             onMaxBufferChange = viewModel::setMaxBufferSeconds,
             onDefaultSortChange = viewModel::setDefaultSort,
             onCleanNamesChange = viewModel::setCleanNames,
+            onHideVodCategoriesChange = viewModel::setHideVodCategories,
             onOrganize = { showOrganizeDialog() },
             onHiddenItems = { showHidden = true },
             onCreatePin = { pinError = null; pinStep = PinStep.Create },
@@ -1319,6 +1446,18 @@ fun HomeScreen(
             onLockNow = viewModel::lockParental,
             onUnlock = { pinError = null; pinStep = PinStep.Unlock(null) },
             onDismiss = { showSettings = false }
+        )
+    }
+
+    if (showSpeedTest) {
+        val speedState by speedTestViewModel.state.collectAsState()
+        SpeedTestDialog(
+            state = speedState,
+            onAgain = speedTestViewModel::start,
+            onDismiss = {
+                speedTestViewModel.close()
+                showSpeedTest = false
+            }
         )
     }
 
@@ -1438,6 +1577,13 @@ fun HomeScreen(
             }
         )
     }
+
+    UpdateOverlay(
+        updateScreen,
+        isTv = profile.isTv,
+        onEnterNow = viewModel::enterDuringUpdate,
+        onRetry = viewModel::retryUpdate
+    )
 }
 
 /** Paso del diálogo de PIN. */
@@ -1476,6 +1622,15 @@ private class FocusHolder(var key: String? = null) {
         val Saver: Saver<FocusHolder, String> = Saver(save = { it.key.orEmpty() }, restore = { FocusHolder(it.ifEmpty { null }) })
     }
 }
+
+/** La app quedó en una memoria USB adoptada como interna: más lenta para leer y escribir. */
+private fun appOnAdoptedStorage(context: android.content.Context): Boolean = runCatching {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        context.applicationInfo.storageUuid != android.os.storage.StorageManager.UUID_DEFAULT
+    } else {
+        context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_EXTERNAL_STORAGE != 0
+    }
+}.getOrDefault(false)
 
 @Composable
 private fun PreparingCatalog() {
@@ -1520,10 +1675,13 @@ private fun CatalogRows(
     onFocusContinue: (ContinueItem) -> Unit,
     onContinueSeeAll: () -> Unit,
     onSeeAll: (ContentRow) -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
+    /** De quien llama: así sigue en su lugar mientras se ve una categoría. */
+    rowsState: LazyListState? = null
 ) {
     // Guardado: Inicio se recrea al volver de la ficha y debe quedar donde estaba.
-    val listState = rememberSaveable(stateKey, saver = LazyListState.Saver) { LazyListState() }
+    val ownState = rememberSaveable(stateKey, saver = LazyListState.Saver) { LazyListState() }
+    val listState = rowsState ?: ownState
     RevealContinueRow(listState, continueWatching.isNotEmpty())
     val myList = content.rows.firstOrNull { it.title == MY_LIST_ROW && !content.isSearch }
     val others = content.rows.filter { it !== myList && it.items.isNotEmpty() }
@@ -1533,7 +1691,7 @@ private fun CatalogRows(
         if (continueWatching.isNotEmpty()) add("continue")
         if (content.top10.isNotEmpty()) add("top10")
         others.forEach { add("row:${it.title}") }
-    }.flatMap { if (it.startsWith("row:") || it == "continue") listOf(it, it + TvCatalogNav.ALL_SUFFIX) else listOf(it) }
+    }.flatMap { if (it.startsWith("row:") || it == "continue") listOf(it + TvCatalogNav.ALL_SUFFIX, it) else listOf(it) }
     if (tvNav != null) {
         tvNav.rowOrder = rowOrder
         tvNav.columnState = listState
@@ -1645,8 +1803,8 @@ private fun PhoneSummary(
             RevealContinueRow(listState, continueWatching.isNotEmpty())
             if (tvNav != null) {
                 tvNav.rowOrder = buildList {
-                    if (continueWatching.isNotEmpty()) { add("continue"); add("continue" + TvCatalogNav.ALL_SUFFIX) }
-                    summary.rows.forEach { add("row:${it.title}"); add("row:${it.title}" + TvCatalogNav.ALL_SUFFIX) }
+                    if (continueWatching.isNotEmpty()) { add("continue" + TvCatalogNav.ALL_SUFFIX); add("continue") }
+                    summary.rows.forEach { add("row:${it.title}" + TvCatalogNav.ALL_SUFFIX); add("row:${it.title}") }
                 }
                 tvNav.columnState = listState
             }
@@ -2066,8 +2224,17 @@ private fun ContinueWatchingRow(
 ) {
     val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
-        // Como en las demás filas: en TV "Ver todo" va al final y debajo de la fila.
-        RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
+        // Como en las demás filas: en TV el título abre todo y "Ver todo" va también al final.
+        if (profile.isTv && tvNav != null) {
+            RowTitleButton(
+                stringResource(R.string.home_continue_watching),
+                profile,
+                onSeeAll,
+                Modifier.tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0)
+            )
+        } else {
+            RowHeader(stringResource(R.string.home_continue_watching), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
+        }
         LazyRow(
             state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
@@ -2098,14 +2265,6 @@ private fun ContinueWatchingRow(
                     )
                 }
             }
-        }
-        if (profile.isTv && tvNav != null) {
-            SeeAllButton(
-                onClick = onSeeAll,
-                modifier = Modifier
-                    .padding(start = profile.edge, top = 2.dp)
-                    .tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0)
-            )
         }
     }
 }
@@ -2223,7 +2382,7 @@ private fun ContinueCard(
         border = if (focused) BorderStroke(3.dp, EntreBrand.Accent) else null,
         modifier = modifier
             .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier.width(profile.continueWidth))
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .focusScale(scale, !profile.isTv && !profile.lowRam)
             .clip(shape)
             .combinedClickable(
                 interactionSource = source,
@@ -2331,8 +2490,13 @@ private fun CatalogRow(
 ) {
     val rowState = rememberTvRowState(tvNav, navKey, profile.rowPrefetch)
     Column {
-        // En TV "Ver todo" va como tarjeta al final de la fila: en el encabezado atraía el foco.
-        RowHeader(row.label.asString(), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
+        // En TV el nombre de la categoría es la parada de arriba de la fila: OK la abre completa.
+        // "Ver todo" sigue también como tarjeta al final de la fila.
+        if (profile.isTv && tvNav != null) {
+            RowTitleButton(row.label.asString(), profile, onSeeAll, Modifier.tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0))
+        } else {
+            RowHeader(row.label.asString(), profile, onSeeAll = if (profile.isTv) null else onSeeAll)
+        }
         LazyRow(
             state = rowState,
             contentPadding = PaddingValues(horizontal = profile.edge, vertical = 6.dp),
@@ -2364,15 +2528,40 @@ private fun CatalogRow(
                 }
             }
         }
-        // En TV también debajo de la fila: se llega bajando, sin recorrerla hasta el final.
-        if (profile.isTv && tvNav != null) {
-            SeeAllButton(
-                onClick = onSeeAll,
-                modifier = Modifier
-                    .padding(start = profile.edge, top = 2.dp)
-                    .tvNavItem(tvNav, navKey + TvCatalogNav.ALL_SUFFIX, 0)
-            )
-        }
+    }
+}
+
+/** TV: el nombre de la fila, enfocable; OK abre la categoría completa. */
+@Composable
+private fun RowTitleButton(title: String, profile: DeviceProfile, onClick: () -> Unit, modifier: Modifier) {
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(50)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .padding(start = (profile.edge - 10.dp).coerceAtLeast(0.dp), end = profile.edge, top = 4.dp)
+            .then(modifier)
+            .clip(shape)
+            .background(if (focused) EntreBrand.Accent else Color.Transparent)
+            .clickable(interactionSource = source, indication = null, onClick = onClick)
+            .padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = if (focused) EntreBrand.OnAccent else Color.Unspecified,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = if (focused) EntreBrand.OnAccent else EntreBrand.TextDim,
+            modifier = Modifier.size(22.dp)
+        )
     }
 }
 
@@ -2406,7 +2595,7 @@ private fun SeeAllCard(profile: DeviceProfile, live: Boolean, onClick: () -> Uni
         modifier = modifier
             .width(if (live) profile.liveWidth else profile.posterWidth)
             .height(if (live) profile.liveHeight else profile.posterHeight)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .focusScale(scale, !profile.isTv && !profile.lowRam)
             .clip(shape)
             .background(if (focused) EntreBrand.Accent else EntreBrand.PanelHigh)
             .then(if (focused) Modifier.border(3.dp, Color.White, shape) else Modifier)
@@ -2509,7 +2698,7 @@ private fun PosterCard(
     Column(
         modifier = modifier
             .then(outer)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .focusScale(scale, !profile.isTv && !profile.lowRam)
             .combinedClickable(
                 interactionSource = source,
                 indication = LocalIndication.current,
@@ -2533,27 +2722,10 @@ private fun PosterCard(
         ) {
             if (item.imageUrl.isNotEmpty()) {
                 val context = LocalContext.current
-                var waiting by remember(item.imageUrl) { mutableStateOf(!isLive) }
                 // Un póster que no llegó por la red se vuelve a pedir un par de veces; los rotos no.
                 var retry by remember(item.imageUrl) { mutableIntStateOf(0) }
                 var retryDue by remember(item.imageUrl) { mutableStateOf(false) }
-                // Si no sale de la memoria al instante, la vista previa borrosa queda debajo de la nítida.
-                var showMicro by remember(item.imageUrl) { mutableStateOf(false) }
-                if (!isLive) {
-                    LaunchedEffect(item.imageUrl) {
-                        delay(MICRO_PREVIEW_DELAY_MS)
-                        if (waiting) showMicro = true
-                    }
-                }
-                if (waiting) PosterPlaceholder(item.title)
-                if (showMicro) {
-                    AsyncImage(
-                        model = remember(item.imageUrl) { microRequest(context, item.imageUrl) },
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                }
+                var failed by remember(item.imageUrl) { mutableStateOf(false) }
                 AsyncImage(
                     model = remember(item.imageUrl, retry) {
                         if (isLive) cardImage(item.imageUrl)
@@ -2567,12 +2739,14 @@ private fun PosterCard(
                     modifier = if (isLive) Modifier.fillMaxSize().padding(8.dp) else Modifier.fillMaxSize(),
                     contentScale = if (isLive) ContentScale.Fit else ContentScale.Crop,
                     onState = if (isLive) null else { state ->
-                        waiting = state !is AsyncImagePainter.State.Success
                         if (state is AsyncImagePainter.State.Error && retry < POSTER_RETRIES &&
                             ImageFailures.isTransient(state.result.throwable)
                         ) retryDue = true
+                        failed = state is AsyncImagePainter.State.Error &&
+                            (retry >= POSTER_RETRIES || !ImageFailures.isTransient(state.result.throwable))
                     }
                 )
+                if (failed) PosterPlaceholder(item.title)
                 if (retryDue) {
                     LaunchedEffect(retry) {
                         delay(POSTER_RETRY_DELAY_MS)

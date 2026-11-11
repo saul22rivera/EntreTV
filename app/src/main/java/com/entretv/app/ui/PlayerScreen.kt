@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -140,6 +141,7 @@ import com.entretv.app.player.PipController
 import com.entretv.app.ui.player.ChannelBrowser
 import com.entretv.app.ui.player.ChannelBrowserState
 import com.entretv.app.ui.player.FrameRateMatchEffect
+import com.entretv.app.ui.player.NetworkHintPill
 import com.entretv.app.ui.player.LiveChannelList
 import com.entretv.app.ui.player.PlayerSettingsActions
 import com.entretv.app.ui.player.PlayerSettingsPanel
@@ -165,6 +167,8 @@ private const val NEXT_EPISODE_WINDOW_MS = 30_000L
 private const val DOUBLE_TAP_SEEK_MS = 10_000L
 private const val SCRUB_COMMIT_MS = 1_200L
 private const val ZAP_BANNER_MS = 3_000L
+/** Cuánto queda a la vista "Ver en HD" si no se usa. */
+private const val WATCH_HD_MS = 20_000L
 
 /** Aviso flotante de gestos y saltos: "+10 s", brillo, volumen, formato de imagen. */
 private data class Feedback(val icon: ImageVector, val text: String, val level: Float? = null, val durationMs: Long = 900)
@@ -201,6 +205,8 @@ fun PlayerScreen(
     val reconnectAttempt by manager.reconnectAttempt.collectAsState()
     val offline by manager.offline.collectAsState()
     val waitingForNetwork by manager.waitingForNetwork.collectAsState()
+    val netHint by manager.networkHint.collectAsState()
+    val hdAlternative by viewModel.hdAlternative.collectAsState()
     val playError by manager.error.collectAsState()
     val tracks by manager.tracks.collectAsState()
     val trackParams by manager.trackParams.collectAsState()
@@ -250,6 +256,7 @@ fun PlayerScreen(
     val playFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
     val skipIntroFocus = remember { FocusRequester() }
+    val watchHdFocus = remember { FocusRequester() }
     val seekFocus = remember { FocusRequester() }
     val pillFocus = remember { QuickKind.entries.associateWith { FocusRequester() } }
     val menu = remember(tracks, trackParams, context) { trackMenu(context, tracks, trackParams) }
@@ -337,14 +344,19 @@ fun PlayerScreen(
         if (!ok) feedback = Feedback(Icons.Default.PictureInPictureAlt, context.getString(R.string.player_pip_unsupported), durationMs = 1_800)
     }
 
-    // En vivo no: zapear entre canales de 50 y 60 Hz dejaría la TV en negro en cada cambio.
+    // Películas: según Configuración. En vivo siempre en TV, pero solo para canales de 25 o 50
+    // cuadros (en 60 Hz se ven robóticos); el resto vuelve a la frecuencia de antes.
     FrameRateMatchEffect(
         player = manager.player,
         activity = activity,
-        enabled = profile.isTv && playable != null && !isLive &&
-            prefs.frameRateMode == SettingsRepository.FRAME_RATE_AUTO,
+        enabled = profile.isTv && playable != null &&
+            (isLive || prefs.frameRateMode == SettingsRepository.FRAME_RATE_AUTO),
         contentKey = currentKey,
-        hold = controlsVisible || overlayOpen || quick != null
+        hold = controlsVisible || overlayOpen || quick != null,
+        palOnly = isLive,
+        onSwitch = { hz ->
+            feedback = Feedback(Icons.Default.Tv, context.getString(R.string.player_frame_rate_switch, hz), durationMs = 2_000)
+        }
     )
 
     // La actividad y no la entrada de navegación: al volver a Inicio la entrada se detiene, y
@@ -406,7 +418,9 @@ fun PlayerScreen(
     LaunchedEffect(playable) {
         while (true) {
             if (!dragging) positionState.longValue = manager.player.currentPosition.coerceAtLeast(0L)
-            delay(500)
+            // Con los controles ocultos no hace falta redibujar la barra: en un TV box eso
+            // compite con el decodificador 4K.
+            delay(if (controlsVisible || panelOpen || channelsOpen) 500 else 1_500)
         }
     }
 
@@ -428,8 +442,19 @@ fun PlayerScreen(
     val showSkipIntro = prefs.skipIntroButton && playable is Playable.Episode && !introDone && inIntro &&
         !showNextEpisode && !overlayOpen && !inPip && playError == null
 
+    // Una vez por título, cuando el 4K no alcanza y el mismo título está en HD.
+    var watchHdVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(hdAlternative?.id) {
+        watchHdVisible = hdAlternative != null
+        if (!watchHdVisible) return@LaunchedEffect
+        delay(WATCH_HD_MS)
+        watchHdVisible = false
+    }
+    val showWatchHd = watchHdVisible && hdAlternative != null && !showNextEpisode && !showSkipIntro &&
+        !overlayOpen && !inPip && playError == null
+
     // En TV el foco va a Play al mostrar controles y vuelve a la raíz al ocultarlos.
-    LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro) {
+    LaunchedEffect(controlsVisible, overlayOpen, showNextEpisode, showSkipIntro, showWatchHd) {
         if (overlayOpen || quick != null) return@LaunchedEffect
         delay(60)
         runCatching {
@@ -437,6 +462,7 @@ fun PlayerScreen(
                 controlsVisible -> playFocus.requestFocus()
                 showNextEpisode && profile.isTv -> nextFocus.requestFocus()
                 showSkipIntro && profile.isTv -> skipIntroFocus.requestFocus()
+                showWatchHd && profile.isTv -> watchHdFocus.requestFocus()
                 else -> rootFocus.requestFocus()
             }
         }
@@ -485,6 +511,8 @@ fun PlayerScreen(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
                         useController = false
+                        setKeepContentOnPlayerReset(true)
+                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                         player = manager.player
                     }
                 },
@@ -531,11 +559,18 @@ fun PlayerScreen(
                             Button(onClick = { manager.retry() }) { Text(stringResource(R.string.player_retry)) }
                         }
                     }
-                    buffering && !controlsVisible && !reconnecting && !waitingForNetwork -> CircularProgressIndicator(
+                    buffering && !controlsVisible && !reconnecting && !waitingForNetwork && netHint == null -> CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
+
+                NetworkHintPill(
+                    hint = netHint.takeIf { playError == null && !reconnecting && !waitingForNetwork },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = if (controlsVisible) 64.dp else 16.dp, end = 16.dp)
+                )
 
                 if ((reconnecting || waitingForNetwork) && playError == null) {
                     ReconnectPill(
@@ -725,6 +760,39 @@ fun PlayerScreen(
                 }
 
                 AnimatedVisibility(
+                    visible = showWatchHd,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 24.dp, bottom = if (controlsVisible) controlsBottom else 32.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            stringResource(R.string.player_watch_hd_hint),
+                            color = Color.White.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        EntreButton(
+                            text = stringResource(R.string.player_watch_hd),
+                            icon = Icons.Default.HighQuality,
+                            onClick = {
+                                watchHdVisible = false
+                                viewModel.switchToHd()
+                            },
+                            modifier = Modifier.focusRequester(watchHdFocus)
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
                     visible = zapBannerVisible && isLive && !controlsVisible && !overlayOpen && !portraitLive,
                     enter = fadeIn(),
                     exit = fadeOut(),
@@ -787,7 +855,7 @@ fun PlayerScreen(
                         if (overlayOpen || controlsVisible || portraitLive) return@onPreviewKeyEvent false
                         when (event.key) {
                             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                                if (showNextEpisode || showSkipIntro) false else { showControls(); true }
+                                if (showNextEpisode || showSkipIntro || showWatchHd) false else { showControls(); true }
                             }
                             // Con la tarjeta del siguiente episodio, izquierda y derecha van entre sus botones.
                             Key.DirectionLeft -> {
