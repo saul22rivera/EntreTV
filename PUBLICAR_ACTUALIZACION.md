@@ -29,11 +29,12 @@ La app busca actualizaciones en
    ```powershell
    $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'; .\gradlew.bat :app:assembleRelease
    ```
-4. En `app\build\outputs\apk\release\` quedan los dos archivos que se suben:
+4. En `app\build\outputs\apk\release\` quedan los tres archivos que se suben:
    - `EntreTV-<versión>.apk` (universal: celular, tablet y TV)
+   - `EntreTV.apk` (el mismo APK con nombre fijo, para el código de Downloader)
    - `update.json`
 5. En GitHub: **Releases → Draft a new release**, etiqueta `v<versión>` (por ejemplo `v1.2.0`),
-   adjunta los dos archivos y publica. Debe quedar marcado como **Latest**.
+   adjunta los tres archivos y publica. Debe quedar marcado como **Latest**.
 
 ## Formato de `update.json`
 
@@ -84,9 +85,10 @@ catálogo, y la ficha muestra lo que manda el servidor. Para activar TMDB:
 
 ## Instalar por primera vez (Downloader en TV)
 
-En Downloader escribe la dirección del APK de la última versión, por ejemplo:
-`https://github.com/saul22rivera/EntreTV/releases/latest/download/EntreTV-1.2.0.apk`
-(o crea un código corto en aftvnews.com/dl que apunte a esa dirección).
+En Downloader escribe la dirección fija de la última versión (no cambia entre versiones):
+`https://github.com/saul22rivera/EntreTV/releases/latest/download/EntreTV.apk`
+o un código corto de aftvnews.com/dl que apunte a esa dirección. Para que siga funcionando,
+cada release debe llevar `EntreTV.apk`.
 
 La versión de prueba ("Entre TV", paquete `com.entretv.app.debug`) es otra app: desinstálala a mano
 después de instalar la versión normal. Las copias de depuración no buscan actualizaciones.

@@ -160,6 +160,10 @@ val writeUpdateManifest by tasks.registering {
                 "  \"mandatory\": ${minCode >= (code ?: 0)}" +
                 optional + "\n}\n"
         )
+        // Copia con nombre fijo: releases/latest/download/EntreTV.apk siempre baja la última
+        // (el código de Downloader apunta ahí). Se sube al release junto al APK con versión.
+        val dir = output.get().asFile.parentFile
+        File(dir, "EntreTV-$name.apk").takeIf { it.exists() }?.copyTo(File(dir, "EntreTV.apk"), overwrite = true)
     }
 }
 tasks.matching { it.name == "assembleRelease" }.configureEach { finalizedBy(writeUpdateManifest) }
